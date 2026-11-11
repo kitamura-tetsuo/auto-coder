@@ -219,12 +219,35 @@ through the real authenticated ASGI app; this is process/state reconstruction,
 not an external TLS listener restart. No accepted authority or runtime evidence
 is synthesized.
 
-These bounded successful/failed joins and manager START-response reconstruction
-do not complete REQ-010. Integrated installed-release held invocation/terminal-exit
-barriers, unresolved-effect ownership during recovery, Supervisor reconstruction,
-other lost-response boundaries, unconfirmed pre-effect durability and post-stage
-supersession remain separate required acceptance scenarios. The current container
-fixture runs Supervisor as PID1, so killing/restarting that container also destroys
-the worker PID namespace and cannot prove retention of the same live child across
-a Supervisor restart. Preserve the unresolved acceptance gate until the remaining
-exact scenarios and clean-revision CI are demonstrated.
+A separate reconstruction case discards a real signed START response, closes the
+management app and reconstructs its app/client objects against the original
+journal. An out-of-band fixture signal unwinds the Supervisor listener and creates
+a new Supervisor object in the same PID1 process, retaining the installed child.
+The new signed Supervisor incarnation must reconcile the original unknown START
+without another replacement launch. This is app/Supervisor object and listener
+reconstruction, not a manager or Supervisor OS-process restart. It complements,
+and does not replace, the separate manager-process case above. The same case
+first refuses the durable drain-boundary journal write and checks that only the
+already completed PREPARE was posted while the original incumbent remains ready.
+
+The post-stage selection case holds the manager immediately before its drain
+step, publishes a later promotion for the same Git SHA through the authenticated
+promotion tool, then resumes. The original deployment must become `SUPERSEDED`
+without any drain/start POST or replacement launch. Same-source identity alone
+cannot substitute for the originally accepted promotion/catalog identity.
+
+The terminal-exit case runs the installed prior worker's actual CLI, wraps only
+its terminal-persistence return, and holds that process after the production
+bridge writes its genuine graceful terminal receipt. While its OS lifetime is
+still alive, the manager must not dispatch START, replay retains the operation,
+and another key remains busy. Removing the external hold permits genuine process
+exit and the original candidate activation. No terminal or readiness data is
+synthesized by this fault.
+
+These bounded cases do not complete REQ-010. Integrated held active invocations,
+unresolved-effect ownership during recovery, independent Supervisor OS-process
+reconstruction and other lost-response boundaries remain separate required
+acceptance scenarios. Killing/restarting the current PID1 container destroys its
+worker PID namespace; the same-process listener reconstruction does not establish
+child survival across that OS boundary. Preserve the unresolved acceptance gate
+until the remaining exact scenarios and clean-revision CI are demonstrated.

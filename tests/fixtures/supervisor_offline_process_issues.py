@@ -54,6 +54,32 @@ def main() -> None:
         "--log-file",
         os.path.join(os.environ["AUTO_CODER_RUNTIME_ROOT"], "logs", "auto-coder.log"),
     ]
+    if os.environ.get("AUTO_CODER_TEST_HOLD_INSTALLED_TERMINAL") == "1":
+        selected = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-hold-selected-runtime"
+        if selected.is_file() and selected.read_text(encoding="utf-8") == os.environ.get("VIRTUAL_ENV"):
+            # Execute the actual installed CLI in its selected interpreter.
+            # This fault injection delays the return *after* the production
+            # worker has durably persisted its genuine terminal receipt;
+            # neither the receipt nor any readiness field is synthesized.
+            import runpy
+
+            from auto_coder.worker_management_bridge import WorkerManagementBridge
+
+            original_terminal = WorkerManagementBridge.persist_graceful_terminal
+
+            def persist_then_hold(bridge: WorkerManagementBridge, reason: str) -> None:
+                original_terminal(bridge, reason)
+                root = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"])
+                hold = root / "fixture-hold-terminal-exit"
+                if hold.exists():
+                    (root / "fixture-terminal-exit-held").write_text("genuine terminal persisted, exact OS lifetime held", encoding="utf-8")
+                    while hold.exists():
+                        time.sleep(0.02)
+
+            WorkerManagementBridge.persist_graceful_terminal = persist_then_hold
+            sys.argv = ["auto_coder.cli", *command[3:]]
+            runpy.run_module("auto_coder.cli", run_name="__main__")
+            return
     os.execv(sys.executable, command)
 
 

@@ -854,6 +854,26 @@ def serve_one_fresh_grant(
     exclusion_fences: tuple[int, ...] = (),
     on_listening: Callable[[], None] | None = None,
 ) -> None:
+    from .original_attempts import grant_boundary
+
+    with grant_boundary(intent):
+        _serve_one_fresh_grant(socket_path, intent, management, proxy, fence_descriptor, network_descriptor, trusted_uid=trusted_uid, timeout=timeout, bootstrap_config=bootstrap_config, exclusion_fences=exclusion_fences, on_listening=on_listening)
+
+
+def _serve_one_fresh_grant(
+    socket_path: Path,
+    intent: FreshInitializationIntent,
+    management: PriorContainer,
+    proxy: PriorContainer,
+    fence_descriptor: int,
+    network_descriptor: int,
+    *,
+    trusted_uid: int | None = None,
+    timeout: float = 120,
+    bootstrap_config: Path | None = None,
+    exclusion_fences: tuple[int, ...] = (),
+    on_listening: Callable[[], None] | None = None,
+) -> None:
     """Serve one challenge only after fresh host and replacement checks.
 
     This foreground host adapter does not start containers and never supplies a
@@ -893,13 +913,10 @@ def serve_one_fresh_grant(
     if record.is_symlink() or not record.is_file():
         raise HostObservationUnavailable("initialization intent is unavailable")
     encoded = record.read_bytes()
-    expected = json.dumps(asdict(intent), sort_keys=True, separators=(",", ":")).encode()
-    legacy = asdict(intent)
-    if not intent.host_prior_journal_root:
-        for key in ("host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"):
-            legacy.pop(key)
-    legacy_encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
-    if encoded not in (expected, legacy_encoded):
+    from .fresh_initialization import parse_fresh_intent
+
+    raw_intent = json.loads(encoded)
+    if parse_fresh_intent(raw_intent) != intent or encoded != json.dumps(raw_intent, sort_keys=True, separators=(",", ":")).encode():
         raise HostObservationUnavailable("initialization intent differs")
     intent_digest = hashlib.sha256(encoded).hexdigest()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:

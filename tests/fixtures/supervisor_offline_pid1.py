@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from dataclasses import replace
 
 from loguru import logger
 
 from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor
+
+
+class _FixtureReconstructSupervisor(Exception):
+    """Stop only the disposable Supervisor listener, retaining its worker."""
 
 
 def main() -> None:
@@ -40,7 +45,26 @@ def main() -> None:
     layout = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {file}:{function}:{line} | {message}"
     logger.add(sys.stdout, colorize=False, format=layout)
     logger.add(configuration.runtime_root / "supervisor" / "supervisor.log", rotation="10 MB", retention="5 days", format=layout)
-    WorkerSupervisor(configuration).run()
+    if os.environ.get("AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR") != "1":
+        WorkerSupervisor(configuration).run()
+        return
+
+    def reconstruct(_signal_number: int, _frame: object) -> None:
+        raise _FixtureReconstructSupervisor()
+
+    signal.signal(signal.SIGUSR1, reconstruct)
+    reconstructions = 0
+    while True:
+        try:
+            WorkerSupervisor(configuration).run()
+            return
+        except _FixtureReconstructSupervisor:
+            # This is an out-of-band fault injection, not a management action.
+            # The real Supervisor closes the old signed listener and releases
+            # ownership; its separately running child process is not stopped.
+            reconstructions += 1
+            (configuration.runtime_root / "fixture-supervisor-reconstructions").write_text(str(reconstructions), encoding="utf-8")
+            logger.info("Fixture reconstructed Supervisor without stopping worker")
 
 
 if __name__ == "__main__":
