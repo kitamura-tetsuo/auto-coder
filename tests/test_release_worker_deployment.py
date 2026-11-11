@@ -475,3 +475,120 @@ def test_release_deploy_rechecks_policy_reconciles_lost_replies_and_refuses_unve
             assert outcome["status"] == "DRAINING" and outcome["steps"]["drain"]["state"] == "SENT_UNKNOWN", outcome
             assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP"]
             assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "different"})["status"] == "BUSY"
+
+
+@pytest.mark.parametrize("boundary", ("drain", "start"))
+@pytest.mark.parametrize("fault", (None, "digest", "selection", "live-binding"))
+def test_release_reconstructed_supervisor_requires_original_transition_evidence(release_flow, monkeypatch, boundary, fault):
+    """Controlled signed boundary test, not an installed-worker acceptance claim."""
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        arguments = _release_arguments(d, promotion)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", arguments)
+        operation_id = str(admitted["operation_id"])
+        effect_id = ("d-" if boundary == "drain" else "s-") + operation_id
+        for _ in range(20):
+            _drive(d.app, operation_id, 1)
+            if effect_id in d.bridge.receipts:
+                break
+        else:
+            raise AssertionError("original release transition was not dispatched")
+        actions = list(d.bridge.actions)
+        original_digest = d.bridge.receipts[effect_id]["intent_digest"]
+        d.bridge.supervisor_generation = "supervisor-reconstructed"
+        if fault == "digest":
+            d.bridge.receipts[effect_id]["intent_digest"] = "0" * 64
+        elif fault == "selection":
+            if boundary == "drain":
+                d.bridge.selected = "unrelated-runtime"
+            else:
+                assert d.bridge.worker is not None
+                d.bridge.worker = {**d.bridge.worker, "deployment_generation": "unrelated-child"}
+        elif fault == "live-binding":
+            if boundary == "drain":
+                # No owner may be adopted while the old OS lifetime is alive.
+                d.bridge.worker = {"process_run_id": "old-live", "deployment_generation": "old-live", "runtime_id": "runtime-old"}
+            else:
+                original_observe = d.bridge.observe_worker
+
+                def altered_binding(nonce=None):
+                    result = original_observe(nonce)
+                    result.data["runtime_binding"]["content_identity"] = "0" * 64
+                    return result
+
+                monkeypatch.setattr(d.bridge, "observe_worker", altered_binding)
+        _drive(d.app, operation_id, 30)
+        status = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        if fault is None:
+            assert status["status"] == "SUCCEEDED", status
+            assert [name for name, _ in d.bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+            assert d.bridge.receipts[effect_id]["intent_digest"] == original_digest
+        else:
+            assert status["status"] == "NEEDS_ATTENTION", status
+            assert d.bridge.actions == actions
+            assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-reconstruction"})["status"] == "BUSY"
+        assert _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+        assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": "b" * 40})["status"] == "CONFLICT"
+
+
+@pytest.mark.parametrize("unavailability", ("transport", "binding", "receipt", "first-inspection", "second-inspection"))
+def test_release_reconstruction_waits_for_same_child_binding_to_become_observable(release_flow, monkeypatch, unavailability):
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        arguments = _release_arguments(d, promotion)
+        operation_id = str(_call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"])
+        for _ in range(20):
+            _drive(d.app, operation_id, 1)
+            if "s-" + operation_id in d.bridge.receipts:
+                break
+        else:
+            raise AssertionError("original start missing")
+        actions = list(d.bridge.actions)
+        d.bridge.supervisor_generation = "supervisor-reconstructed"
+        original_observe = d.bridge.observe_worker
+
+        def unavailable(nonce=None):
+            if unavailability == "transport":
+                return WorkerNetworkResult(0, "UNAVAILABLE", None, d.bridge.supervisor_generation, "unavailable")
+            result = original_observe(nonce)
+            result.data["binding_status"] = "UNAVAILABLE"
+            result.data["runtime_binding"] = None
+            return result
+
+        original_read = d.bridge.read_worker_operation
+        original_inspect = d.bridge.inspect_supervisor
+        if unavailability == "receipt":
+            monkeypatch.setattr(d.bridge, "read_worker_operation", lambda _operation: WorkerNetworkResult(0, "UNAVAILABLE", None, d.bridge.supervisor_generation, "unavailable"))
+        elif unavailability in {"first-inspection", "second-inspection"}:
+            # Each attempt first observes the changed owner, then the rebind
+            # performs one inspection before and one after the original receipt.
+            count = 0
+            cadence = 2 if unavailability == "first-inspection" else 3
+
+            def intermittent_inspect():
+                nonlocal count
+                count += 1
+                if count % cadence == 0:
+                    return WorkerNetworkResult(0, "UNAVAILABLE", None, d.bridge.supervisor_generation, "unavailable")
+                return original_inspect()
+
+            monkeypatch.setattr(d.bridge, "inspect_supervisor", intermittent_inspect)
+        else:
+            monkeypatch.setattr(d.bridge, "observe_worker", unavailable)
+        _drive(d.app, operation_id, 8)
+        retained = d.app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
+        assert retained is not None and retained[1]["stage"] not in {"SUCCEEDED", "FAILED", "NEEDS_ATTENTION"}
+        assert d.bridge.actions == actions
+        assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-unavailable"})["status"] == "BUSY"
+        monkeypatch.setattr(d.bridge, "observe_worker", original_observe)
+        monkeypatch.setattr(d.bridge, "read_worker_operation", original_read)
+        monkeypatch.setattr(d.bridge, "inspect_supervisor", original_inspect)
+        _drive(d.app, operation_id, 30)
+        finished = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert finished["status"] == "SUCCEEDED", finished
+        assert _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+        assert d.bridge.actions == actions

@@ -585,7 +585,29 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             for _ in range(100):
                 _drive(app, operation_id, 1)
                 if restart and (tmp_path / "child" / "fixture-draining").exists() and original_child.poll() is None:
+                    hold = tmp_path / "child" / "fixture-hold-terminal-exit"
+                    if channel == "release":
+                        hold.write_text("hold actual OS exit")
                     (tmp_path / "child" / "fixture-release").write_text("release")
+                    if channel == "release":
+                        for _ in range(200):
+                            if (tmp_path / "child" / "fixture-terminal-exit-held").exists():
+                                break
+                            time.sleep(0.02)
+                        else:
+                            raise AssertionError("real worker did not persist terminal receipt before held exit")
+                        terminal = json.loads((tmp_path / "child" / "last-terminal.json").read_text())
+                        assert terminal["process_run_id"] == worker["process_run_id"]
+                        assert terminal["deployment_generation"] == worker["deployment_generation"]
+                        _drive(app, operation_id, 8)
+                        assert original_child.poll() is None
+                        assert dispatches == []
+                        snapshot = app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
+                        assert snapshot is not None and "start" not in snapshot[1]["steps"]
+                        assert _call(client, bearer, tool, arguments)["operation_id"] == operation_id
+                        competing = _call(client, bearer, tool, {**arguments, "idempotency_key": "competing-held-exit"})
+                        assert competing["status"] == "BUSY"
+                        hold.unlink()
                     original_child.wait(timeout=10)
                     (tmp_path / "child" / "fixture-release").unlink()
                 if dispatches:
@@ -615,6 +637,7 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             assert len(dispatches) == 1
             assert _call(client, bearer, "auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})["status"] != "SUCCEEDED"
     finally:
+        (tmp_path / "child" / "fixture-hold-terminal-exit").unlink(missing_ok=True)
         (tmp_path / "child" / "fixture-release").write_text("release")
         listener.close()
         if new_child is not None and new_child.poll() is None:

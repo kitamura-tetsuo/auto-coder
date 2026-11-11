@@ -100,6 +100,12 @@ async def run() -> None:
             await asyncio.sleep(0.02)
         engine.lifecycle = EngineLifecycle.STOPPED
         bridge.persist_graceful_terminal("supervisor SIGTERM")
+        # Hold the real process after its genuine terminal receipt is durable.
+        # Tests can distinguish terminal evidence from actual OS exit.
+        if (root / "fixture-hold-terminal-exit").exists():
+            (root / "fixture-terminal-exit-held").write_text("held")
+            while (root / "fixture-hold-terminal-exit").exists():
+                await asyncio.sleep(0.02)
     finally:
         await bridge.close()
 

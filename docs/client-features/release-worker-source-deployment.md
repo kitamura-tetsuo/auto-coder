@@ -136,3 +136,36 @@ child lifetime are retained without a second START dispatch. A bootstrap-only
 child still cannot report SUCCEEDED: this is not installed accepted-source
 release activation evidence and does not replace the remaining integrated
 REQ-009/010/011 acceptance gates.
+
+The native release RESTART case also holds the actual old OS process after its
+genuine matching terminal receipt is durable. While it is alive, repeated
+management reconciliation must not dispatch START, replay retains the operation,
+and a competing key remains BUSY. Only releasing the observable exit barrier
+permits the original replacement to proceed. This covers the terminal-versus-exit
+boundary without synthesizing a successful drain receipt.
+
+### Reconstructed Supervisor after a retained source effect
+
+Release source deployment can adopt a reconstructed Supervisor incarnation only by
+reading the original persisted drain or start operation ID and exact intent
+digest. A completed drain additionally requires the old selected runtime still
+selected and an independently observed STOPPED state with no live child. A start
+requires its exact accepted child generation/run and a fresh VERIFIED installed
+binding matching the original staged runtime ID, content identity, source SHA,
+distribution version and lock digest. Adoption only updates the current owner
+observation; it does not replace the original effect identity or dispatch again.
+Each later mutation still passes original grant/policy and source-selection gates.
+
+Missing/mismatched receipts, a live old child, a different installed binding or
+an unconfirmed observation retain the original operation/lane without a new
+transition. Recovery steps cannot adopt a reconstructed owner using the previous
+start receipt; that distinct recovery remains unresolved until separately
+supported correlated evidence is available. Preparation-only reconstruction is
+also not admitted by this drain/start rule. Controlled signed-boundary regression
+cases cover these checks but do not replace the required integrated independently
+installed release-worker acceptance described above.
+
+Transient live-binding unavailability waits within the original lifecycle deadline,
+without dispatch or lane release; fresh matching evidence can then continue the
+same operation. Expiry remains NEEDS_ATTENTION. Beta source reconstruction is
+unchanged by this release-specific extension.

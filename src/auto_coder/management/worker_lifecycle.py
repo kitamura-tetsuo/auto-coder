@@ -349,42 +349,87 @@ class WorkerLifecycle:
             return "CHANGED"
         return "SAME"
 
-    def _rebind_bootstrap_supervisor(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> bool | None:
+    def _rebind_retained_supervisor(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> bool | None:
         """Adopt a reconstructed owner only through an exact durable effect receipt."""
         incumbent = snapshot.get("incumbent")
         steps = snapshot.get("steps")
-        if record.intent.action not in {"start_worker", "stop_worker", "restart_worker"} or not isinstance(incumbent, dict) or incumbent.get("runtime_id") != "bootstrap" or not isinstance(steps, dict):
+        source_action = record.intent.action == "deploy_release_source"
+        if not isinstance(incumbent, dict) or not isinstance(steps, dict):
+            return False
+        if not source_action and (record.intent.action not in {"start_worker", "stop_worker", "restart_worker"} or incumbent.get("runtime_id") != "bootstrap"):
+            return False
+        # Recovery is a different transition and must not be rebound using a
+        # prior successful start receipt. Its original owner remains unresolved.
+        if "recovery" in steps:
             return False
         name = "start" if "start" in steps else "drain"
+        staged = snapshot.get("staged")
+        expected_runtime = incumbent.get("runtime_id")
+        if source_action:
+            if not isinstance(staged, dict) or not isinstance(staged.get("installed_runtime_id"), str):
+                return False
+            if name == "start":
+                expected_runtime = staged["installed_runtime_id"]
+        if not isinstance(expected_runtime, str) or not expected_runtime:
+            return False
         step = steps.get(name)
         if not isinstance(step, dict) or not isinstance(step.get("expected_digest"), str) or not isinstance(step.get("operation_id"), str):
             return False
         inspected = client.inspect_supervisor()
         data = inspected.data
+        if source_action and inspected.result_code in {"UNAVAILABLE", "UNKNOWN", "IN_PROGRESS"}:
+            return None
         if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != inspected.supervisor_generation:
             return False
         receipt = client.read_worker_operation(step["operation_id"])
         result = receipt.data
+        if source_action and receipt.result_code in {"UNAVAILABLE", "UNKNOWN", "NOT_FOUND"}:
+            return None
         if receipt.supervisor_generation != inspected.supervisor_generation or not isinstance(result, dict) or result.get("operation_id") != step["operation_id"] or result.get("intent_digest") != step["expected_digest"]:
             return False
         if receipt.result_code in {"IN_PROGRESS", "DRAINING"}:
             return None
         inspected = client.inspect_supervisor()
         data = inspected.data
+        if source_action and inspected.result_code in {"UNAVAILABLE", "UNKNOWN", "IN_PROGRESS"}:
+            return None
         if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != receipt.supervisor_generation or inspected.supervisor_generation != receipt.supervisor_generation:
             return False
         if name == "drain":
-            valid = receipt.result_code == "STOPPED" and data.get("status") == "STOPPED" and data.get("alive") is False and data.get("selected_runtime_id") == "bootstrap"
+            valid = receipt.result_code == "STOPPED" and data.get("status") == "STOPPED" and data.get("alive") is False and data.get("selected_runtime_id") == expected_runtime
         else:
             actual, accepted = data.get("worker"), result.get("worker")
             if not isinstance(actual, dict) or not isinstance(accepted, dict):
                 return False
-            valid = receipt.result_code == "RUNNING" and data.get("status") == "RUNNING" and data.get("alive") is True and actual.get("runtime_id") == accepted.get("runtime_id") == "bootstrap" and actual.get("deployment_generation") == accepted.get("deployment_generation")
+            valid = receipt.result_code == "RUNNING" and data.get("status") == "RUNNING" and data.get("alive") is True and actual.get("runtime_id") == accepted.get("runtime_id") == expected_runtime and actual.get("deployment_generation") == accepted.get("deployment_generation")
             if valid and actual.get("process_run_id") is None:
                 return None
             valid = valid and isinstance(actual.get("process_run_id"), str) and accepted.get("process_run_id") in (None, actual.get("process_run_id"))
         if not valid:
             return False
+        if source_action and name == "start":
+            # A retained launch receipt alone cannot attest to the installed
+            # source. Reobserve the exact live child and its verified READY
+            # binding before adopting the reconstructed Supervisor incarnation.
+            assert isinstance(staged, dict) and isinstance(actual, dict)
+            observed = client.observe_worker()
+            body = observed.data
+            if observed.result_code in {"UNAVAILABLE", "UNKNOWN", "IN_PROGRESS"}:
+                return None
+            if observed.result_code != "OK" or observed.supervisor_generation != inspected.supervisor_generation or not isinstance(body, dict):
+                return False
+            if body.get("binding_status") == "UNAVAILABLE":
+                return None
+            if body.get("binding_status") != "VERIFIED":
+                return False
+            binding, worker = body.get("runtime_binding"), body.get("observation")
+            if not isinstance(binding, dict) or not isinstance(worker, dict):
+                return False
+            fields = (("runtime_id", "installed_runtime_id"), ("content_identity", "content_identity"), ("source_sha", "source_sha"), ("distribution_version", "distribution_version"), ("lock_sha256", "lock_sha256"))
+            if any(not isinstance(staged.get(expected), str) or binding.get(field) != staged[expected] for field, expected in fields):
+                return False
+            if any(binding.get(field) != actual.get(field) or worker.get(field) != actual.get(field) for field in ("process_run_id", "deployment_generation")):
+                return False
         snapshot["current_supervisor_generation"] = inspected.supervisor_generation
         return self._save(record, version, snapshot)
 
@@ -527,7 +572,7 @@ class WorkerLifecycle:
             stage = snapshot.get("stage")
             identity = self._original_supervisor(client, snapshot)
             if identity == "CHANGED" and stage not in TERMINAL_STAGES and stage != "NEEDS_ATTENTION":
-                rebound = self._rebind_bootstrap_supervisor(record, version, snapshot, client)
+                rebound = self._rebind_retained_supervisor(record, version, snapshot, client)
                 if rebound:
                     return record
                 deadline = snapshot.get("deadline")
