@@ -964,3 +964,309 @@ def test_release_expired_recovery_new_login_cannot_replace_revoked_original_auth
     assert record.phase is OperationPhase.NEEDS_ATTENTION and record.effect.receipt is None
     assert record.authority == d.original.authority
     assert "recovery_read_only_heartbeats" not in d.journal.lifecycle_snapshot(d.operation_id)[1]
+
+
+@pytest.fixture
+def live_failed_release(release_flow, monkeypatch):
+    """Controlled signed-boundary evidence, not installed-worker acceptance."""
+    d = release_flow
+    observe = d.bridge.observe_worker
+    failure = {"failure_id": "f" * 32, "reason": "startup_reconciliation_abandoned"}
+
+    def failed_observation(nonce=None):
+        result = observe(nonce)
+        if d.bridge.selected == "runtime-new":
+            worker = result.data["observation"]
+            worker["lifecycle"] = {"state": "failed_awaiting_drain", "startup_reconciled": False, "daemon_serving": False, "startup_failure": dict(failure)}
+            worker["invocations"] = {"state": "draining", "unsettled_count": 1, "is_graceful_ready": False}
+        return result
+
+    monkeypatch.setattr(d.bridge, "observe_worker", failed_observation)
+    return SimpleNamespace(**vars(d), failure=failure)
+
+
+def _reach_release_stage(d, operation_id, stage):
+    runtime = d.app.state.management_runtime
+    for _ in range(40):
+        snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+        if snapshot is not None and snapshot[1]["stage"] == stage:
+            return snapshot[1]
+        runtime.lifecycle.process(runtime.journal.get(operation_id).record)
+    raise AssertionError(f"original release did not reach {stage}: {runtime.journal.lifecycle_snapshot(operation_id)}")
+
+
+def test_release_failed_live_candidate_retains_original_drain_across_reconstruction(live_failed_release, monkeypatch):
+    import copy
+
+    d = live_failed_release
+    dispatch = d.bridge.dispatch_worker_operation
+    barrier = {"held": True}
+
+    def hold_failed_drain(operation_id, operation, **kwargs):
+        worker = d.bridge.worker
+        result = dispatch(operation_id, operation, **kwargs)
+        if operation_id.startswith("f-"):
+            assert operation == "REQUEST_GRACEFUL_STOP"
+            assert kwargs["process_run_id"] == "run-new" and kwargs["deployment_generation"] == "generation-new"
+            d.bridge.worker = worker
+            d.bridge.receipts[operation_id]["status"] = "DRAINING"
+        return result
+
+    monkeypatch.setattr(d.bridge, "dispatch_worker_operation", hold_failed_drain)
+    read = d.bridge.read_worker_operation
+
+    def lose_failed_drain_receipt(operation_id):
+        if operation_id.startswith("f-") and barrier["held"]:
+            return d.bridge._result("UNKNOWN", {})
+        return read(operation_id)
+
+    monkeypatch.setattr(d.bridge, "read_worker_operation", lose_failed_drain_receipt)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", args)["operation_id"]
+        reserved = _reach_release_stage(d, operation_id, "RECOVERY_DRAINING")
+        assert reserved["recovery_attempts"] == 1 and reserved["startup_failure"] == d.failure
+        assert "recovery_drain" not in reserved["steps"]
+        _drive(d.app, operation_id, 10)
+        journal = d.app.state.management_runtime.journal
+        original = copy.deepcopy(journal.lifecycle_snapshot(operation_id)[1])
+        original_record = journal.get(operation_id).record
+        actions = list(d.bridge.actions)
+        assert actions[-1] == ("REQUEST_GRACEFUL_STOP", "f-" + operation_id)
+        assert original["steps"]["recovery_drain"]["state"] == "SENT_UNKNOWN"
+        d.bridge.supervisor_generation = "reconstructed-failed-drain-supervisor"
+        for _ in range(3):
+            held = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+            assert held["status"] == "RECOVERY_DRAINING" and held["recovery_attempts"] == 1
+            assert held["steps"] == original["steps"] and held["deadline"] == original["deadline"]
+            assert _call(client, token, "auto_coder_deploy_release_source", args)["operation_id"] == operation_id
+            assert _call(client, token, "auto_coder_deploy_release_source", {**args, "idempotency_key": "competing"})["status"] == "BUSY"
+            assert d.bridge.actions == actions
+        barrier["held"] = False
+        # The real Supervisor retains DRAINING even after a worker terminal
+        # receipt exists, until the separate OS lifetime observation is absent.
+        _drive(d.app, operation_id, 3)
+        assert d.bridge.actions == actions
+        d.bridge.worker = None
+        d.bridge.receipts["f-" + operation_id]["status"] = "STOPPED"
+        _drive(d.app, operation_id, 35)
+        done = d.app.state.management_runtime.lifecycle.project(journal.get(operation_id).record)
+        assert done["status"] == "FAILED" and done["recovery_state"] == "CONFIRMED", done
+        assert done["reason"] == "new_worker_failed_previous_runtime_restored"
+        assert done["recovery_attempts"] == 1 and done["original_deadline"] == original["original_deadline"]
+        assert d.bridge.actions == [*actions, ("RECOVER_PREVIOUS", "r-" + operation_id)]
+        assert done["steps"]["recovery_drain"]["expected_digest"] == original["steps"]["recovery_drain"]["expected_digest"]
+        finished_record = journal.get(operation_id).record
+        assert finished_record.authority == original_record.authority
+        assert finished_record.effect.attempt_id == original_record.effect.attempt_id
+        assert finished_record.effect.correlation_identity == original_record.effect.correlation_identity
+
+
+@pytest.mark.parametrize("boundary", ["RECOVERY_DRAINING", "RESTORING"])
+@pytest.mark.parametrize("loss", ["grant", "policy"])
+def test_failed_live_candidate_checks_original_authority_before_each_recovery_effect(live_failed_release, boundary, loss):
+    d = live_failed_release
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", _release_arguments(d, promotion))["operation_id"]
+        _reach_release_stage(d, operation_id, boundary)
+        actions = list(d.bridge.actions)
+        if loss == "grant":
+            with d.grants.store.connect() as db:
+                db.execute("UPDATE grants SET revoked=?", (d.state["now"],))
+        else:
+            policy = d.settings.operating_policy_path.read_text(encoding="utf-8")
+            d.settings.operating_policy_path.write_text(policy.replace("profile: full", "profile: observe"), encoding="utf-8")
+        _drive(d.app, operation_id, 20)
+        runtime = d.app.state.management_runtime
+        result = runtime.lifecycle.project(runtime.journal.get(operation_id).record)
+        assert result["status"] == "NEEDS_ATTENTION"
+        assert result["reason"] == ("original_authority_denied" if loss == "grant" else "current_policy_denied")
+        assert result["recovery_attempts"] == 1 and d.bridge.actions == actions
+
+
+@pytest.mark.parametrize("damage", ["missing", "malformed", "serving", "reconciled", "gate-running", "wrong-run", "wrong-source", "unverified", "binding-run", "foreign-supervisor"])
+def test_live_release_recovery_requires_exact_typed_failed_candidate(live_failed_release, monkeypatch, damage):
+    d = live_failed_release
+    observe = d.bridge.observe_worker
+
+    def corrupted(nonce=None):
+        result = observe(nonce)
+        if d.bridge.selected == "runtime-new":
+            worker = result.data["observation"]
+            if damage == "missing":
+                worker["lifecycle"].pop("startup_failure")
+            elif damage == "malformed":
+                worker["lifecycle"]["startup_failure"]["failure_id"] = "timeout"
+            elif damage == "serving":
+                worker["lifecycle"]["daemon_serving"] = True
+            elif damage == "reconciled":
+                worker["lifecycle"]["startup_reconciled"] = True
+            elif damage == "gate-running":
+                worker["invocations"]["state"] = "running"
+            elif damage == "wrong-run":
+                worker["process_run_id"] = "foreign"
+            elif damage == "wrong-source":
+                worker["artifact"]["source_revision"]["value"] = "0" * 40
+            elif damage == "unverified":
+                result.data["binding_status"] = "UNAVAILABLE"
+            elif damage == "binding-run":
+                result.data["runtime_binding"]["process_run_id"] = "foreign"
+            elif damage == "foreign-supervisor":
+                result = replace(result, supervisor_generation="foreign-supervisor")
+        return result
+
+    monkeypatch.setattr(d.bridge, "observe_worker", corrupted)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", _release_arguments(d, promotion))["operation_id"]
+        _drive(d.app, operation_id, 30)
+        result = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert result["status"] == "RECONCILING" and result["recovery_attempts"] == 0
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+
+
+@pytest.fixture
+def expired_live_failure_drain(live_failed_release, monkeypatch):
+    import copy
+    import time
+
+    d = live_failed_release
+    dispatch = d.bridge.dispatch_worker_operation
+
+    def hold_original_drain(operation_id, operation, **kwargs):
+        worker = d.bridge.worker
+        response = dispatch(operation_id, operation, **kwargs)
+        if operation_id.startswith("f-"):
+            d.bridge.worker = worker
+            d.bridge.receipts[operation_id]["status"] = "DRAINING"
+        return response
+
+    monkeypatch.setattr(d.bridge, "dispatch_worker_operation", hold_original_drain)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", args)["operation_id"]
+        _reach_release_stage(d, operation_id, "RECOVERY_DRAINING")
+        _drive(d.app, operation_id, 5)
+        runtime = d.app.state.management_runtime
+        revision, snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+        snapshot["deadline"] = time.time() - 1
+        assert runtime.journal.lifecycle_save(operation_id, revision, snapshot)
+        original = copy.deepcopy(snapshot)
+        actions = list(d.bridge.actions)
+        d.bridge.supervisor_generation = "reconstructed-expired-drain"
+        _drive(d.app, operation_id, 3)
+        assert runtime.journal.get(operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
+        assert runtime.journal.lifecycle_snapshot(operation_id)[1]["steps"] == original["steps"]
+        yield SimpleNamespace(**vars(d), client=client, token=token, arguments=args, operation_id=operation_id, runtime=runtime, snapshot=original, actions=actions)
+
+
+def test_expired_recovery_drain_settles_original_failure_without_launch_or_deadline_reset(expired_live_failure_drain):
+    d = expired_live_failure_drain
+    d.bridge.worker = None
+    d.bridge.receipts["f-" + d.operation_id]["status"] = "STOPPED"
+    _drive(d.app, d.operation_id, 10)
+    result = d.runtime.lifecycle.project(d.runtime.journal.get(d.operation_id).record)
+    assert result["status"] == "FAILED" and result["recovery_state"] == "NOT_LAUNCHED", result
+    assert result["reason"] == "failed_candidate_stopped_recovery_not_launched"
+    assert result["recovery_attempts"] == 1 and "recovery" not in result["steps"]
+    assert result["deadline"] == d.snapshot["deadline"] and result["original_deadline"] == d.snapshot["original_deadline"]
+    assert result["steps"]["recovery_drain"]["state"] == "CONFIRMED"
+    for field in ("operation_id", "sent_at", "owner_generation", "attempt_id", "correlation_identity", "expected_digest"):
+        assert result["steps"]["recovery_drain"][field] == d.snapshot["steps"]["recovery_drain"][field]
+    assert d.bridge.actions == d.actions
+    settled = d.runtime.journal.get(d.operation_id).record
+    assert settled.effect.state is EffectState.CONFIRMED
+    assert settled.effect.receipt.correlation_identity == settled.effect.correlation_identity
+    assert settled.effect.receipt.observation_source == "supervisor-and-worker-lifecycle-journal"
+    for _ in range(3):
+        replay = _call(d.client, d.token, "auto_coder_deploy_release_source", d.arguments)
+        assert replay["operation_id"] == d.operation_id and replay["status"] == "FAILED"
+        assert d.bridge.actions == d.actions
+
+
+@pytest.mark.parametrize("damage", ["receipt-unavailable", "digest", "live-child", "selected-runtime", "other-unknown", "grant", "grant-after-proof", "snapshot-write", "terminal-write"])
+def test_expired_failed_drain_keeps_lane_until_complete_original_proof_is_durable(expired_live_failure_drain, monkeypatch, damage):
+    d = expired_live_failure_drain
+    if damage != "live-child":
+        d.bridge.worker = None
+    d.bridge.receipts["f-" + d.operation_id]["status"] = "STOPPED"
+    if damage == "receipt-unavailable":
+        monkeypatch.setattr(d.bridge, "read_worker_operation", lambda _operation_id: d.bridge._result("UNAVAILABLE", {}))
+    elif damage == "digest":
+        d.bridge.receipts["f-" + d.operation_id]["intent_digest"] = "foreign"
+    elif damage == "selected-runtime":
+        d.bridge.selected = "foreign"
+    elif damage == "other-unknown":
+        revision, snapshot = d.runtime.journal.lifecycle_snapshot(d.operation_id)
+        snapshot["steps"]["start"]["state"] = "SENT_UNKNOWN"
+        assert d.runtime.journal.lifecycle_save(d.operation_id, revision, snapshot)
+    elif damage == "grant":
+        with d.grants.store.connect() as db:
+            db.execute("UPDATE grants SET revoked=?", (d.state["now"],))
+    elif damage == "grant-after-proof":
+        read = d.bridge.read_worker_operation
+
+        def revoke_during_original_read(operation_id):
+            result = read(operation_id)
+            with d.grants.store.connect() as db:
+                db.execute("UPDATE grants SET revoked=?", (d.state["now"],))
+            return result
+
+        monkeypatch.setattr(d.bridge, "read_worker_operation", revoke_during_original_read)
+    elif damage == "snapshot-write":
+        save = d.runtime.lifecycle._save
+        monkeypatch.setattr(d.runtime.lifecycle, "_save", lambda record, revision, snapshot: False if snapshot.get("stage") == "FAILED" else save(record, revision, snapshot))
+    elif damage == "terminal-write":
+        from auto_coder.management.operation_store import MutationResult
+
+        resolve = d.runtime.journal.resolve_needs_attention
+        monkeypatch.setattr(d.runtime.journal, "resolve_needs_attention", lambda *_args, **_kwargs: MutationResult(MutationStatus.UNAVAILABLE))
+    _drive(d.app, d.operation_id, 10)
+    record = d.runtime.journal.get(d.operation_id).record
+    assert record.phase is OperationPhase.NEEDS_ATTENTION and record.effect.state is EffectState.SENT_UNKNOWN
+    snapshot = d.runtime.journal.lifecycle_snapshot(d.operation_id)[1]
+    assert snapshot["deadline"] == d.snapshot["deadline"] and snapshot["original_deadline"] == d.snapshot["original_deadline"]
+    assert "recovery" not in snapshot["steps"] and d.bridge.actions == d.actions
+    if damage not in {"grant", "grant-after-proof"}:
+        competing = _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "idempotency_key": "expired-competing"})
+        assert competing["status"] == "BUSY" and competing["operation_id"] == d.operation_id
+    if damage in {"snapshot-write", "terminal-write"}:
+        if damage == "snapshot-write":
+            monkeypatch.setattr(d.runtime.lifecycle, "_save", save)
+        else:
+            monkeypatch.setattr(d.runtime.journal, "resolve_needs_attention", resolve)
+        _drive(d.app, d.operation_id, 6)
+        completed = d.runtime.lifecycle.project(d.runtime.journal.get(d.operation_id).record)
+        assert completed["status"] == "FAILED" and completed["recovery_state"] == "NOT_LAUNCHED"
+        assert d.bridge.actions == d.actions
+
+
+@pytest.mark.parametrize("boundary", ["reservation", "recovery_drain"])
+def test_live_failed_recovery_persistence_failure_never_dispatches(live_failed_release, monkeypatch, boundary):
+    d = live_failed_release
+    runtime = d.app.state.management_runtime
+    save = runtime.lifecycle._save
+
+    def unavailable(record, revision, snapshot):
+        if snapshot.get("stage") == "RECOVERY_DRAINING" and (boundary == "reservation" or "recovery_drain" in snapshot["steps"]):
+            return False
+        return save(record, revision, snapshot)
+
+    monkeypatch.setattr(runtime.lifecycle, "_save", unavailable)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", _release_arguments(d, promotion))["operation_id"]
+        _drive(d.app, operation_id, 35)
+        persisted = runtime.journal.lifecycle_snapshot(operation_id)[1]
+        assert persisted["stage"] == ("RECONCILING" if boundary == "reservation" else "RECOVERY_DRAINING")
+        assert persisted["recovery_attempts"] == (0 if boundary == "reservation" else 1)
+        assert "recovery_drain" not in persisted["steps"]
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]

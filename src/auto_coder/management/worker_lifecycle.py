@@ -15,6 +15,7 @@ from pydantic import StrictInt
 
 from auto_coder.operating_policy import ActionClass
 from auto_coder.util.gh_cache import GitHubGitDataClient
+from auto_coder.worker_startup_failure import observed_startup_failure, startup_failure_fact
 
 from .action_scopes import DEPLOY_SCOPE, READ_SCOPE
 from .action_scopes import AcceptedAuthority as GrantAuthority
@@ -330,6 +331,7 @@ class WorkerLifecycle:
             new_worker=snapshot.get("new_worker"),
             steps=snapshot.get("steps"),
             heartbeats=snapshot.get("heartbeats"),
+            startup_failure=snapshot.get("startup_failure"),
             recovery_attempts=snapshot.get("recovery_attempts"),
             recovery_state=snapshot.get("recovery_state", "NOT_ATTEMPTED"),
             restored_worker=snapshot.get("restored_worker"),
@@ -398,13 +400,13 @@ class WorkerLifecycle:
         recovery = "recovery" in steps
         if recovery and not source_action:
             return False
-        name = "recovery" if recovery else "start" if "start" in steps else "drain"
+        name = "recovery" if recovery else "recovery_drain" if "recovery_drain" in steps else "start" if "start" in steps else "drain"
         staged = snapshot.get("staged")
         expected_runtime = incumbent.get("runtime_id")
         if source_action:
             if not isinstance(staged, dict) or not isinstance(staged.get("installed_runtime_id"), str):
                 return False
-            if name == "start":
+            if name in {"start", "recovery_drain"}:
                 expected_runtime = staged["installed_runtime_id"]
         if not isinstance(expected_runtime, str) or not expected_runtime:
             return False
@@ -413,6 +415,21 @@ class WorkerLifecycle:
             return False
         previous = snapshot.get("previous_binding")
         failed = snapshot.get("new_worker")
+        if name == "recovery_drain":
+            if (
+                not source_action
+                or snapshot.get("stage") not in ({"NEEDS_ATTENTION"} if attention_recovery else {"RECOVERY_DRAINING", "RESTORING"})
+                or snapshot.get("previous_runtime_verified") is not True
+                or snapshot.get("recovery_attempts") != 1
+                or startup_failure_fact(snapshot.get("startup_failure")) is None
+                or not isinstance(failed, dict)
+                or failed.get("runtime_id") != expected_runtime
+                or not isinstance(failed.get("process_run_id"), str)
+                or not isinstance(failed.get("deployment_generation"), str)
+                or step.get("operation_id") != "f-" + record.operation_id
+                or step.get("state") not in {"SENT_UNKNOWN", "CONFIRMED"}
+            ):
+                return False
         if recovery:
             if (
                 snapshot.get("previous_runtime_verified") is not True
@@ -451,8 +468,8 @@ class WorkerLifecycle:
             return None
         if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != receipt.supervisor_generation or inspected.supervisor_generation != receipt.supervisor_generation:
             return False
-        if name == "drain":
-            valid = receipt.result_code == "STOPPED" and data.get("status") == "STOPPED" and data.get("alive") is False and data.get("selected_runtime_id") == expected_runtime
+        if name in {"drain", "recovery_drain"}:
+            valid = receipt.result_code == "STOPPED" and data.get("status") == "STOPPED" and data.get("alive") is False and data.get("worker") is None and data.get("selected_runtime_id") == expected_runtime
         else:
             actual, accepted = data.get("worker"), result.get("worker")
             if not isinstance(actual, dict) or not isinstance(accepted, dict):
@@ -508,6 +525,31 @@ class WorkerLifecycle:
             worker_observation = worker
         actual_worker = data.get("worker")
         return RetainedSupervisorEvidence(inspected.supervisor_generation, result, actual_worker if isinstance(actual_worker, dict) else None, worker_observation)
+
+    def _reconcile_attention_recovery_drain(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> OperationRecord:
+        """Settle an exited failed child without launching an expired recovery."""
+        if record.phase is not OperationPhase.NEEDS_ATTENTION:
+            return self._settle(record, "NEEDS_ATTENTION", str(snapshot.get("reason", "worker_lifecycle")))
+        if self._authority_refusal(record) is not None:
+            return record
+        steps = snapshot.get("steps")
+        if not isinstance(steps, dict) or "recovery" in steps:
+            return record
+        # No other possibly sent effect may be abandoned by this resolution.
+        if any(name not in {"prepare", "drain", "start", "recovery_drain"} or not isinstance(step, dict) or (name != "recovery_drain" and step.get("state") != "CONFIRMED") for name, step in steps.items()):
+            return record
+        evidence = self._retained_supervisor_evidence(record, snapshot, client, attention_recovery=True)
+        if not isinstance(evidence, RetainedSupervisorEvidence) or evidence.worker is not None:
+            return record
+        step = steps.get("recovery_drain")
+        if not isinstance(step, dict) or self._authority_refusal(record) is not None:
+            return record
+        step.update(state="CONFIRMED", observation=evidence.receipt, observed_at=time.time())
+        snapshot.update(current_supervisor_generation=evidence.supervisor_generation, recovery_state="NOT_LAUNCHED")
+        # The original deadlines stay untouched. _finish first persists the
+        # correlated terminal snapshot, then resolves the operation row with
+        # the original effect identity. Failure of either write retains its lane.
+        return self._finish(record, version, snapshot, "FAILED", "failed_candidate_stopped_recovery_not_launched")
 
     def _reconcile_attention_recovery(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> OperationRecord:
         """Resolve only a retained recovery using reads, even after its deadline."""
@@ -603,7 +645,7 @@ class WorkerLifecycle:
                 if currently_selected != snapshot["accepted_evidence"]:
                     reason = "original_beta_selection_or_proof_changed" if record.intent.action == "deploy_beta_source" else "original_source_selection_or_proof_changed"
                     return self._finish(record, version, snapshot, "SUPERSEDED", reason)
-            effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r"}[name] + "-" + record.operation_id
+            effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r", "recovery_drain": "f"}[name] + "-" + record.operation_id
             steps[name] = {"operation_id": effect_id, "state": "SENT_UNKNOWN", "sent_at": time.time(), "observation": None, "owner_generation": record.effect.owner_generation, "attempt_id": record.effect.attempt_id, "correlation_identity": record.effect.correlation_identity}
             if name == "recovery":
                 snapshot["recovery_state"] = "UNKNOWN"
@@ -611,8 +653,8 @@ class WorkerLifecycle:
                 from auto_coder.worker_supervisor import WorkerSupervisor
 
                 failed = snapshot.get("new_worker")
-                expected_run = fence["process_run_id"] if name == "drain" else failed.get("process_run_id") if name == "recovery" and isinstance(failed, dict) else None
-                expected_generation = fence["deployment_generation"] if name == "drain" else failed.get("deployment_generation") if name == "recovery" and isinstance(failed, dict) else None
+                expected_run = fence["process_run_id"] if name == "drain" else failed.get("process_run_id") if name in {"recovery", "recovery_drain"} and isinstance(failed, dict) else None
+                expected_generation = fence["deployment_generation"] if name == "drain" else failed.get("deployment_generation") if name in {"recovery", "recovery_drain"} and isinstance(failed, dict) else None
                 staged = snapshot.get("staged")
                 selected_runtime = fence["runtime_id"] if name in {"drain", "start"} else staged.get("installed_runtime_id") if isinstance(staged, dict) else None
                 request = {"operation": operation, "expected_supervisor_incarnation": client.supervisor_generation, "expected_process_run_id": expected_run, "expected_generation": expected_generation, "expected_runtime_id": selected_runtime, "runtime_id": runtime_id}
@@ -640,8 +682,8 @@ class WorkerLifecycle:
                 response = client.prepare_version(effect_id, str(snapshot["source_sha"]))
             else:
                 failed = snapshot.get("new_worker")
-                expected_run = fence["process_run_id"] if name == "drain" else failed.get("process_run_id") if name == "recovery" and isinstance(failed, dict) else None
-                expected_generation = fence["deployment_generation"] if name == "drain" else failed.get("deployment_generation") if name == "recovery" and isinstance(failed, dict) else None
+                expected_run = fence["process_run_id"] if name == "drain" else failed.get("process_run_id") if name in {"recovery", "recovery_drain"} and isinstance(failed, dict) else None
+                expected_generation = fence["deployment_generation"] if name == "drain" else failed.get("deployment_generation") if name in {"recovery", "recovery_drain"} and isinstance(failed, dict) else None
                 staged = snapshot.get("staged")
                 selected_runtime = fence["runtime_id"] if name in {"drain", "start"} else staged.get("installed_runtime_id") if isinstance(staged, dict) else None
                 if (expected_run is not None and not isinstance(expected_run, str)) or (expected_generation is not None and not isinstance(expected_generation, str)) or (selected_runtime is not None and not isinstance(selected_runtime, str)):
@@ -707,6 +749,8 @@ class WorkerLifecycle:
                     steps = snapshot.get("steps")
                     if record.intent.action == "deploy_release_source" and isinstance(steps, dict) and "recovery" in steps:
                         return self._reconcile_attention_recovery(record, version, snapshot, client)
+                    if record.intent.action == "deploy_release_source" and isinstance(steps, dict) and "recovery_drain" in steps:
+                        return self._reconcile_attention_recovery_drain(record, version, snapshot, client)
                     self._observe_uncertain_steps(record, version, snapshot, client)
                 return self._settle(record, str(stage), str(snapshot.get("reason", "worker_lifecycle")))
             if record.effect.state is EffectState.NOT_SENT:
@@ -826,20 +870,6 @@ class WorkerLifecycle:
                 worker = observation.data.get("observation")
                 if not isinstance(worker, dict) or worker.get("deployment_generation") != new_worker.get("deployment_generation") or worker.get("process_run_id") != observed_worker.get("process_run_id"):
                     return record
-                lifecycle, invocation, heartbeat = worker.get("lifecycle"), worker.get("invocations"), worker.get("heartbeat")
-                if (
-                    not isinstance(lifecycle, dict)
-                    or not isinstance(invocation, dict)
-                    or not isinstance(heartbeat, dict)
-                    or lifecycle.get("state") != "running"
-                    or lifecycle.get("startup_reconciled") is not True
-                    or lifecycle.get("daemon_serving") is not True
-                    or invocation.get("state") != "running"
-                    or heartbeat.get("available") is not True
-                    or type(heartbeat.get("sequence")) is not int
-                    or not str(heartbeat.get("stage", "")).startswith("producer:")
-                ):
-                    return record
                 staged = snapshot.get("staged")
                 if isinstance(staged, dict):
                     binding = observation.data.get("runtime_binding")
@@ -864,6 +894,34 @@ class WorkerLifecycle:
                             or artifact_version.get("value") != staged["distribution_version"]
                         ):
                             return record
+                failure = observed_startup_failure(worker)
+                if (
+                    record.intent.action == "deploy_release_source"
+                    and snapshot.get("previous_runtime_verified") is True
+                    and snapshot.get("recovery_attempts") == 0
+                    and failure is not None
+                    and observation.result_code == "OK"
+                    and observation.supervisor_generation == inspected.supervisor_generation
+                    and isinstance(observation.data.get("runtime_binding"), dict)
+                    and all(observation.data["runtime_binding"].get(key) == worker.get(key) for key in ("process_run_id", "deployment_generation"))
+                ):
+                    snapshot.update(stage="RECOVERY_DRAINING", recovery_attempts=1, recovery_state="ATTEMPTED", startup_failure=asdict(failure), deadline=time.time() + 300)
+                    self._save(record, version, snapshot)
+                    return record
+                lifecycle, invocation, heartbeat = worker.get("lifecycle"), worker.get("invocations"), worker.get("heartbeat")
+                if (
+                    not isinstance(lifecycle, dict)
+                    or not isinstance(invocation, dict)
+                    or not isinstance(heartbeat, dict)
+                    or lifecycle.get("state") != "running"
+                    or lifecycle.get("startup_reconciled") is not True
+                    or lifecycle.get("daemon_serving") is not True
+                    or invocation.get("state") != "running"
+                    or heartbeat.get("available") is not True
+                    or type(heartbeat.get("sequence")) is not int
+                    or not str(heartbeat.get("stage", "")).startswith("producer:")
+                ):
+                    return record
                 beats = snapshot["heartbeats"]
                 assert isinstance(beats, list)
                 if not beats or heartbeat["sequence"] > beats[-1]:
@@ -871,6 +929,29 @@ class WorkerLifecycle:
                     if len(beats) >= 2:
                         return self._finish(record, version, snapshot, "SUCCEEDED", "real_installed_worker_and_advancing_producer_heartbeats_verified")
                     self._save(record, version, snapshot)
+                return record
+            if stage == "RECOVERY_DRAINING":
+                steps = snapshot["steps"]
+                assert isinstance(steps, dict)
+                step = steps.get("recovery_drain")
+                if not isinstance(step, dict) or step.get("state") != "CONFIRMED":
+                    return self._step(record, version, snapshot, "recovery_drain", client, "REQUEST_GRACEFUL_STOP", None)
+                observation = step.get("observation")
+                inspected = client.inspect_supervisor()
+                failed = snapshot.get("new_worker")
+                if (
+                    not isinstance(observation, dict)
+                    or observation.get("status") != "STOPPED"
+                    or not isinstance(inspected.data, dict)
+                    or inspected.data.get("status") != "STOPPED"
+                    or inspected.data.get("alive") is not False
+                    or inspected.data.get("worker") is not None
+                    or not isinstance(failed, dict)
+                    or inspected.data.get("selected_runtime_id") != failed.get("runtime_id")
+                ):
+                    return record
+                snapshot.update(stage="RESTORING", deadline=time.time() + 150)
+                self._save(record, version, snapshot)
                 return record
             if stage == "RESTORING":
                 steps = snapshot["steps"]
@@ -941,7 +1022,7 @@ class WorkerLifecycle:
         if not isinstance(steps, dict):
             return
         for name, step in steps.items():
-            if not isinstance(step, dict) or step.get("state") != "SENT_UNKNOWN" or name not in {"prepare", "drain", "start", "recovery"}:
+            if not isinstance(step, dict) or step.get("state") != "SENT_UNKNOWN" or name not in {"prepare", "drain", "start", "recovery", "recovery_drain"}:
                 continue
             effect_id = step.get("operation_id")
             if not isinstance(effect_id, str):

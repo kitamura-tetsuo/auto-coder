@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -65,7 +66,7 @@ from .github_pending_work import (
     get_pending_work_store,
     repository_ownership_key,
 )
-from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
+from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor, GovernorStateError
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
     OwnershipStartDecision,
@@ -188,6 +189,7 @@ from .util.github_cache import get_github_cache
 from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubReadCancelled, GitHubRequestError, cancel_github_reads_when, configure_github_request_boundary, is_issue_resource_read
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
+from .worker_startup_failure import StartupReconciliationFailure
 
 logger = get_logger(__name__)
 
@@ -963,6 +965,7 @@ class EngineLifecycle(str, Enum):
 
     RUNNING = "running"
     DRAINING = "draining"
+    FAILED_AWAITING_DRAIN = "failed_awaiting_drain"
     STOPPED = "stopped"
     FORCED = "forced"
 
@@ -1025,6 +1028,8 @@ class AutomationEngine:
         self._refill_faults_lock = threading.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
+        self.startup_failure_recovery_enabled = False
+        self.startup_failure: StartupReconciliationFailure | None = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_target_observations = OpenTargetObservations()
@@ -1102,7 +1107,7 @@ class AutomationEngine:
     def request_graceful_shutdown(self, reason: str) -> bool:
         """Stop admission and request a drain. Return true for the first request."""
         with self._lifecycle_lock:
-            if self._lifecycle is not EngineLifecycle.RUNNING:
+            if self._lifecycle not in {EngineLifecycle.RUNNING, EngineLifecycle.FAILED_AWAITING_DRAIN}:
                 return False
             self._lifecycle = EngineLifecycle.DRAINING
             self.daemon_serving = False
@@ -2998,7 +3003,9 @@ class AutomationEngine:
             # pending-work scheduler, independent of the ordinary worker
             # pool started below, which must not begin before recovery
             # succeeds.
-            await self._perform_startup_reconciliation(repo_name)
+            if not await self._reconcile_startup_or_retain_failure(repo_name, [pending_work_task, merge_operation_task, claude_followup_recovery_task]):
+                local_job_runner.close(wait=False)
+                return
 
         local_job_task = asyncio.create_task(poll_local_jobs(), name="durable-local-job-runner")
 
@@ -3077,24 +3084,7 @@ class AutomationEngine:
                 # serving while cleanup is blocked on owned work.
                 self.daemon_serving = False
             if shutdown_wait in done:
-                # Admission stopped synchronously when the lifecycle changed.
-                # Cancel loop waiters, but shielded synchronous operations retain
-                # ownership and make their callers wait for the true boundary.
-                for task in all_loop_tasks:
-                    task.cancel()
-                await self._wait_for_protected_invocations()
-                await self._wait_for_interrupted_local_work()
-                await asyncio.gather(*all_loop_tasks, return_exceptions=True)
-                if self.lifecycle is EngineLifecycle.FORCED:
-                    logger.error("Automation engine force-stopped before its local drain completed")
-                    get_health_monitor().record_event("engine_stop", "forced", "")
-                else:
-                    with self._lifecycle_lock:
-                        self._lifecycle = EngineLifecycle.STOPPED
-                    logger.info("Automation engine graceful drain completed")
-                    get_health_monitor().record_event("engine_stop", "gracefully drained", "")
-                    if self.graceful_terminal_observer is not None:
-                        await asyncio.to_thread(self.graceful_terminal_observer, "graceful drain completed")
+                await self._complete_graceful_drain(all_loop_tasks)
                 return
 
             shutdown_wait.cancel()
@@ -3133,6 +3123,79 @@ class AutomationEngine:
             shutdown_wait.cancel()
             local_job_runner.close(wait=False)
             get_health_monitor().log_snapshot(reason="engine_stop")
+
+    async def _complete_graceful_drain(self, tasks: list[asyncio.Task[Any]]) -> None:
+        """Use the same owned checkpoints for serving and failed-startup drains."""
+        # Admission stopped synchronously when the lifecycle changed.
+        # Cancel loop waiters, but shielded synchronous operations retain
+        # ownership and make their callers wait for the true boundary.
+        for task in tasks:
+            task.cancel()
+        await self._wait_for_protected_invocations()
+        await self._wait_for_interrupted_local_work()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self.lifecycle is EngineLifecycle.FORCED:
+            logger.error("Automation engine force-stopped before its local drain completed")
+            get_health_monitor().record_event("engine_stop", "forced", "")
+        else:
+            with self._lifecycle_lock:
+                self._lifecycle = EngineLifecycle.STOPPED
+            logger.info("Automation engine graceful drain completed")
+            get_health_monitor().record_event("engine_stop", "gracefully drained", "")
+            if self.graceful_terminal_observer is not None:
+                await asyncio.to_thread(self.graceful_terminal_observer, "graceful drain completed")
+
+    async def _reconcile_startup_or_retain_failure(self, repo_name: str, tasks: list[asyncio.Task[Any]]) -> bool:
+        """Irrevocably abandon this startup lifetime, then await normal shutdown.
+
+        This is a controller disposition, not a claim that an exception type
+        proves a permanent external cause. Operational/deferred errors and
+        cancellation are not failure authority.
+        This applies only to a managed release bridge, never an ordinary CLI or
+        beta daemon, and only before the steady-state task set is created.
+        """
+        try:
+            await self._perform_startup_reconciliation(repo_name)
+            return True
+        except Exception as error:
+            # An explicit operational cause remains operational even when a
+            # reconciliation adapter wraps it. Never turn deferral, transport,
+            # storage unavailability or cancellation into failure authority.
+            pending: list[BaseException] = [error]
+            seen: set[int] = set()
+            while pending:
+                cause = pending.pop()
+                if id(cause) in seen:
+                    continue
+                seen.add(id(cause))
+                if isinstance(
+                    cause, (GitHubRequestError, GitHubReadCancelled, LocalJobStoreUnavailable, PendingWorkPersistenceError, ImplementationSlotUnavailable, ImplementationHierarchyUnavailable, ParentOperationalError, GovernorStateError, OSError, sqlite3.Error, httpx.HTTPError, asyncio.CancelledError)
+                ):
+                    raise
+                pending.extend(value for value in (cause.__cause__, cause.__context__) if value is not None)
+                if isinstance(cause, BaseExceptionGroup):
+                    pending.extend(cause.exceptions)
+            if not self.startup_failure_recovery_enabled or self.daemon_serving:
+                raise
+            with self._lifecycle_lock:
+                if self._lifecycle is not EngineLifecycle.RUNNING:
+                    raise
+                self.startup_failure = StartupReconciliationFailure(uuid.uuid4().hex)
+                self.startup_reconciled = False
+                self._lifecycle = EngineLifecycle.FAILED_AWAITING_DRAIN
+                self.daemon_serving = False
+            self.invocation_gate.close_admission("startup_reconciliation_abandoned")
+            logger.error("Managed release startup reconciliation abandoned; retaining owned work until graceful drain")
+            get_health_monitor().record_event("engine_startup_failure", "startup_reconciliation_abandoned", "")
+            assert self._shutdown_event is not None
+            try:
+                await self._shutdown_event.wait()
+                await self._complete_graceful_drain(tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            return False
 
     def _get_local_job_store(self) -> LocalJobStore:
         """Return the engine-wide durable authority for daemon and explicit routes."""
@@ -3561,7 +3624,9 @@ class AutomationEngine:
             [OpenTarget("issue", issue.number, created_at=issue.created_at or "") for issue in entities.issues] + [OpenTarget("pr", number) for number in entities.pull_requests],
             observation_revision,
         )
-        self.startup_reconciled = True
+        with self._lifecycle_lock:
+            if self.startup_failure is None:
+                self.startup_reconciled = True
         logger.info(f"Startup GitHub reconciliation completed for {repo_name}: " f"{len(entities.issues)} Issues and {len(entities.pull_requests)} PRs invalidated")
 
     async def _producer_loop(self, repo_name: str) -> None:

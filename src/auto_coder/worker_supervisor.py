@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 
 from loguru import logger
 
+from .worker_startup_failure import observed_startup_failure, startup_failure_fact
 from .worker_supervisor_store import SupervisorStore
 from .worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
 
@@ -272,6 +273,17 @@ class WorkerSupervisor:
                             "start_token": worker["start_token"],
                             "observed_at": worker["binding_observed_at"],
                         }
+                        if self.config.channel == "release":
+                            worker["last_verified_binding"] = dict(worker["runtime_binding"])
+                            failure = observed_startup_failure(observation)
+                            if failure is not None:
+                                retained = worker.get("startup_failure")
+                                if retained is None or retained == asdict(failure):
+                                    worker["startup_failure"] = asdict(failure)
+                                else:
+                                    worker["startup_failure_conflict"] = True
+                                    worker["binding_status"] = "CONFLICT"
+                                    worker.pop("runtime_binding", None)
             else:
                 worker["binding_status"] = "UNAVAILABLE"
             self.store.write(state)
@@ -467,10 +479,29 @@ class WorkerSupervisor:
             self.store.write(state)
             return {**result, "operation_id": operation_id, "source_sha": record["source_sha"]}
 
+    def stopped_startup_failure(self, state: dict[str, object]) -> dict[str, object] | None:
+        """Return only the exact failed lifetime with genuine terminal and OS exit."""
+        failed = state.get("last_worker")
+        if (
+            self.config.channel != "release"
+            or state.get("worker") is not None
+            or not state.get("stop_verified")
+            or not isinstance(failed, dict)
+            or failed.get("startup_failure_conflict")
+            or startup_failure_fact(failed.get("startup_failure")) is None
+            or state.get("selected_runtime_id") != failed.get("runtime_id")
+            or self._is_alive(failed)
+            or not self._receipt(failed)
+        ):
+            return None
+        return failed
+
     def _fences_match(self, request: dict[str, Any], state: dict[str, Any]) -> bool:
         if "expected_supervisor_incarnation" in request and request["expected_supervisor_incarnation"] != self.incarnation:
             return False
         worker = state.get("worker")
+        if worker is None and request.get("operation") == "RECOVER_PREVIOUS":
+            worker = self.stopped_startup_failure(state)
         current = (
             worker.get("process_run_id") if isinstance(worker, dict) else None,
             worker.get("deployment_generation") if isinstance(worker, dict) else None,
@@ -554,6 +585,23 @@ class WorkerSupervisor:
     def _recover_previous(self, state: dict[str, Any], runtime: dict[str, Any] | None, operation_id: str) -> dict[str, Any]:
         """One separately journaled prior-READY recovery after actual child exit."""
         failed, previous = state.get("worker"), state.get("last_worker")
+        if failed is None:
+            failed = self.stopped_startup_failure(state)
+            if failed is None:
+                return {"status": "CONFLICT"}
+            previous = failed.get("recovery_parent")
+            if not isinstance(previous, dict) or not isinstance(previous.get("last_verified_binding"), dict):
+                return {"status": "CONFLICT"}
+            binding = previous["last_verified_binding"]
+            ready = previous.get("ready")
+            if (
+                not isinstance(ready, dict)
+                or any(not isinstance(ready.get(key), str) or not ready[key] or binding.get(key) != ready[key] for key in ("content_identity", "source_sha", "distribution_version", "lock_sha256"))
+                or binding.get("runtime_id") != previous.get("runtime_id")
+                or binding.get("process_run_id") != previous.get("process_run_id")
+                or binding.get("deployment_generation") != previous.get("deployment_generation")
+            ):
+                return {"status": "CONFLICT"}
         if (
             not isinstance(failed, dict)
             or not isinstance(previous, dict)
@@ -719,6 +767,11 @@ class WorkerSupervisor:
                 "reason": "child lifetime unavailable during startup",
             }
         worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "ready_path": runtime.get("ready_path"), "started_at": time.time(), "launch_operation_id": operation_id}
+        previous = state.get("last_worker")
+        if self.config.channel == "release" and isinstance(previous, dict) and isinstance(previous.get("last_verified_binding"), dict) and previous.get("runtime_id") != runtime["runtime_id"]:
+            # Capture immutable prior provenance before a failed successor can
+            # replace last_worker with its own genuine terminal receipt.
+            worker["recovery_parent"] = {key: previous.get(key) for key in ("runtime_id", "ready", "ready_path", "process_run_id", "deployment_generation", "last_verified_binding")}
         state.update(worker=worker, stopped=False, launch_intent=None)
         self.store.write(state)
         return {"status": "RUNNING", "worker": worker}

@@ -3537,3 +3537,20 @@ fields and source locations, and checks that no success/recovery claim appears.
 The process contention cases use those actual post-fsync emissions as observable
 barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
 these tests do not substitute for the independent host suite.
+
+Managed release startup abandonment emits the existing health-log event envelope
+with category `engine_startup_failure`, fixed message
+`startup_reconciliation_abandoned`, and empty detail. Its sticky failure identity
+is exposed only in the identity-bound private worker observation and authenticated
+management lifecycle projection. No exception text is added to that fact. The
+controller remains non-serving and retains its invocation owners through the
+ordinary drain; the event is never an Issue/PR success or a producer heartbeat.
+`bash scripts/test.sh tests/test_worker_startup_failure.py` checks the actual
+production health JSONL event, private UDS fact, owned checkpoint and genuine
+terminal, plus wrapped/grouped operational and cancellation exclusions.
+`tests/test_release_worker_deployment.py` covers the separately correlated
+recovery drain, original-authority and persistence gates with a controlled signed
+boundary. The installed release acceptance case is listed separately in the
+required isolated-container profile. Dashboard processing events/renderers need
+no new target outcome: this failure precedes serving and is a daemon/management
+diagnostic, not a completed Issue/PR execution.

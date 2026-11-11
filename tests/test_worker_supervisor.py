@@ -1027,3 +1027,116 @@ def test_restart_receipt_recovers_successor_after_supervisor_death(tmp_path: Pat
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+
+
+def _stopped_failed_release_state(supervisor, tmp_path):
+    """Controlled durable READY/terminal inputs for boundary unit tests only."""
+    old_ready = {
+        "content_identity": "c" * 64,
+        "source_sha": "a" * 40,
+        "distribution_version": "1.0",
+        "lock_sha256": "b" * 64,
+        "environment_path": str(tmp_path),
+    }
+    binding = {**old_ready, "runtime_id": "priorRuntime", "process_run_id": "prior-run", "deployment_generation": "prior-generation"}
+    prior = {"runtime_id": "priorRuntime", "ready": old_ready, "ready_path": "/versions/prior/READY.json", "process_run_id": "prior-run", "deployment_generation": "prior-generation", "last_verified_binding": binding}
+    failed = {
+        "pid": 99999999,
+        "start_token": "missing-process",
+        "stop_requested": True,
+        "runtime_id": "failedRuntime",
+        "process_run_id": "failed-run",
+        "deployment_generation": "failed-generation",
+        "startup_failure": {"failure_id": "f" * 32, "reason": "startup_reconciliation_abandoned"},
+        "recovery_parent": prior,
+    }
+    state = supervisor.store.read()
+    state.update(worker=None, last_worker=failed, stopped=True, stop_verified=True, selected_runtime_id="failedRuntime")
+    supervisor.store.write(state)
+    terminal = {"schema_version": 1, "repository": supervisor.config.repository, "channel": "release", "deployment_generation": "failed-generation", "process_run_id": "failed-run", "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
+    (tmp_path / "last-terminal.json").write_text(json.dumps(terminal))
+    runtime = {"runtime_id": "priorRuntime", "ready": old_ready, "interpreter_path": sys.executable, "ready_path": prior["ready_path"]}
+    return state, runtime
+
+
+def test_signed_recovery_retains_original_prior_after_failed_graceful_exit(tmp_path):
+    """Real signed transport and OS launch, controlled READY/terminal producers."""
+    from tests.test_worker_supervisor_bridge import _bridge
+
+    supervisor = WorkerSupervisor(replace(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")), channel="release", instance_id="release-worker"))
+    original, runtime = _stopped_failed_release_state(supervisor, tmp_path)
+    # Reconstruct both state owner and signed transport before recovery.
+    supervisor = WorkerSupervisor(supervisor.config)
+    listener, client = _bridge(supervisor, b"r" * 48)
+    try:
+        with patch.object(supervisor, "_resolve_runtime", return_value=runtime), patch.object(supervisor, "_verify_runtime", return_value=runtime):
+            assert client.inspect_supervisor().data["status"] == "STOPPED"
+            response = client.dispatch_worker_operation("original-recovery", "RECOVER_PREVIOUS", process_run_id="failed-run", deployment_generation="failed-generation", selected_runtime_id="failedRuntime", runtime_id="priorRuntime")
+            assert response.result_code == "RUNNING", response
+            launched = supervisor.store.read()["worker"]
+            assert launched["runtime_id"] == "priorRuntime" and launched["ready"] == runtime["ready"]
+            assert supervisor._is_alive(launched)
+            assert supervisor.store.read()["failed_worker"] == original["last_worker"]
+            assert supervisor.store.read()["prior_recovery_generation"] == "failed-generation"
+            retained = client.read_worker_operation("original-recovery")
+            assert retained.result_code == "RUNNING" and retained.data["worker"]["deployment_generation"] == launched["deployment_generation"]
+            rejected = client.dispatch_worker_operation("duplicate-recovery", "RECOVER_PREVIOUS", process_run_id="failed-run", deployment_generation="failed-generation", selected_runtime_id="failedRuntime", runtime_id="priorRuntime")
+            assert rejected.result_code == "CONFLICT"
+            assert supervisor.store.read()["worker"]["pid"] == launched["pid"]
+    finally:
+        listener.close()
+        if supervisor.child is not None:
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("damage", ["alive", "missing-failure", "changed-failure", "missing-parent", "parent-source", "parent-run", "terminal-run", "unconfirmed-stop", "selected-runtime"])
+def test_stopped_failed_recovery_refuses_missing_or_mismatched_original_proof(tmp_path, damage):
+    supervisor = WorkerSupervisor(replace(config(tmp_path), channel="release"))
+    state, runtime = _stopped_failed_release_state(supervisor, tmp_path)
+    failed = state["last_worker"]
+    if damage == "alive":
+        failed.update(pid=os.getpid(), start_token=supervisor._start_token(os.getpid()))
+    elif damage == "missing-failure":
+        failed.pop("startup_failure")
+    elif damage == "changed-failure":
+        failed["startup_failure_conflict"] = True
+    elif damage == "missing-parent":
+        failed.pop("recovery_parent")
+    elif damage == "parent-source":
+        failed["recovery_parent"]["last_verified_binding"]["source_sha"] = "9" * 40
+    elif damage == "parent-run":
+        failed["recovery_parent"]["last_verified_binding"]["process_run_id"] = "foreign"
+    elif damage == "terminal-run":
+        terminal = json.loads((tmp_path / "last-terminal.json").read_text())
+        terminal["process_run_id"] = "foreign"
+        (tmp_path / "last-terminal.json").write_text(json.dumps(terminal))
+    elif damage == "unconfirmed-stop":
+        state["stop_verified"] = False
+    elif damage == "selected-runtime":
+        state["selected_runtime_id"] = "foreign"
+    with patch.object(supervisor, "_start") as launch:
+        assert supervisor._recover_previous(state, runtime, "original-recovery")["status"] == "CONFLICT"
+        launch.assert_not_called()
+    assert "prior_recovery_generation" not in state
+
+
+def test_candidate_launch_captures_prior_proof_without_nested_worker_history(tmp_path):
+    supervisor = WorkerSupervisor(replace(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")), channel="release"))
+    state, prior_runtime = _stopped_failed_release_state(supervisor, tmp_path)
+    prior = state["last_worker"]["recovery_parent"]
+    prior["recovery_parent"] = {"irrelevant": "older-history"}
+    state.update(last_worker=prior, selected_runtime_id="priorRuntime")
+    candidate = {**prior_runtime, "runtime_id": "candidateRuntime"}
+    try:
+        with patch.object(supervisor, "_verify_runtime", return_value=candidate):
+            launched = supervisor._start(state, candidate, "candidate-start")
+            assert launched["status"] == "RUNNING"
+            captured = supervisor.store.read()["worker"]["recovery_parent"]
+            assert captured["runtime_id"] == "priorRuntime"
+            assert captured["last_verified_binding"] == prior["last_verified_binding"]
+            assert "recovery_parent" not in captured
+    finally:
+        if supervisor.child is not None:
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=5)

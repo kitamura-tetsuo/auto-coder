@@ -172,8 +172,9 @@ Unavailable recovery receipt/inspection/binding observations wait within the
 original deadline. Conflicting evidence retains `NEEDS_ATTENTION` and the busy
 lane. Once original correlated evidence is observable, the normal prior-runtime
 readiness/progress checks can finish the original deployment as `FAILED` with
-recovery `CONFIRMED`. This does not add recovery of a still-running failed
-candidate or permission to infer failure from missing readiness or timeout.
+recovery `CONFIRMED`. This rebind supplies no independent failure authority;
+only the explicit live startup-abandonment path below may drain a still-running
+failed candidate. Missing readiness or timeout never qualifies.
 Preparation-only reconstruction is not admitted by this rule. Controlled
 signed-boundary regression cases cover recovery reconstruction and its negative
 cases. The installed recovery reconstruction cases below exercise the original
@@ -355,10 +356,69 @@ were unchanged, then require that commit's CI and review disposition. An
 unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
-These bounded cases do not complete REQ-010. Integrated held active invocations,
-recovery of a still-running candidate with an authoritative failure producer
+These bounded cases do not complete REQ-010. Integrated held active invocations
 and independent Supervisor OS-process reconstruction remain separate required
-acceptance scenarios. The cases above do not establish those remaining boundaries.
+acceptance scenarios. The live failed-startup case below is added but still needs
+its exact clean-revision host run; its implementation alone does not establish
+that remaining acceptance boundary.
 Killing/restarting the current PID1 container destroys its worker PID namespace; the same-process listener reconstruction does not establish
 child survival across that OS boundary. Preserve the unresolved acceptance gate
 until the remaining exact scenarios and clean-revision CI are demonstrated.
+
+### Live failed-startup recovery
+
+An explicitly abandoned startup lifetime can now enter `RECOVERY_DRAINING` only
+when its signed, typed failure fact belongs to the exact installed candidate and
+the original deployment retained a verified prior runtime. The one recovery
+budget is durably reserved before any recovery effect. A distinct original
+`recovery_drain` step (`f-<operation_id>`) requests ordinary graceful shutdown of
+that failed child, using its original run, generation and runtime fence. Both
+this step and the later `RECOVER_PREVIOUS` launch independently require the
+original actor's current grant and operator policy. Neither uses force.
+
+Supervisor captures the prior verified READY provenance on candidate activation,
+before the candidate's later graceful terminal can replace `last_worker`. Recovery
+of that stopped candidate requires its retained typed failure, exact original
+terminal, actual OS absence, unchanged selected candidate and the preserved prior
+binding/READY. The failed generation can consume that recovery only once.
+Reconstruction reads the original recovery-drain receipt and digest; it never
+substitutes the earlier incumbent drain or candidate START. A held OS lifetime
+keeps the receipt `DRAINING` and the original lane owned. Only the matching
+`STOPPED` receipt plus independent absence permits the separately journaled prior
+launch. The restored prior must still pass its normal installed readiness and
+advancing producer-heartbeat checks, and the deployment ends `FAILED`, recovery
+`CONFIRMED`.
+
+If the recovery drain expires before a prior launch was dispatched, the operation
+remains `NEEDS_ATTENTION` with the lane owned while evidence is inconclusive.
+Later exact original drain receipt/digest, unchanged failed runtime and genuine
+OS absence can resolve it using reads, including after Supervisor reconstruction.
+All other possibly sent steps must already be confirmed, the original authority
+must remain valid, and the correlated terminal snapshot and journal receipt must
+be durable before lane release. The original operation then ends `FAILED`,
+recovery `NOT_LAUNCHED`, reason `failed_candidate_stopped_recovery_not_launched`.
+The operator must inspect the stopped instance and explicitly choose any later
+recovery. No deadline is renewed and no prior launch is dispatched. The separate
+postdeadline restored-runtime settlement above applies only to an already-sent
+`RECOVER_PREVIOUS` effect.
+
+The required installed case
+`test_live_failed_installed_candidate_drains_across_reconstruction_before_prior_recovery`
+uses one external startup-attempt fault; the installed engine itself decides
+abandonment and emits the typed fact. It holds the real failed child's OS lifetime
+only after its real graceful terminal is durable, reconstructs the manager app
+and Supervisor object/listener, and requires unchanged original ownership, no
+extra dispatch/launch, exact old OS exit and one independently installed prior
+recovery. This is app/object reconstruction in the same test/PID1 processes, not
+an OS Supervisor restart. The new case requires a clean exact-source image/run;
+its presence in the required CI selector is not a passing acceptance claim.
+
+The companion required installed case
+`test_expired_live_failed_installed_drain_settles_without_prior_launch` holds that
+same genuine terminal/live OS lifetime through its unchanged production
+300-second recovery-drain window. It then allows actual exit and requires exact
+original read-only correlation, durable `FAILED`/`NOT_LAUNCHED`, no unknown step,
+no third worker launch, no recovery dispatch and unchanged deadlines. It verifies
+original journal authority/receipt, replay without effects, beta peer identity,
+container/ownership/source refs and the retained failed OS identity independently.
+It also requires its own clean exact-image host result before acceptance is claimed.

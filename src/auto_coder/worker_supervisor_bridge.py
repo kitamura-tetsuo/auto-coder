@@ -422,6 +422,12 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         supervisor = self.server.supervisor
         inspection = supervisor.inspect()
         worker = inspection.get("worker")
+        if worker is None and allow_crashed and inspection.get("status") == "STOPPED":
+            try:
+                state = supervisor.store.read()
+            except (OSError, ValueError):
+                return False
+            worker = supervisor.stopped_startup_failure(state)
         if not isinstance(worker, dict):
             if not allow_stopped or inspection["status"] != "STOPPED" or run is not None or generation is not None:
                 return False
