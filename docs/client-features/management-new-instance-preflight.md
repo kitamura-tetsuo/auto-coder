@@ -331,7 +331,10 @@ including the following two fields in the original protected bootstrap JSON:
 ```
 
 The named network must be dedicated to this container and created as a local,
-non-attachable Docker bridge with IP masquerading disabled. The operator must
+non-attachable, IPv6-disabled Docker bridge with IP masquerading disabled.
+The Docker Engine server must identify as **28.0.0 or newer**; older or
+unverifiable releases are refused because older Docker releases could expose
+localhost-published ports to other hosts on the same L2 segment. The operator must
 select a free host port, provide `--network` with the exact selected name and
 `--publish 127.0.0.1:43981:18881` when creating the never-started container.
 The internal port in this example (`18881`) is defined by the selected
@@ -349,7 +352,7 @@ grant or privileged host socket is mounted as part of this test profile.
 
 The independent Docker CREATED observation rejects public/all-interface
 publishing, changed host ports, additional published ports, an unrelated or
-replaced network, IP masquerading, other network members, an already bound
+replaced network, IPv6, IP masquerading, other network members, an already bound
 host-loopback listener and unsupported namespace policies. The host start
 guard additionally compares the **running**
 container's actual network ID, endpoint and host port mapping with the durable
@@ -358,6 +361,12 @@ admission. A host `127.0.0.1` client must receive a real Bearer challenge and
 then issue `auto_coder_whoami` with the synthetic retained read grant; this is
 the only positive loopback-network acceptance oracle. It does not establish
 public-domain, cross-host or existing-installation connectivity.
+An exact loopback host publish is **not sufficient evidence of network isolation**
+when the Docker daemon enables direct routing of published container ports,
+or when host firewall/routing policy is not trustworthy. This bounded profile
+does not claim to prove those host-global network settings; do not consider it
+an approved production/public deployment without independent host-network
+policy verification and the complete prior-startup exclusion contract.
 
 ## Remaining normative gates and acceptance limits
 

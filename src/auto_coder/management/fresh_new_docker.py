@@ -112,12 +112,33 @@ def _dedicated_network_id(name: str, *, expected_container: str | None = None) -
         or fields.get("Internal") is not False
         or fields.get("Attachable") is not False
         or fields.get("Ingress") is not False
+        or fields.get("EnableIPv6") is not False
         or fields.get("Options") != {"com.docker.network.bridge.enable_ip_masquerade": "false"}
         or not isinstance(members, dict)
         or set(members) != expected_members
     ):
         raise HostObservationUnavailable("NEW dedicated Docker network scope differs")
     return fields["Id"]
+
+
+def _require_safe_loopback_docker_engine() -> None:
+    """Require an Engine version without the pre-28 localhost publication leak."""
+    try:
+        output = subprocess.run(
+            ["docker", "version", "--format", "{{json .Server.Version}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        version = json.loads(output)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise HostObservationUnavailable("NEW Docker Engine version evidence unavailable") from error
+    if not isinstance(version, str):
+        raise HostObservationUnavailable("NEW Docker Engine version evidence unavailable")
+    match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+[0-9A-Za-z.-]+)?", version)
+    if match is None or tuple(int(number) for number in match.groups()[:3]) < (28, 0, 0):
+        raise HostObservationUnavailable("NEW Docker Engine version cannot guarantee localhost publication isolation")
 
 
 def _network_ports(container_port: int, host_port: int) -> dict[str, list[dict[str, str]]]:
@@ -139,6 +160,7 @@ def assert_running_new_network(request_file: Path, created: CreatedNewDockerSnap
         if created.published_host_port != 0 or fields[10] != "none" or fields[16] not in (None, {}):
             raise HostObservationUnavailable("NEW network-none running scope differs")
         return
+    _require_safe_loopback_docker_engine()
     from .bootstrap_supervisor import BootstrapConfig
 
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
@@ -251,6 +273,7 @@ def _inspect_created_scope(request_file: Path, container_id: str, image_id: str)
         if not isinstance(selected, dict) or selected.get("IPAMConfig") is not None or selected.get("Links") is not None or selected.get("DriverOpts") is not None or selected.get("NetworkID") or selected.get("EndpointID") or selected.get("IPAddress"):
             raise HostObservationUnavailable("NEW Docker created-network identity differs")
         network_id = _dedicated_network_id(bootstrap.new_docker_network)
+        _require_safe_loopback_docker_engine()
         _assert_host_loopback_port_free(host_port)
     if not isinstance(entrypoint, list) or not entrypoint or not isinstance(command, list) or not command or any(not isinstance(item, str) or not item or len(item) > 4096 for item in [*entrypoint, *command]):
         raise HostObservationUnavailable("NEW Docker executable command is unavailable")
@@ -271,6 +294,8 @@ def _inspect_created_scope(request_file: Path, container_id: str, image_id: str)
     digest = hashlib.sha256(json.dumps(expected, separators=(",", ":")).encode()).hexdigest()
     # This is a bounded read-only Docker-state observation. The caller must
     # still acquire continuous host exclusion and a durable first-launch claim.
+    if bootstrap.new_docker_network is not None:
+        _require_safe_loopback_docker_engine()
     if (
         _docker_created_fields(container_id) != fields
         or _engine_id() != engine

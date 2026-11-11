@@ -62,6 +62,8 @@ CONTAINER_REQUIRED = (
         "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]",
         "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host",
         "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_refuses_live_prior_host_listener_without_first_claim",
+        "tests/test_management_new_docker_network_policy.py::test_loopback_publication_refuses_legacy_or_unverifiable_docker_engine[27.5.1-False]",
+        "tests/test_management_new_docker_network_policy.py::test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled[True]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_start_refuses_changed_original_with_zero_docker_launches[bootstrap_config]",
@@ -111,6 +113,7 @@ SELECTORS = {
         "tests/test_management_beta_deploy_container.py",
         "tests/test_beta_runtime_smoke_container.py",
         "tests/test_management_new_instance_docker_created.py",
+        "tests/test_management_new_docker_network_policy.py",
         "tests/test_management_new_instance_first_launch_docker.py",
     ),
 }
