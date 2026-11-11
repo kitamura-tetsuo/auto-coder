@@ -2,14 +2,17 @@
 
 import hashlib
 import json
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
 from auto_coder.management.action_scopes import READ_SCOPE
+from auto_coder.management.bootstrap_store import BootstrapStore
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_store import OAuthStore
 from tests.test_management_new_instance_preflight import _bytes, _environment, request_file
@@ -136,6 +139,62 @@ def test_explicit_new_docker_loopback_profile_is_bound_to_original_files(configu
     assert {path: content for path, content in _bytes(root).items() if not path.startswith("guard/")} == preserved
     assert list((root / "state").iterdir()) == []
     assert list((root / "operations").iterdir()) == []
+
+
+@pytest.mark.parametrize("owner_evidence", ["config-only", "stale-owner", "mismatched-owner"])
+def test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner(configured_request: Path, owner_evidence: str) -> None:
+    """The real serve CLI must not turn a NEW YAML selector into host-wide HTTP."""
+    request = json.loads(configured_request.read_bytes())
+    root = configured_request.parent
+    bootstrap_path = Path(request["bootstrap_config"])
+    management_path = Path(request["management_config"])
+    bootstrap = json.loads(bootstrap_path.read_bytes())
+    management = yaml.safe_load(management_path.read_bytes())
+
+    # An unused host port makes any illicit new wildcard socket observable.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as observer:
+        observer.bind(("127.0.0.1", 0))
+        port = observer.getsockname()[1]
+    bootstrap["new_docker_network"] = "ac-new-0123456789abcdef"
+    bootstrap["new_docker_host_port"] = port
+    management["public_origin"] = f"http://127.0.0.1:{port}"
+    management["clients"][0]["redirect_uris"] = [f"http://127.0.0.1:{port}/callback"]
+    management["bind_host"] = "0.0.0.0"
+    bootstrap_path.write_text(json.dumps(bootstrap))
+    management_path.write_text(yaml.safe_dump(management))
+    assert yaml.safe_load(management_path.read_bytes())["bind_host"] == "0.0.0.0"
+    oauth_before = {path.name: path.read_bytes() for path in (root / "oauth").iterdir() if path.is_file()}
+
+    if owner_evidence != "config-only":
+        owner_lock = root / "state/.supervisor-owner.lock"
+        owner_lock.touch(mode=0o600)
+        owner_lock.chmod(0o600)
+        ledger = BootstrapStore(Path(request["state_root"]), str(request["new_instance"]))
+        ledger.publish_supervisor("unadmitted-stale-owner" if owner_evidence == "stale-owner" else "mismatched-owner", 1, "123456")
+
+    def wildcard_listeners() -> set[str]:
+        return {line.split()[1] for line in Path("/proc/net/tcp").read_text().splitlines()[1:] if line.split()[3] == "0A" and line.split()[1] == f"00000000:{port:04X}"}
+
+    before = wildcard_listeners()
+    command = [sys.executable, "-B", "-m", "auto_coder.cli", "management", "serve", "--config", str(management_path)]
+    process = subprocess.Popen(command, env=_environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        observed = set()
+        deadline = time.monotonic() + 8
+        while process.poll() is None and time.monotonic() < deadline:
+            observed.update(wildcard_listeners())
+            time.sleep(0.01)
+        assert process.poll() is not None, "unadmitted host management serve remained running"
+        stdout, stderr = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+    assert process.returncode != 0 and stdout == "", (stdout, stderr)
+    assert "NEW Docker HTTP child must be directly owned" in stderr, stderr
+    assert not observed - before and wildcard_listeners() == before
+    assert {path.name: path.read_bytes() for path in (root / "oauth").iterdir() if path.is_file()} == oauth_before
+    assert not (root / "LAUNCHED").exists()
 
 
 @pytest.mark.parametrize(

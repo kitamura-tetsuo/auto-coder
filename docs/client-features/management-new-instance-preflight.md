@@ -361,7 +361,14 @@ inside the dedicated container network, but its `public_origin` must be
 `http://127.0.0.1:43981`. The original bootstrap `listener_url` remains the
 internal `http://127.0.0.1:18881/mcp`; both identifiers and ports are bound
 by the original protected file hashes. A wildcard HTTP management bind is
-refused outside this exact NEW bootstrap configuration. No production OAuth
+refused unless the **actual serving process** is a direct child of the selected
+Docker PID 1 supervisor, in the same live PID/network namespaces, and that
+PID 1 still holds the protected NEW owner lock with matching native ledger
+identity and the original host-issued first-launch challenge receipt. A
+matching YAML selector alone never permits host-wide HTTP listening; direct
+`management serve --config` on an ordinary host is refused before binding,
+including when stale owner files exist. Existing non-NEW HTTPS management
+listener configuration is not changed. No production OAuth
 grant or privileged host socket is mounted as part of this test profile.
 
 The independent Docker CREATED observation rejects public/all-interface

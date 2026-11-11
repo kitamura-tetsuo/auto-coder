@@ -38,6 +38,21 @@ def _run_host(*arguments: str, timeout: float = 120) -> subprocess.CompletedProc
     return subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.fresh_host", *arguments], env=_environment(), capture_output=True, text=True, timeout=timeout)
 
 
+def _wait_for_new_outcome(root: Path, timeout: float = 40) -> dict[str, object]:
+    """Wait for the complete fsynced outcome, not merely its new inode."""
+    path = root / "state/new-first-outcome.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(path.read_bytes())
+            if isinstance(value, dict) and value.get("status") in {"unknown", "succeeded"}:
+                return value
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        time.sleep(0.1)
+    raise AssertionError("NEW first outcome was not durably recorded")
+
+
 def _required_original(path: Path) -> dict[str, object]:
     return json.loads(path.read_bytes())
 
@@ -288,11 +303,7 @@ def test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host(
         else:
             raise AssertionError("host-loopback authenticated MCP was not usable: " + last_error)
 
-        outcome_file = root / "state/new-first-outcome.json"
-        deadline = time.monotonic() + 40
-        while time.monotonic() < deadline and not outcome_file.exists():
-            time.sleep(0.1)
-        assert json.loads(outcome_file.read_bytes())["status"] == "succeeded"
+        assert _wait_for_new_outcome(root)["status"] == "succeeded"
         assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
         assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
     finally:
@@ -620,10 +631,7 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
             time.sleep(0.3)
         else:
             raise AssertionError("fresh authenticated readback never reached the real child: " + call.stderr[-1000:])
-        deadline = time.monotonic() + 40
-        while time.monotonic() < deadline and not (root / "state/new-first-outcome.json").exists():
-            time.sleep(0.1)
-        outcome = json.loads((root / "state/new-first-outcome.json").read_bytes())
+        outcome = _wait_for_new_outcome(root)
         assert outcome["status"] == "succeeded", outcome
         assert len(counter.read_text().splitlines()) == 1
         assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth

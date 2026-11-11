@@ -1,5 +1,6 @@
 """CLI for the independent management resource server."""
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -24,9 +25,13 @@ def management_serve(config_path: Path) -> None:
 
     try:
         settings = load_management_settings(config_path)
+        if settings.bind_host == "0.0.0.0" and settings.local_development:
+            from .management.fresh_new_management_binding import assert_admitted_new_docker_http_binding
+
+            assert_admitted_new_docker_http_binding(settings)
         settings.state_root.mkdir(parents=True, exist_ok=True)
         app = create_management_app(settings)
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, TypeError, ValueError, sqlite3.Error) as exc:
         raise click.ClickException(f"invalid management configuration: {exc}") from exc
     setup_logger(stream=sys.stdout, log_file=str(settings.state_root / "logs" / "management.log"))
     uvicorn.run(app, host=settings.bind_host, port=settings.port, access_log=False)
