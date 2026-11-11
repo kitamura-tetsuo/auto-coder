@@ -59,6 +59,7 @@ def test_unknown_effect_precedes_every_stage_and_never_rekeys(stage, pending):
     original = checkpoint(
         stage=stage,
         idempotency_key="immutable-original-key",
+        beta_target="beta-worker",
         beta_operation_id="original-operation",
         pending_effect_state=pending,
     )
@@ -70,11 +71,70 @@ def test_unknown_effect_precedes_every_stage_and_never_rekeys(stage, pending):
     with pytest.raises(ValueError, match="checkpoint original operation"):
         smoke.read_plan(original, "beta-worker", "unrelated-operation")
     plan = smoke.read_plan(original, "beta-worker", "original-operation")
-    assert plan[-1] == (
+    assert plan[1] == (
         "auto_coder_operation_get",
         {"target_id": "beta-worker", "operation_id": "original-operation"},
     )
     assert all(name in smoke.READ_TOOLS for name, _ in plan)
+    assert [name for name, _ in plan[:2]] == ["auto_coder_whoami", "auto_coder_operation_get"]
+
+
+@pytest.mark.parametrize("pending", ["SENT_UNKOWN", "READY", "COMPLETE"])
+def test_unknown_pending_state_cannot_skip_original_effect_reconciliation(pending):
+    original = checkpoint(beta_target="beta-worker", beta_operation_id="original-operation", pending_effect_state=pending)
+    assert smoke.required_next_observation(original).verdict == "BLOCKED"
+    with pytest.raises(ValueError, match="pending effect state"):
+        smoke.read_plan(original, "beta-worker", "original-operation")
+
+
+@pytest.mark.parametrize(
+    "original,target,operation",
+    [
+        (checkpoint(beta_target="beta-worker", beta_operation_id="beta-op"), "release-worker", "beta-op"),
+        (checkpoint(release_target="release-worker", release_operation_id="release-op"), "beta-worker", "release-op"),
+        (checkpoint(release_target="release-worker", promotion_operation_id="promotion-op"), "beta-worker", "promotion-op"),
+        (checkpoint(beta_operation_id="beta-op"), "beta-worker", "beta-op"),
+    ],
+)
+def test_unknown_effect_rejects_cross_target_or_unbound_original_operation(original, target, operation):
+    original = replace(original, pending_effect_state="SENT_UNKNOWN")
+    with pytest.raises(ValueError, match="original operation.*target"):
+        smoke.read_plan(original, target, operation)
+
+
+def test_unknown_effect_requires_unique_original_operation_target_binding():
+    original = checkpoint(
+        beta_target="beta-worker",
+        beta_operation_id="ambiguous-op",
+        release_target="release-worker",
+        release_operation_id="ambiguous-op",
+        pending_effect_state="NEEDS_ATTENTION",
+    )
+    with pytest.raises(ValueError, match="original operation.*target"):
+        smoke.read_plan(original, "beta-worker", "ambiguous-op")
+
+
+@pytest.mark.parametrize(
+    "original,target,operation",
+    [
+        (checkpoint(beta_target="beta-worker", beta_operation_id="beta-op"), "beta-worker", "beta-op"),
+        (checkpoint(release_target="release-worker", release_operation_id="release-op"), "release-worker", "release-op"),
+        (checkpoint(release_target="release-worker", promotion_operation_id="promotion-op"), "release-worker", "promotion-op"),
+    ],
+)
+def test_pending_original_operation_read_has_one_authorized_target(original, target, operation):
+    original = replace(original, pending_effect_state="NEEDS_ATTENTION")
+    plan = smoke.read_plan(original, target, operation)
+    assert plan[1] == ("auto_coder_operation_get", {"target_id": target, "operation_id": operation})
+    assert len(plan) == 4
+
+
+def test_unrecognized_pending_effect_is_rejected_from_disk(tmp_path):
+    raw = asdict(checkpoint(beta_target="beta-worker", beta_operation_id="beta-op", pending_effect_state="SENT_UNKOWN"))
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="unsupported pending effect state"):
+        smoke.load_checkpoint(path)
 
 
 def test_one_recovery_attempt_is_terminal_for_unchanged_failure():

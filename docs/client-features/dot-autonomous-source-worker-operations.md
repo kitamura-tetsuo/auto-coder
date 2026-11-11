@@ -74,9 +74,14 @@ or new idempotency key after an unknown send.
 
 `SENT_UNKNOWN` and `NEEDS_ATTENTION` preserve the original operation and
 the per-target lane. Reconcile only by the exact original operation ID
-already retained in the checkpoint; an unrelated or newly invented operation
-ID refuses even a bounded read plan. Never infer no effect from elapsed time
-or silence. In any unchanged action, target, source
+already retained in the checkpoint and uniquely bound to its configured
+beta/release target (release promotion reads use the release target). A
+different target, ambiguous reused operation ID, unbound target or
+unrecognized nonempty pending-effect state fails closed before transport.
+When reconciliation is pending, the read plan requests original-operation
+readback immediately after identity and before deployment diagnostics; an
+unrelated or newly invented ID refuses even a bounded read plan. Never infer
+no effect from elapsed time or silence. In any unchanged action, target, source
 and failure-signature namespace, use at most one new authorized recovery
 operation, then mark `BLOCKED` and notify the operator. Never bypass
 the existing slot, retry/EXHAUSTED, merge or authorization gates.

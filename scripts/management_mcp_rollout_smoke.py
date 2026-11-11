@@ -109,12 +109,16 @@ def load_checkpoint(path: Path | None) -> DotCheckpoint:
         raise ValueError("immutable failure-signature recovery budget exceeded")
     if raw["recovery_attempts"] and not raw["failure_signature"]:
         raise ValueError("recovery attempt requires its immutable failure signature")
+    if raw["pending_effect_state"] not in UNKNOWN_EFFECTS | {""}:
+        raise ValueError("unsupported pending effect state: refuse unknown-operation reconciliation")
     return DotCheckpoint(**raw)
 
 
 def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
     """Never promote a checkpoint into live success or release unknown effects."""
-    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
+    if checkpoint.pending_effect_state:
+        if checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
+            return RolloutReport("BLOCKED", checkpoint.stage, "Unsupported pending effect state; never assume no original effect")
         return RolloutReport("BLOCKED", checkpoint.stage, "Reconcile the original unknown effect by original operation ID; never allocate another key")
     if checkpoint.recovery_attempts == 1 and checkpoint.failure_signature:
         return RolloutReport("BLOCKED", checkpoint.stage, "The unchanged failure signature has exhausted its one permitted recovery attempt")
@@ -159,23 +163,40 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("an exact configured target is required")
     if operation_id and SAFE_ID.fullmatch(operation_id) is None:
         raise ValueError("invalid original operation ID")
+    if checkpoint.pending_effect_state and checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
+        raise ValueError("unsupported pending effect state")
+    original_read = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
     if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
         if not operation_id:
             raise ValueError("unknown original effect requires its original operation ID")
-        original_operations = {
-            checkpoint.beta_operation_id,
-            checkpoint.promotion_operation_id,
-            checkpoint.release_operation_id,
-        } - {""}
-        if operation_id not in original_operations:
+        bindings = [
+            configured_target
+            for original_id, configured_target in (
+                (checkpoint.beta_operation_id, checkpoint.beta_target),
+                (checkpoint.promotion_operation_id, checkpoint.release_target),
+                (checkpoint.release_operation_id, checkpoint.release_target),
+            )
+            if original_id == operation_id
+        ]
+        if not bindings:
             raise ValueError("unknown effect must use a checkpoint original operation ID")
-    plan: tuple[tuple[str, dict[str, object]], ...] = (
-        ("auto_coder_whoami", {}),
-        ("auto_coder_status", {"target_id": target}),
-        ("auto_coder_deployment_status", {"target_id": target}),
-    )
-    if operation_id:
-        plan += (("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id}),)
+        if len(bindings) != 1 or not bindings[0] or bindings[0] != target:
+            raise ValueError("original operation ID must be uniquely bound to its configured target")
+        # Original-operation reconciliation precedes current deployment diagnostics.
+        plan: tuple[tuple[str, dict[str, object]], ...] = (
+            ("auto_coder_whoami", {}),
+            original_read,
+            ("auto_coder_status", {"target_id": target}),
+            ("auto_coder_deployment_status", {"target_id": target}),
+        )
+    else:
+        plan = (
+            ("auto_coder_whoami", {}),
+            ("auto_coder_status", {"target_id": target}),
+            ("auto_coder_deployment_status", {"target_id": target}),
+        )
+        if operation_id:
+            plan += (original_read,)
     for name, arguments in plan:
         checked_tool(name, arguments)
     return plan
