@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from auto_coder.management.fresh_host_observation import HostObservationUnavailable
 from auto_coder.management.fresh_new_host_start import _LocalDockerConnection
 from auto_coder.management.fresh_private_engine_gate import hold_one_start_api_gate
 
@@ -82,7 +83,7 @@ def test_original_socket_sealed_and_only_original_process_can_start(short_unix_r
         original_thread.start()
         os.chmod(raw, 0o600)
         try:
-            with hold_one_start_api_gate(root, SELECTED) as gate:
+            with hold_one_start_api_gate(root, SELECTED, daemon_net_pid=os.getpid()) as gate:
                 assert stat.S_IMODE(raw.stat().st_mode) == 0
                 assert stat.S_IMODE(gate.stat().st_mode) == 0o600
                 assert _api(gate, "GET", "/v1.41/info")[0] == 200
@@ -122,6 +123,7 @@ def test_original_socket_sealed_and_only_original_process_can_start(short_unix_r
                 assert _api(gate, "POST", "/v1.41/containers/" + SELECTED + "/start")[0] == 409
                 assert engine.effects == [
                     ("GET", "/v1.41/info"),
+                    ("GET", "/v1.41/info"),
                     ("HEAD", "/_ping"),
                     ("POST", "/v1.41/containers/" + SELECTED + "/start"),
                 ]
@@ -144,11 +146,37 @@ def test_unattempted_start_unseals_and_refuses_success(short_unix_root: Path) ->
         os.chmod(raw, 0o600)
         try:
             with pytest.raises(Exception, match="first-start effect was never attempted"):
-                with hold_one_start_api_gate(short_unix_root, SELECTED) as gate:
+                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid()) as gate:
                     assert _api(gate, "GET", "/v1.41/info")[0] == 200
             assert stat.S_IMODE(raw.stat().st_mode) == 0o600
             assert not (socket_dir / "first-start-gate.sock").exists()
-            assert engine.effects == [("GET", "/v1.41/info")]
+            assert engine.effects == [("GET", "/v1.41/info"), ("GET", "/v1.41/info")]
         finally:
+            engine.shutdown()
+            original_thread.join(timeout=5)
+
+
+def test_preconnected_independent_client_refused_before_first_start(short_unix_root: Path) -> None:
+    """An existing Engine connection must not survive sealing as an authority."""
+    socket_dir = short_unix_root / "socket"
+    socket_dir.mkdir(mode=0o700)
+    raw = socket_dir / "docker.sock"
+    with _UnixEngine(str(raw), _OriginalEngine) as engine:
+        engine.effects = []
+        original_thread = threading.Thread(target=engine.serve_forever, daemon=True)
+        original_thread.start()
+        os.chmod(raw, 0o600)
+        outsider = _LocalDockerConnection(raw)
+        try:
+            outsider.request("GET", "/v1.41/info")
+            assert outsider.getresponse().status == 200
+            with pytest.raises(HostObservationUnavailable, match="another preconnected"):
+                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid()):
+                    pytest.fail("a held independent Engine client must exclude first start")
+            assert stat.S_IMODE(raw.stat().st_mode) == 0o600
+            assert not (socket_dir / "first-start-gate.sock").exists()
+            assert all(method == "GET" for method, _ in engine.effects)
+        finally:
+            outsider.close()
             engine.shutdown()
             original_thread.join(timeout=5)

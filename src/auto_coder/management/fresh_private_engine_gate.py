@@ -27,6 +27,32 @@ _SELECTED_START = re.compile(r"/v[0-9]+(?:\.[0-9]+)?/containers/[0-9a-f]{64}/sta
 _MAX_RESPONSE = 4 * 1024 * 1024
 
 
+def _assert_only_original_engine_connection(socket_path: Path, daemon_net_pid: int) -> None:
+    """Fail closed on preconnected clients in the original daemon netns.
+
+    Sealing the pathname prevents ordinary *new* connects, but does not
+    revoke a client that connected before chmod. Linux exposes both accepted
+    and not-yet-accepted AF_UNIX stream connections under the daemon's network
+    namespace. The guardian's warmed connection must be the only one left.
+    """
+    if type(daemon_net_pid) is not int or daemon_net_pid <= 0:
+        raise HostObservationUnavailable("NEW private Engine daemon namespace PID is unavailable")
+    try:
+        entries = (Path("/proc") / str(daemon_net_pid) / "net/unix").read_text().splitlines()
+    except OSError as error:
+        raise HostObservationUnavailable("NEW private Engine Unix connection evidence is unavailable") from error
+    matching: list[tuple[str, str, str]] = []
+    for entry in entries[1:]:
+        columns = entry.split(maxsplit=7)
+        if len(columns) == 8 and columns[7] == str(socket_path):
+            matching.append((columns[3], columns[4], columns[5]))
+    # The listening socket is state 01 with the accept flag; the one warmed
+    # guardian channel has state 03. A pending connect is state 02 and must
+    # also poison admission, even if dockerd has not accepted it yet.
+    if sorted(matching) != [("00000000", "0001", "03"), ("00010000", "0001", "01")]:
+        raise HostObservationUnavailable("NEW private Engine has another preconnected or unverified API client")
+
+
 class _EngineConnection(http.client.HTTPConnection):
     def __init__(self, address: Path) -> None:
         super().__init__("localhost", timeout=20)
@@ -129,7 +155,7 @@ class _GateRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 @contextmanager
-def hold_one_start_api_gate(private_root: Path, container_id: str) -> Iterator[Path]:
+def hold_one_start_api_gate(private_root: Path, container_id: str, *, daemon_net_pid: int) -> Iterator[Path]:
     """Exclude independent Docker starts until the original child is observed.
 
     Connections to the actual Engine are opened before its socket is sealed.
@@ -153,6 +179,16 @@ def hold_one_start_api_gate(private_root: Path, container_id: str) -> Iterator[P
     engine = _EngineConnection(original)
     try:
         engine.connect()
+        # Force dockerd to accept the guardian's channel before enumerating
+        # accepted and pending clients. HTTP/1.1 keep-alive is mandatory here.
+        try:
+            engine.request("GET", "/v1.41/info")
+            warm = engine.getresponse()
+            body = warm.read(_MAX_RESPONSE + 1)
+            if warm.status != 200 or len(body) > _MAX_RESPONSE or engine.sock is None:
+                raise HostObservationUnavailable("NEW private Engine cannot retain its original API channel")
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            raise HostObservationUnavailable("NEW private Engine original API channel is unavailable") from error
         with _SourceGate(gate_path, engine, container_id, os.getpid()) as server:
             os.chmod(gate_path, 0o600, follow_symlinks=False)
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -164,6 +200,7 @@ def hold_one_start_api_gate(private_root: Path, container_id: str) -> Iterator[P
                 current = os.stat(original, follow_symlinks=False)
                 if (current.st_dev, current.st_ino, stat.S_IMODE(current.st_mode)) != (info.st_dev, info.st_ino, 0):
                     raise HostObservationUnavailable("NEW Docker original API socket was not continuously sealed")
+                _assert_only_original_engine_connection(original, daemon_net_pid)
                 yield gate_path
                 current = os.stat(original, follow_symlinks=False)
                 if (current.st_dev, current.st_ino, stat.S_IMODE(current.st_mode)) != (info.st_dev, info.st_ino, 0):

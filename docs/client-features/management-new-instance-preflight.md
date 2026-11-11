@@ -474,7 +474,13 @@ real daemon socket. The gate forwards GET/HEAD evidence calls and accepts
 exactly one `POST /v1.41/containers/{selected-id}/start` only from the
 guardian's kernel-authenticated PID and UID. Its effect bit is consumed
 before the request goes upstream. Other API mutations and independent client
-starts are denied; its closure and the original socket mode restoration happen
+starts are denied. After chmod(000), the guardian reads Linux's original
+daemon-network-namespace Unix socket table and requires exactly one listening
+socket and exactly one accepted stream: its own warmed persistent connection.
+Both other accepted clients and pending pre-seal `connect()` calls refuse
+before any Docker first-start effect, leaving the durable claim consumed.
+Missing or ambiguous kernel connection evidence refuses. The gate's closure
+and the original socket mode restoration happen
 only after the physical first-child receipt or an explicit failure. The
 private source lock, NEW guard lock, and verified parent lifetime remain held
 through this interval. If the guardian crashes, the consumed claim remains
@@ -487,15 +493,17 @@ OAuth readback acceptance have moved to the private-Engine-only disposable
 runner job. Legacy host-Docker first-launch fixtures cannot be interpreted
 as valid positive admission tests under this mandatory profile.
 
-**Still subject to review:** the kernel permission gate prevents new ordinary
-untrusted client connections, but does not revoke an already-open Docker API
-connection or protect against a hostile same-UID operator changing socket
-permissions. Those adversaries are not granted a new in-scope bypass by this
-code and are outside the project's default trusted-host model. Continuous
-exclusion of any independently authorized controller sharing such a pre-opened
-connection must be decided explicitly before deployment. No production host
-Docker service, worker, real credential, or standing privilege is changed by
-this code-only CI evaluation. Independent exact-head review remains mandatory.
+**Still subject to review:** the kernel permission gate cannot revoke an
+already-open Docker API connection, so it now refuses first start while any
+other such client or pending connection is detected in the private daemon's
+network namespace. A hostile same-UID operator able to change socket
+permissions or repeatedly race the trusted host is outside the project's
+default trusted-host model. The Linux namespace oracle and connected-client
+negative require independent disposable-Engine confirmation; other supported
+controllers must not be silently excluded by documentation alone. No
+production host Docker service, worker, real credential, or standing
+privilege is changed by this code-only CI evaluation. Independent exact-head
+review remains mandatory.
 
 ## Remaining normative gates and acceptance limits
 
@@ -508,8 +516,10 @@ this code-only CI evaluation. Independent exact-head review remains mandatory.
 - REQ-003: real Docker CREATED/never-started facts, private network/PID
   namespaces, no Docker auto-restart, the host guard challenge, new owner
   flock, mandatory private source and temporary OS-socket/API exclusion
-  are verified by the disposable isolated-source profile. These do not exclude
-  arbitrary hostile host operators or pre-opened Docker Engine connections.
+  are subject to verification by the disposable isolated-source profile.
+  The raw Engine is also checked for preconnected/pending independent clients
+  after sealing and refuses if that original daemon-namespace evidence differs.
+  This does not exclude arbitrary hostile host operators.
   Existing prior-installed manager cutovers require the separate known-prior
   fence/profile; no prior lifetime is invented here.
 - REQ-004: the isolated NEW child and real retained *synthetic* OAuth grant
@@ -522,7 +532,9 @@ this code-only CI evaluation. Independent exact-head review remains mandatory.
   The host's Engine HTTP 204/304 boundary also rejects an out-of-band Docker
   start during the final check-to-effect race instead of attributing it to
   this original operator. A live Docker restart-policy change during the held
-  admission is likewise refused without child launch.
+  admission is likewise refused without child launch. A deliberately retained
+  separate private-Engine API connection must likewise refuse with zero child
+  effects and preserved OAuth/claim bytes after the original seal.
   Broader independent proof of hostile/external host startup sources, unknown
   prior installations and all interrupted/uncertain reconciliation branches
   remains necessary before treating the full issue as complete. Exact-head CI

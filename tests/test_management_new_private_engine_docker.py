@@ -152,12 +152,32 @@ print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.
 """
 
 
+_HOLD_PRECONNECTED_PRIVATE_API_CLIENT = """
+import sys, time
+from pathlib import Path
+from auto_coder.management.fresh_new_host_start import _LocalDockerConnection
+client = _LocalDockerConnection(Path(sys.argv[1]))
+client.request('GET', '/v1.41/info')
+response = client.getresponse()
+assert response.status == 200
+response.read()
+assert client.sock is not None
+print('private-api-client-preconnected', flush=True)
+release = Path(sys.argv[2])
+deadline = time.monotonic() + 90
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.05)
+client.close()
+"""
+
+
 @pytest.mark.parametrize(
     "race",
     [
         "none",
         "pre-gate-sibling",
         "pre-gate-live-sibling",
+        "preconnected-private-client",
         "sealed-gate-outside-client",
         "owner-contention",
         "killed-first-claim",
@@ -346,6 +366,35 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 )
             finally:
                 subprocess.run([*outer, "image", "rm", nonowner_image], capture_output=True, timeout=30)
+            return
+        if race == "preconnected-private-client":
+            release = request_file.parent / "release-independent-api-client"
+            client = subprocess.Popen(
+                [sys.executable, "-B", "-c", _HOLD_PRECONNECTED_PRIVATE_API_CLIENT, str(root / "socket/docker.sock"), str(release)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_environment(),
+            )
+            try:
+                assert client.stdout is not None
+                assert select.select([client.stdout], [], [], 30)[0], "independent private Engine client did not connect"
+                assert client.stdout.readline() == "private-api-client-preconnected\n"
+                refused = _run_host(*arguments, timeout=90)
+                assert refused.returncode == 1 and refused.stdout == "", refused.stderr
+                assert "another preconnected or unverified API client" in refused.stderr
+                claim = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+                assert subprocess.check_output(["docker", "--host", selected_host, "inspect", "--format", "{{.State.Status}}", child_id], text=True).strip() == "created"
+            finally:
+                release.touch(mode=0o600)
+                if client.poll() is None:
+                    stdout, stderr = client.communicate(timeout=10)
+                    assert client.returncode == 0, (stdout, stderr)
+            replay = _run_host(*arguments, timeout=20)
+            assert replay.returncode != 0 and replay.stdout == ""
+            assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == claim
             return
         if race in {"pre-gate-sibling", "pre-gate-live-sibling"}:
             # A second trusted Docker client can reach the socket while the
