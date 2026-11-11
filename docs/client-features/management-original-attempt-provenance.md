@@ -80,7 +80,15 @@ Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
 Before admitting another attempt or entering a host grant, the producer also
 rejects unknown event kinds, impossible per-attempt boundary sequences, and
-terminal facts that contradict the matching original anchor. A never-created
+terminal facts that contradict the matching original anchor.
+It checks every earlier original anchor against its exact producer lifetime,
+fixed expected store paths, original state/journal device-inode identities and
+pristine boolean before advancing the frontier or issuing another grant. A
+claimed original attempt cannot have a non-pristine anchor; an internally
+rehashed chain does not excuse that contradiction. Grant-possible event
+producer lifetimes use the same strict schema in both admission and independent
+derivation. These checks do not authenticate rewritten originals or establish
+coverage before the prospective enrollment. A never-created
 boundary must retain the anchor's exact original producer lifetime and
 expected stores, and it may only terminate an originally pristine target.
 An unresolved boundary must have the original empty payload. Rehashing the

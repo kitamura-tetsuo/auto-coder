@@ -267,7 +267,8 @@ def test_independent_reader_refuses_forged_grant_lifetime_with_valid_frontier(tm
     frontier["digest"] = hashlib.sha256(event_bytes).hexdigest()
     frontier_path.write_bytes(producer.canonical(frontier))
     before = _fingerprint(tmp_path)
-    assert len(read_frontier(root, binding)[1]) == 3
+    with pytest.raises(OriginalEvidenceUnavailable, match="original grant lifetime incomplete"):
+        read_frontier(root, binding)
     with observe(binding) as fence:
         evidence = derive(binding, fence)
         assert evidence.unavailable == ("original grant lifetime incomplete",)
@@ -1258,5 +1259,82 @@ def test_original_host_grant_refuses_rehashed_false_prior_terminal(tmp_path):
 
     with pytest.raises(OriginalEvidenceUnavailable, match="original terminal boundary"):
         serve_one_fresh_grant(tmp_path / "fresh-guard.sock", intent, None, None, -1, -1)
+    assert _fingerprint(tmp_path) == before
+    assert not (tmp_path / "fresh-guard.sock").exists()
+
+
+def _rewrite_rehashed_original_event(root: Path, index: int, mutate) -> None:
+    """Keep hashes internally consistent while changing an original record."""
+    frontier_path = root / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    previous = ""
+    for number in range(frontier["count"]):
+        path = root / f"{number:08d}.json"
+        event = json.loads(path.read_bytes())
+        event["previous"] = previous
+        if number == index:
+            mutate(event)
+        encoded = canonical(event)
+        path.write_bytes(encoded)
+        previous = hashlib.sha256(encoded).hexdigest()
+    frontier["digest"] = previous
+    frontier_path.write_bytes(canonical(frontier))
+
+
+@pytest.mark.parametrize("corruption", ["anchor-lifetime", "anchor-store", "anchor-root", "claimed-nonpristine"])
+def test_original_admission_refuses_rehashed_malformed_ancestor(tmp_path, corruption):
+    """A rehashed but inconsistent original anchor cannot authorize successors."""
+    binding = _history(tmp_path)
+    prior = _covered(tmp_path, binding, "original-predecessor")
+    claim_fresh_initialization(Path(prior.host_state_root), prior)
+    root = Path(binding.root)
+
+    def mutate(event):
+        assert event["kind"] == "anchor"
+        anchor = event["value"]
+        if corruption == "anchor-lifetime":
+            anchor["lifetime"]["pid"] = True
+        elif corruption == "anchor-store":
+            anchor["stores"]["operations"] = "/other/store.sqlite3"
+        elif corruption == "anchor-root":
+            anchor["journal"] = [0, 0]
+        else:
+            anchor["pristine"] = False
+
+    _rewrite_rehashed_original_event(root, 0, mutate)
+    successor = replace(_covered(tmp_path, binding, "new-successor"), old_instance=prior.new_instance, old_container_id=prior.new_container_id)
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original anchor"):
+        claim_fresh_initialization(Path(successor.host_state_root), successor)
+    assert _fingerprint(tmp_path) == before
+    assert not list(Path(successor.host_state_root).iterdir())
+
+
+@pytest.mark.parametrize("corruption", ["anchor-lifetime", "anchor-store", "anchor-root", "claimed-nonpristine"])
+def test_original_host_grant_refuses_rehashed_malformed_ancestor(tmp_path, corruption):
+    """An unrelated malformed original must stop the real grant adapter."""
+    binding = _history(tmp_path)
+    prior = _covered(tmp_path, binding, "original-predecessor")
+    claim_fresh_initialization(Path(prior.host_state_root), prior)
+    current = _covered(tmp_path, binding, "current-claim")
+    claim_fresh_initialization(Path(current.host_state_root), current)
+    root = Path(binding.root)
+
+    def mutate(event):
+        assert event["kind"] == "anchor"
+        anchor = event["value"]
+        if corruption == "anchor-lifetime":
+            anchor["lifetime"]["pid"] = True
+        elif corruption == "anchor-store":
+            anchor["stores"]["operations"] = "/other/store.sqlite3"
+        elif corruption == "anchor-root":
+            anchor["journal"] = [0, 0]
+        else:
+            anchor["pristine"] = False
+
+    _rewrite_rehashed_original_event(root, 0, mutate)
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original anchor"):
+        serve_one_fresh_grant(tmp_path / "fresh-guard.sock", current, None, None, -1, -1)
     assert _fingerprint(tmp_path) == before
     assert not (tmp_path / "fresh-guard.sock").exists()

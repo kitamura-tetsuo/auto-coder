@@ -114,6 +114,25 @@ def require_claimed_intent(encoded: bytes, expected: FreshInitializationIntent) 
         raise OriginalEvidenceUnavailable("original claim intent differs")
 
 
+def validate_original_lifetime(value: object) -> None:
+    """Require the exact original Linux lifetime, before any successor or grant."""
+    if not isinstance(value, dict) or set(value) != {"pid", "start", "boot", "nonce"}:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    if type(value["pid"]) is not int or value["pid"] <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    start = value["start"]
+    if not isinstance(start, str) or not start.isascii() or not start.isdecimal() or str(int(start)) != start or int(start) <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    for field in ("boot", "nonce"):
+        token = value[field]
+        try:
+            valid = isinstance(token, str) and str(uuid.UUID(token)) == token
+        except (ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+
+
 def _sync(root: Path) -> None:
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -189,6 +208,8 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         event = json.loads(encoded)
         if not isinstance(event, dict) or set(event) != {"previous", "sequence", "kind", "attempt", "value"} or event["previous"] != previous or type(event["sequence"]) is not int or event["sequence"] != index or canonical(event) != encoded:
             raise OriginalEvidenceUnavailable("corrupt or cyclic original frontier")
+        if not isinstance(event["kind"], str) or not isinstance(event["attempt"], str):
+            raise OriginalEvidenceUnavailable("unsupported original event boundary")
         if event["kind"] == "anchor":
             anchor = event["value"]
             if not isinstance(anchor, dict) or set(anchor) != {"intent", "lifetime", "stores", "state", "journal", "pristine"}:
@@ -199,6 +220,12 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("incomplete original anchor") from error
             if original_intent.request_id != event["attempt"]:
                 raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
+            try:
+                validate_original_lifetime(anchor["lifetime"])
+            except (ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original anchor lifetime invalid") from error
+            if anchor["stores"] != expected_stores(original_intent) or anchor["state"] != [original_intent.state_device, original_intent.state_inode] or anchor["journal"] != [original_intent.journal_device, original_intent.journal_inode] or type(anchor["pristine"]) is not bool:
+                raise OriginalEvidenceUnavailable("original anchor binding invalid")
             anchors[event["attempt"]] = anchor
         elif event["kind"] == "never-created":
             anchor = anchors.get(event["attempt"])
@@ -206,8 +233,14 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("original terminal boundary differs from anchor")
         elif event["kind"] == "unresolved" and event["value"] != {}:
             raise OriginalEvidenceUnavailable("original terminal boundary is malformed")
-        if not isinstance(event["kind"], str) or not isinstance(event["attempt"], str):
-            raise OriginalEvidenceUnavailable("unsupported original event boundary")
+        elif event["kind"] == "grant-possible":
+            value = event["value"]
+            if not isinstance(value, dict) or set(value) != {"lifetime"}:
+                raise OriginalEvidenceUnavailable("original grant lifetime incomplete")
+            try:
+                validate_original_lifetime(value["lifetime"])
+            except (ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original grant lifetime incomplete") from error
         branches.setdefault(event["attempt"], []).append(event["kind"])
         previous = hashlib.sha256(encoded).hexdigest()
         events.append(HistoryEvent(event["previous"], index, event["kind"], event["attempt"], canonical(event["value"]).decode()))
@@ -220,6 +253,8 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     )
     if any(kinds not in allowed_branches for kinds in branches.values()):
         raise OriginalEvidenceUnavailable("conflicting original attempt boundaries")
+    if any("claimed" in kinds and anchors[attempt]["pristine"] is not True for attempt, kinds in branches.items()):
+        raise OriginalEvidenceUnavailable("original anchor was not pristine before claim")
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")
     return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"])), events
