@@ -112,7 +112,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
                 "executable": request["executable"],
                 "arguments": ["management", "serve", "--config", request["management_config"]],
                 "source_root": request["application_root"],
-                "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+                "environment": {"PYTHONDONTWRITEBYTECODE": "1", "HOME": "/dev/shm"},
             }
         ],
         "fresh_guard_path": request["guard_root"] + "/fresh-guard.sock",
@@ -225,6 +225,10 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
             call = _authorized_readback(container_id, token, observation_id)
             if call.returncode == 0:
                 break
+            outcome_path = root / "state/new-first-outcome.json"
+            if outcome_path.exists() and json.loads(outcome_path.read_bytes()).get("status") == "unknown":
+                logs = subprocess.run(["docker", "logs", "--tail", "40", container_id], capture_output=True, text=True, timeout=10)
+                raise AssertionError("real child exited or timed out before authenticated readback: " + (logs.stdout + logs.stderr)[-2500:])
             time.sleep(0.3)
         else:
             raise AssertionError("fresh authenticated readback never reached the real child: " + call.stderr[-1000:])
