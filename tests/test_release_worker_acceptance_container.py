@@ -816,7 +816,11 @@ def _exercise_installed_release_join(
                         assert [dispatch["inputs"]["operation_id"] for dispatch in system.remote.dispatches] == [promotion_id, later["operation_id"]]
                         beta_after = system.client.inspect_supervisor()
                         assert beta_after.supervisor_generation == beta_before.supervisor_generation
-                        assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status", "runtime_binding"))
+                        assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
+                        # Independent INSPECT calls advance observed_at without changing the worker.
+                        before_binding = beta_before.data["worker"].get("runtime_binding") or {}
+                        after_binding = beta_after.data["worker"].get("runtime_binding") or {}
+                        assert all(after_binding.get(key) == before_binding.get(key) for key in ("runtime_id", "content_identity", "lock_sha256", "source_sha", "distribution_version", "process_run_id", "deployment_generation", "start_token"))
                         assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == promoted_refs
                         assert system.remote._git("rev-parse", catalog_ref) == catalog_oid
                         assert system.remote._git("rev-parse", acceptance.tag_ref) == acceptance.tag_object_oid
@@ -973,7 +977,11 @@ def _exercise_installed_release_join(
                         assert all(path.read_bytes() == original for path, original in ownership)
                         beta_after = system.client.inspect_supervisor()
                         assert beta_after.supervisor_generation == beta_before.supervisor_generation
-                        assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status", "runtime_binding"))
+                        assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
+                        # Independent INSPECT calls advance observed_at without changing the worker.
+                        before_binding = beta_before.data["worker"].get("runtime_binding") or {}
+                        after_binding = beta_after.data["worker"].get("runtime_binding") or {}
+                        assert all(after_binding.get(key) == before_binding.get(key) for key in ("runtime_id", "content_identity", "lock_sha256", "source_sha", "distribution_version", "process_run_id", "deployment_generation", "start_token"))
                         assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == promoted_refs
                         assert system.remote._git("rev-parse", catalog_ref) == catalog_oid
                         assert system.remote._git("rev-parse", acceptance.tag_ref) == acceptance.tag_object_oid
