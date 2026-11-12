@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .containment_enrollment import EnrollmentObservation, OriginalNetworkPin, OriginalOwnerFencePin, _file_identity, _protected
+from .docker_inspection import canonical_legacy_inspection
 from .fresh_host import _evidence
 from .fresh_host_observation import (
     HostObservationUnavailable,
@@ -217,6 +218,19 @@ def _require_capture_host() -> None:
     _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(encoding="ascii"), Path("/proc/self/mountinfo").read_text(encoding="ascii"))
 
 
+def _assert_live_docker_readback(container_id: str, current: dict[str, object], values: list[object], engine: str, *, label: str) -> None:
+    final = _profile_inspect(container_id)
+    if final != current:
+        keys = sorted(key for key in set(current) | set(final) if current.get(key) != final.get(key))
+        raise ValueError(label + " full Docker inspection changed at keys " + ",".join(keys))
+    final_values = canonical_legacy_inspection(_inspect(container_id))
+    if final_values != values:
+        changed = [str(index) for index, (before, after) in enumerate(zip(values, final_values)) if before != after]
+        raise ValueError(label + " legacy Docker fields changed at indices " + ",".join(changed))
+    if _engine_id() != engine:
+        raise ValueError(label + " Docker engine identity changed during live capture")
+
+
 def capture_original_caddy_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...]) -> PriorContainer:
     """Capture the actual original Caddy, without broadening fresh admission."""
     try:
@@ -253,14 +267,17 @@ def capture_original_caddy_container(container_id: str, image_id: str, *, expect
                 raise ValueError("original Caddy mount source is unsupported")
         config_path = Path(next(source for source, destination, _ in mounts if destination == "/etc/caddy/Caddyfile"))
         config_bytes, config_identity = _protected(config_path, uid=0, size_limit=1024 * 1024)
-        values = _inspect(container_id)
+        values = canonical_legacy_inspection(_inspect(container_id))
         if values[1:5] != [image_id, True, state["Pid"], "running"] or values[9] != network or values[13:15] != [state.get("StartedAt"), current.get("RestartCount")]:
             raise ValueError("original Caddy live Docker lifetime changed")
         prior = _capture_prior_kernel(container_id, image_id, engine, values, mounts, require_owner_lock=False)
         prior.validate()
         final_config, final_identity = _protected(config_path, uid=0, size_limit=1024 * 1024)
-        if final_config != config_bytes or _file_identity(final_identity) != _file_identity(config_identity) or _profile_inspect(container_id) != current or _inspect(container_id) != values or _engine_id() != engine:
-            raise ValueError("original Caddy config or Docker identity changed during live capture")
+        if final_config != config_bytes:
+            raise ValueError("original Caddy configuration bytes changed during live capture")
+        if _file_identity(final_identity) != _file_identity(config_identity):
+            raise ValueError("original Caddy configuration file identity changed during live capture")
+        _assert_live_docker_readback(container_id, current, values, engine, label="original Caddy")
         return prior
     except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, subprocess.SubprocessError) as exc:
         raise HostObservationUnavailable("original Caddy live capture unavailable: " + str(exc)) from exc
@@ -312,7 +329,7 @@ def capture_quarantined_original_container(container_id: str, image_id: str, *, 
         source = _copy_source(container_id)
         if hashlib.sha256(source).hexdigest() != _REVIEWED_QUARANTINED_SOURCE_SHA256:
             raise ValueError("quarantined original bootstrap source is not reviewed")
-        values = _inspect(container_id)
+        values = canonical_legacy_inspection(_inspect(container_id))
         if values[1:5] != [image_id, True, state["Pid"], "running"] or values[9] != host["NetworkMode"] or values[13:15] != [state.get("StartedAt"), current.get("RestartCount")]:
             raise ValueError("quarantined original live Docker lifetime changed")
         prior = _capture_prior_kernel(container_id, image_id, engine, values, mounts, require_owner_lock=True)
@@ -321,8 +338,9 @@ def capture_quarantined_original_container(container_id: str, image_id: str, *, 
         final_config, final_identity = _protected(bootstrap_config, uid=0, size_limit=65536)
         if final_config != config_bytes or _file_identity(final_identity) != _file_identity(config_identity) or hashlib.sha256(config_bytes).hexdigest() != prior.bootstrap_sha256:
             raise ValueError("quarantined original config changed during live capture")
-        if _copy_source(container_id) != source or _profile_inspect(container_id) != current or _inspect(container_id) != values or _engine_id() != engine:
-            raise ValueError("quarantined original source or Docker identity changed during live capture")
+        if _copy_source(container_id) != source:
+            raise ValueError("quarantined original source bytes changed during live capture")
+        _assert_live_docker_readback(container_id, current, values, engine, label="quarantined original")
         return prior
     except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, sqlite3.Error, subprocess.SubprocessError, tarfile.TarError) as exc:
         raise HostObservationUnavailable("quarantined original live capture unavailable: " + str(exc)) from exc

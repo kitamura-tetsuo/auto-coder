@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, _file_identity, _protected, _trusted_ancestors
+from .docker_inspection import canonical_inspection
 from .fresh_host import _evidence
 from .fresh_host_observation import PriorContainer, _supported_prior_command
 from .fresh_initialization import load_fresh_initialization, read_fresh_status
@@ -73,7 +74,7 @@ def _inspect(container_id: str) -> dict[str, object]:
     decoded = json.loads(result.stdout, object_pairs_hook=unique_pairs)
     if not isinstance(decoded, list) or len(decoded) != 1 or not isinstance(decoded[0], dict) or decoded[0].get("Id") != container_id:
         raise ValueError("original profile Docker identity differs")
-    return decoded[0]
+    return canonical_inspection(decoded[0])
 
 
 def _mounts(inspect: dict[str, object]) -> tuple[tuple[str, str, bool], ...]:

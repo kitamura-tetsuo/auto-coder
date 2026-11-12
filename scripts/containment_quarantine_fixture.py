@@ -29,6 +29,7 @@ from loguru import logger
 from scripts.test_management_containment_enrollment_host import _private_directory, _write_private
 
 from auto_coder.management.containment_kernel_subobservation import _holder_start_token, _require_capture_host, capture_quarantined_original_container
+from auto_coder.management.docker_inspection import canonical_legacy_inspection
 from auto_coder.management.fresh_host import _evidence
 from auto_coder.management.fresh_host_observation import PriorContainer, _capture_prior_kernel, _capture_supervisor_identity, _engine_id, _inspect
 from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization
@@ -227,13 +228,13 @@ class PreparedQuarantine:
         source = _copy_source(self.manager_id)
         if hashlib.sha256(source).hexdigest() != _REVIEWED_QUARANTINED_SOURCE_SHA256:
             raise ValueError("negative fixture replaced the actual original bootstrap source")
-        values = _inspect(self.manager_id)
+        values = canonical_legacy_inspection(_inspect(self.manager_id))
         if values[1:5] != [self.image_id, True, state["Pid"], "running"]:
             raise ValueError("negative fixture live Docker identity changed")
         prior = _capture_prior_kernel(self.manager_id, self.image_id, engine, values, mounts, require_owner_lock=True)
         prior = _capture_supervisor_identity(prior, values, mounts, self.bootstrap_config)
         prior.validate()
-        if _profile_inspect(self.manager_id) != current or _inspect(self.manager_id) != values or _engine_id() != engine or _copy_source(self.manager_id) != source:
+        if _profile_inspect(self.manager_id) != current or canonical_legacy_inspection(_inspect(self.manager_id)) != values or _engine_id() != engine or _copy_source(self.manager_id) != source:
             raise ValueError("negative fixture changed during its actual live capture")
         _write_private(
             self.root / "variant-live-capture.json",

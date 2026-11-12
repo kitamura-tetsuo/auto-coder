@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ import pytest
 from auto_coder.management import containment_kernel_subobservation as kernel
 from auto_coder.management import fresh_host_observation as fresh
 from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation, OriginalNetworkPin, OriginalOwnerFencePin
+from auto_coder.management.docker_inspection import canonical_legacy_inspection
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, PriorTask
 from auto_coder.management.installed_bootstrap_mount_profile import InstalledBootstrapMountProfile
 
@@ -406,7 +408,7 @@ def test_original_caddy_capture_binds_real_profile_without_fresh_mount_relaxatio
 
     monkeypatch.setattr(kernel, "_capture_prior_kernel", captured)
     assert kernel.capture_original_caddy_container(prior.container_id, prior.image_id, expected_mounts=mounts) == prior
-    assert checks == [(prior.container_id, prior.image_id, prior.engine_id, values, mounts, False)]
+    assert checks == [(prior.container_id, prior.image_id, prior.engine_id, canonical_legacy_inspection(values), mounts, False)]
     monkeypatch.setattr(fresh, "_engine_id", lambda: prior.engine_id)
     monkeypatch.setattr(fresh, "_inspect", lambda _: values)
     with pytest.raises(HostObservationUnavailable, match="mount boundary"):
@@ -434,3 +436,81 @@ def test_original_caddy_capture_rejects_unreviewed_effects_before_kernel(tmp_pat
     monkeypatch.setattr(kernel, "_capture_prior_kernel", unexpected)
     with pytest.raises(HostObservationUnavailable, match="original Caddy"):
         kernel.capture_original_caddy_container(prior.container_id, prior.image_id, expected_mounts=mounts)
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("order", None),
+        ("rw", "full Docker inspection changed at keys Mounts"),
+        ("propagation", "full Docker inspection changed at keys Mounts"),
+        ("duplicate", "full Docker inspection changed at keys Mounts"),
+        ("pid", "full Docker inspection changed at keys State"),
+        ("legacy", "legacy Docker fields changed at indices 3"),
+        ("engine", "Docker engine identity changed"),
+        ("config-bytes", "configuration bytes changed"),
+        ("config-inode", "configuration file identity changed"),
+    ],
+)
+def test_caddy_capture_accepts_only_mount_order_and_reports_exact_changed_predicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, reason: str | None) -> None:
+    """Exercise the actual full and legacy JSON readers, with bounded unit input."""
+    prior, mounts, inspection, values = _caddy_live_inspection(tmp_path)
+    for mount in inspection["Mounts"]:
+        mount["Propagation"] = "rprivate"
+    full_reads = legacy_reads = engine_reads = 0
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.setattr(kernel, "_require_capture_host", lambda: None)
+    monkeypatch.setattr(kernel, "_protected", lambda path, **_: (path.read_bytes(), path.stat()))
+
+    def engine() -> str:
+        nonlocal engine_reads
+        engine_reads += 1
+        return "changed-engine" if change == "engine" and engine_reads > 1 else prior.engine_id
+
+    def read(arguments, **_kwargs):
+        nonlocal full_reads, legacy_reads
+        if "--format" in arguments:
+            legacy_reads += 1
+            result = copy.deepcopy(values)
+            if legacy_reads > 1:
+                result[11].reverse()
+                if change == "legacy":
+                    result[3] = prior.pid + 1
+            output = "\\n".join(json.dumps(value) for value in result)
+        else:
+            full_reads += 1
+            result = copy.deepcopy(inspection)
+            if full_reads > 1:
+                result["Mounts"].reverse()
+                if change == "rw":
+                    result["Mounts"][0]["RW"] = not result["Mounts"][0]["RW"]
+                elif change == "propagation":
+                    result["Mounts"][0]["Propagation"] = "rshared"
+                elif change == "duplicate":
+                    result["Mounts"].append(copy.deepcopy(result["Mounts"][0]))
+                elif change == "pid":
+                    result["State"]["Pid"] = prior.pid + 1
+            output = json.dumps([result])
+        return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
+
+    def capture(*_args, **_kwargs):
+        path = tmp_path / "Caddyfile"
+        if change == "config-bytes":
+            path.write_bytes(path.read_bytes() + b"# changed\n")
+        elif change == "config-inode":
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(path.read_bytes())
+            replacement.chmod(0o600)
+            replacement.replace(path)
+        return prior
+
+    monkeypatch.setattr(kernel, "_engine_id", engine)
+    monkeypatch.setattr(kernel, "_capture_prior_kernel", capture)
+    monkeypatch.setattr(subprocess, "run", read)
+    if reason is None:
+        assert kernel.capture_original_caddy_container(prior.container_id, prior.image_id, expected_mounts=mounts) == prior
+        assert full_reads == legacy_reads == engine_reads == 2
+    else:
+        with pytest.raises(HostObservationUnavailable, match=reason):
+            kernel.capture_original_caddy_container(prior.container_id, prior.image_id, expected_mounts=mounts)

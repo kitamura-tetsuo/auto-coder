@@ -67,6 +67,8 @@ host contract.
 
 Docker reads use context inspection, engine identity, unfiltered container lists,
 container inspection and bounded copies of the exact reviewed bootstrap file.
+Only the order of the effective `Mounts` collection is normalized; every complete
+mount record, including extra fields and duplicate entries, remains bound.
 The complete engine inventory is read twice. Unselected containers using selected
 images, management commands, a shared management network namespace or overlapping
 original bind roots remain potential ordinary routes and cause refusal. An

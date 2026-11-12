@@ -24,6 +24,7 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .containment_kernel_subobservation import KernelSubObservation, observe_kernel_subcomponent
 from .containment_route_manifest import RouteManifestObservation, RouteManifestUnavailable, observe_approved_route_manifest
+from .docker_inspection import canonical_inspection
 from .fresh_host_observation import _validate_host_proc_profile
 from .installed_bootstrap_mount_profile import InstalledBootstrapMountProfile, inspect_installed_bootstrap_mount_profile
 from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
@@ -193,6 +194,7 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
         raw = _docker_read(("inspect", "--type", "container", container))
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict) or raw[0].get("Id") != container:
             raise ValueError("Docker container identity differs")
+        raw = [canonical_inspection(raw[0])]
         inspected[container] = raw[0]
         image = raw[0].get("Image")
         if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
@@ -207,11 +209,12 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             raise ValueError("Docker lifetime state unavailable or unsupported")
         if (state["Pid"] > 0) != state["Running"]:
             raise ValueError("Docker running/PID relationship is contradictory")
-        if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(raw[0].get("RestartCount")) is not int or raw[0]["RestartCount"] < 0:
+        restart_count = raw[0].get("RestartCount")
+        if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(restart_count) is not int or restart_count < 0:
             raise ValueError("Docker lifetime identity unavailable")
         # Bind the complete inspection, including command, security, mounts,
         # restart policy, and lifetime, without exposing environment secrets.
-        observations.append(DockerObservation(engine, container, image, _digest(raw), policy["Name"], policy["MaximumRetryCount"], state["Running"], state["Status"], state["Pid"], state["StartedAt"], state["FinishedAt"], raw[0]["RestartCount"], _digest(mounts)))
+        observations.append(DockerObservation(engine, container, image, _digest(raw), policy["Name"], policy["MaximumRetryCount"], state["Running"], state["Status"], state["Pid"], state["StartedAt"], state["FinishedAt"], restart_count, _digest(mounts)))
     # A proposed pair cannot exclude other current Docker objects that share
     # its exact images, an installed management command or its network namespace.
     # This is candidate discovery, not proof that all ordinary controllers are

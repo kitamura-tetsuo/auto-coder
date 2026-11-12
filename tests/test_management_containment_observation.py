@@ -408,6 +408,24 @@ def test_unrelated_docker_exec_identifiers_do_not_change_installed_route_evidenc
     assert "saved-report:docker" in {item.authority for item in changed.unavailable}
 
 
+def test_complete_docker_digests_ignore_only_effective_mount_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    selected = objects["a" * 64]
+    selected["Mounts"] = [
+        {"Type": "bind", "Source": "/fixture/second", "Destination": "/second", "RW": True, "Propagation": "rprivate"},
+        {"Type": "bind", "Source": "/fixture/first", "Destination": "/first", "RW": False, "Propagation": "rprivate"},
+    ]
+    original = observation._docker(_scope())
+    selected["Mounts"].reverse()
+    assert observation._docker(_scope()) == original
+    selected["Mounts"][0]["Propagation"] = "rshared"
+    changed = observation._docker(_scope())
+    before = next(item for item in original if item.container_id == "a" * 64)
+    after = next(item for item in changed if item.container_id == "a" * 64)
+    assert after.inspection_sha256 != before.inspection_sha256
+    assert after.mounts_sha256 != before.mounts_sha256
+
+
 def test_management_candidate_exec_identifiers_remain_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     objects, _ = _engine_boundary(monkeypatch)
     candidate = objects["c" * 64]
