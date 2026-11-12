@@ -159,6 +159,21 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
     return result.data if result.data.get("binding_status") == "VERIFIED" and binding.get("source_sha") == source_sha and lifecycle.get("startup_reconciled") is True and lifecycle.get("daemon_serving") is True else None
 
 
+def _wait_initial_release_inspection(client: WorkerNetworkClient, *, timeout: float = 30) -> WorkerNetworkResult:
+    """Wait for the signed bridge, which starts after the control socket exists."""
+    last_response: WorkerNetworkResult | None = None
+
+    def inspect() -> WorkerNetworkResult | None:
+        nonlocal last_response
+        last_response = client.inspect_supervisor()
+        return last_response if last_response.result_code == "OK" else None
+
+    try:
+        return _wait_for(inspect, timeout=timeout)
+    except AssertionError as error:
+        raise AssertionError(f"Release Supervisor signed inspection did not become ready; last_response={last_response!r}") from error
+
+
 @contextmanager
 def _installed_release(
     system: _SmokeSystem,
@@ -287,8 +302,8 @@ def _installed_release(
             facts = _wait_for(lambda: facts if (facts := _container_facts(name))["socket"] else None, timeout=30)
             assert facts["docker_socket"] is False and facts["docker_binary"] is None
             client = WorkerNetworkClient(WorkerEndpointConfig("release-worker", "release", "owner/repo", address, 8843, secret))
-            stopped = client.inspect_supervisor()
-            assert stopped.result_code == "OK" and stopped.data["alive"] is False
+            stopped = _wait_initial_release_inspection(client)
+            assert stopped.result_code == "OK" and stopped.data["alive"] is False, stopped
             # External bootstrap selects a real prior installed runtime through
             # the production Supervisor UDS and observes its readiness.
             started = _control(name, {"operation_id": "fixture-prior-runtime", "operation": "START", "runtime_id": str(previous["installed_runtime_id"])})

@@ -30,7 +30,7 @@ from .containment_enrollment import (
     _protected,
     _trusted_ancestors,
 )
-from .containment_route_sources import CommandSourceFact, observe_command_sources
+from .containment_route_sources import CommandSourceFact, CommandSourceUnavailable, FsckBlockOperandFact, fsck_block_operand, observe_command_sources, observe_fsck_block_operand, observe_reviewed_fsck_fragment
 from .containment_user_routes import UserControllerInventory, observe_user_controller_inventory
 
 _UNIT_NAME = re.compile(r"(?:[A-Za-z0-9_.@:-]|\\x[0-9a-fA-F]{2})+\.(?:service|timer|socket|path|target|mount|automount|swap)")
@@ -377,6 +377,7 @@ class SystemdRouteFact:
     management_candidate: bool = False
     needs_daemon_reload: bool = False
     command_sources: tuple[CommandSourceFact, ...] = ()
+    fsck_block_operands: tuple[FsckBlockOperandFact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -456,6 +457,39 @@ def _unit_enablement(unit: str, *, user: str | None = None) -> str:
     return state
 
 
+def _fsck_data_inputs(unit: str, shown: dict[str, str], repeatable: dict[str, list[str]], unit_source: str, *, user: str | None) -> tuple[list[str], tuple[CommandSourceFact, ...], tuple[FsckBlockOperandFact, ...]]:
+    rows = [value for values in repeatable.values() for value in values]
+    starts = repeatable.get("ExecStart", [])
+    empty = ("Environment", "WorkingDirectory", "RootDirectory", "RootImage", "SourcePath", "DropInPaths")
+    if (
+        user is not None
+        or not unit.startswith("systemd-fsck@")
+        or "@." in unit
+        or shown.get("Id") != unit
+        or shown.get("LoadState") != "loaded"
+        or shown.get("UnitFileState") != "static"
+        or shown.get("NeedDaemonReload") != "no"
+        or shown.get("FragmentPath") != "/usr/lib/systemd/system/systemd-fsck@.service"
+        or any(shown.get(key) != "" for key in empty)
+        or any(repeatable.get("EnvironmentFiles", []))
+        or len(starts) != 1
+        or any(value for key, values in repeatable.items() if key not in ("ExecStart", "EnvironmentFiles") for value in values)
+    ):
+        return rows, (), ()
+    selected = fsck_block_operand(starts[0])
+    if selected is None:
+        return rows, (), ()
+    fragment = observe_reviewed_fsck_fragment(unit_source)
+    operand, remaining = selected
+    block = observe_fsck_block_operand(operand)
+    if observe_reviewed_fsck_fragment(unit_source) != fragment:
+        raise CommandSourceUnavailable("reviewed fsck fragment changed during block operand readback")
+    # Consume only this operand occurrence. The executable and every other
+    # property still pass through ordinary strict source inspection.
+    rows = [remaining if key == "ExecStart" else value for key, values in repeatable.items() for value in values]
+    return rows, (fragment,), (block,)
+
+
 def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, extra_cues: tuple[str, ...] = (), inspect_local_inputs: bool = False, module_sources: tuple[tuple[str, str], ...] = ()) -> SystemdRouteFact:
     if not _UNIT_NAME.fullmatch(unit):
         raise RouteManifestUnavailable("installed systemd route name differs")
@@ -533,14 +567,19 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
     normalized = {name: (repeatable.get(name, []) if name in _REPEATABLE_UNIT_PROPERTIES else sorted(shown.get(name, "").split()) if name in _UNORDERED_UNIT_PROPERTIES else shown.get(name, "")) for name in _UNIT_PROPERTIES}
     candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES + extra_cues)
     local_sources: tuple[CommandSourceFact, ...] = ()
+    block_operands: tuple[FsckBlockOperandFact, ...] = ()
     if inspect_local_inputs:
-        commands = "\n".join(value for values in repeatable.values() for value in values)
+        rows, fragment_sources, block_operands = _fsck_data_inputs(unit, shown, repeatable, unit_source, user=user)
+        commands = "\n".join(rows)
         commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "WorkingDirectory", "RootDirectory", "RootImage"))
         local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources)
+        local_sources = tuple(sorted((*local_sources, *fragment_sources), key=lambda item: item.path))
         candidate = candidate or local_candidate
-    fingerprint = (normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)
+    fingerprint: tuple[object, ...] = (normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)
+    if block_operands:
+        fingerprint = (*fingerprint, [asdict(item) for item in block_operands])
     digest = _digest((*fingerprint, [asdict(item) for item in local_sources])) if inspect_local_inputs else _digest(fingerprint)
-    return SystemdRouteFact(unit, digest, shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate, shown["NeedDaemonReload"] == "yes", local_sources)
+    return SystemdRouteFact(unit, digest, shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate, shown["NeedDaemonReload"] == "yes", local_sources, block_operands)
 
 
 def _user_unit_paths(user: str) -> tuple[str, ...]:

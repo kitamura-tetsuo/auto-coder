@@ -241,6 +241,15 @@ promotion publisher against real Git; it is not a live GitHub Actions acceptance
 claim. Neither worker has a Docker binary or socket. The test belongs to the
 required `isolated-containers` Supervisor profile rather than ordinary unit CI.
 
+The disposable release fixture waits for a successful authenticated Supervisor
+inspection before starting its prior installed runtime. The control Unix socket
+appears before the private HTTP bridge starts, so its pathname alone is not a
+network readiness signal. This bounded read-only wait still requires the signed
+`OK` response and the original `alive=False` assertion; an unavailable or invalidly
+signed endpoint fails with its last inspection response in the diagnostics.
+`tests/test_release_worker_fixture_readiness.py` exercises delayed and permanently
+unavailable signed transports without manufacturing a successful response.
+
 The failed-candidate case uses the same genuine acceptance and installed-runtime
 join. Only after the prior installed worker is serving, an external one-time
 fixture fault makes the actual candidate interpreter exit before daemon readiness.

@@ -195,6 +195,34 @@ local environment file is independently bound, including explicit absence; an
 optional file appearing later changes the observed route. Duplicate singleton
 identity or lifecycle properties still refuse.
 
+Unresolved shell/PATH dispatch refuses rather than inheriting an unrelated
+classification. Inline `sh`/`dash` accepts only exactly `-c` followed by one
+literal absolute command without arguments or shell operators. Combined option
+forms, interactive/login shells, overridden dispatcher `argv[0]`, Bash startup
+execution and unresolved `env` dispatch are outside the bounded syntax. Common
+launchers such as `nice` must retain a supported literal absolute target. Local
+shell wrappers and sourced files must use the supported explicit-path subset;
+an unchanged wrapper or PATH directory is not evidence that a bare helper's
+bytes are unchanged. Unprofiled local Python, Node, Perl and Ruby scripts or
+inline evaluation refuse because the wrapper alone does not bind imported
+helpers. Direct absolute packaged executables retain the existing trusted-program
+boundary, and an explicitly reviewed isolated `-I -B -m` module retains its
+separate source binding.
+
+One measured stock data operand is supported separately from executable and
+configuration sources. A direct `systemd-fsck` instance can use one literal
+`/dev/...` block operand only with the exact protected vendor fragment
+`/usr/lib/systemd/system/systemd-fsck@.service`, SHA-256
+`43be4420263da4e79a7fe33f6b628449cc56cf99ca30cdc4dedc7f53aff7ea7e`,
+no drop-ins or source redirection, no pending reload, and empty execution
+environment, working-directory and root-remapping properties. The operand's
+original path, resolved block node, device number and metadata identities are
+read back together with the canonical installed executable's identity. The
+observer never opens or reads the device. The complete command remains in the
+route fingerprint. Other uses of the same block path, including `RootImage`,
+another command or a source file, retain the ordinary source checks and refuse
+when unsupported. This profile neither stops fsck nor changes its boot mounts.
+
 The trusted operator reviews the entire catalog and every `restarter`/`unrelated`
 classification. Known management sources, names and overlapping deployment roots
 cannot be classified as unrelated. Each restarter must be masked, inactive, PID 0
