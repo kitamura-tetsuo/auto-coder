@@ -315,6 +315,60 @@ def test_unselected_management_image_and_network_routes_are_explicitly_refused(m
     assert observed.status == "unavailable"
 
 
+def test_alternative_image_mounting_original_management_root_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A different image and command cannot conceal a pre-existing root route."""
+    objects, _ = _engine_boundary(monkeypatch)
+    for name in "abc":
+        objects[name * 64]["Image"] = "sha256:" + name * 64
+    objects["a" * 64]["Mounts"] = [
+        {"Type": "bind", "Source": "/management/original-state", "Destination": "/management-child-state", "RW": True},
+    ]
+    candidate = objects["c" * 64]
+    candidate["Config"]["Cmd"] = ["worker", "--run"]
+    candidate["Mounts"] = [{"Type": "bind", "Source": "/management", "Destination": "/alternate-root", "RW": True}]
+    observed = observation.observe(_scope())
+    classified = next(item for item in observed.docker if item.container_id == "c" * 64)
+    assert classified.management_route_roles == ("selected-management-mount-source",)
+    reasons = {item.authority: item.reason for item in observed.unavailable}
+    assert "selected-management-mount-source" in reasons["docker-alternative-management:" + "c" * 64]
+
+
+def test_management_mount_prefix_near_match_does_not_classify_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    for name in "abc":
+        objects[name * 64]["Image"] = "sha256:" + name * 64
+    objects["a" * 64]["Mounts"] = [
+        {"Type": "bind", "Source": "/management/original-state", "Destination": "/management-child-state", "RW": True},
+    ]
+    worker = objects["c" * 64]
+    worker["Config"]["Cmd"] = ["worker", "--run"]
+    worker["Mounts"] = [{"Type": "bind", "Source": "/management/original-state-backup", "Destination": "/workspace", "RW": True}]
+    observed = observation.observe(_scope())
+    classified = next(item for item in observed.docker if item.container_id == "c" * 64)
+    assert classified.management_route_roles == ()
+    assert "docker-alternative-management:" + "c" * 64 not in {item.authority for item in observed.unavailable}
+
+
+def test_separate_verifier_rejects_new_management_source_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    for name in "abc":
+        objects[name * 64]["Image"] = "sha256:" + name * 64
+    objects["a" * 64]["Mounts"] = [
+        {"Type": "bind", "Source": "/management/original-state", "Destination": "/management-child-state", "RW": True},
+    ]
+    objects["c" * 64]["Config"]["Cmd"] = ["worker", "--run"]
+    saved = json.loads(json.dumps(asdict(observation.observe(_scope()))))
+    assert not any(item["authority"] == "docker-alternative-management:" + "c" * 64 for item in saved["unavailable"])
+    objects["c" * 64]["Mounts"] = [
+        {"Type": "bind", "Source": "/management/original-state/config", "Destination": "/config", "RW": False},
+    ]
+    verified = observation.verify(_scope(), saved)
+    authorities = {item.authority for item in verified.unavailable}
+    assert "docker-alternative-management:" + "c" * 64 in authorities
+    assert "saved-report:docker" in authorities
+    assert "saved-report:unavailable" in authorities
+
+
 def test_unrelated_worker_restart_route_is_observed_but_not_treated_as_management_restarter(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the worker in the engine inventory without demanding worker inhibition."""
     objects, _ = _engine_boundary(monkeypatch)

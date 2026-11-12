@@ -33,6 +33,7 @@ from .systemd_watcher_observation import WatcherSystemdObservation, observe_watc
 
 PROFILES = ("ordinary-v1", "quarantined-original-v1")
 _LIMIT = 1024 * 1024
+_MANAGEMENT_MOUNT_DESTINATIONS = frozenset(("/bootstrap", "/management-child-state", "/management-source", "/management-versions"))
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,27 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
     # known; the separate installed-route inventory is still required.
     management_image = inspected[scope.management_id]["Image"]
     proxy_image = inspected[scope.proxy_id]["Image"]
+    management_mounts = inspected[scope.management_id]["Mounts"]
+    if not isinstance(management_mounts, list):
+        raise ValueError("Selected management mount inventory is unavailable")
+    management_sources = tuple(source for mount in management_mounts if isinstance(mount, dict) and mount.get("Type") == "bind" and mount.get("Destination") in _MANAGEMENT_MOUNT_DESTINATIONS and isinstance(source := mount.get("Source"), str) and os.path.isabs(source))
+
+    def overlapping_management_source(candidate_mounts: object) -> bool:
+        if not isinstance(candidate_mounts, list):
+            raise ValueError("Docker candidate mount inventory is unavailable")
+        for mount in candidate_mounts:
+            if not isinstance(mount, dict) or not isinstance(mount.get("Type"), str):
+                raise ValueError("Docker candidate mount inventory is ambiguous")
+            if mount["Type"] != "bind":
+                continue
+            source = mount.get("Source")
+            if not isinstance(source, str) or not os.path.isabs(source):
+                raise ValueError("Docker candidate bind source is ambiguous")
+            source_path = os.path.normpath(source)
+            if any(os.path.commonpath((source_path, os.path.normpath(original))) in (source_path, os.path.normpath(original)) for original in management_sources):
+                return True
+        return False
+
     classified = []
     for item in observations:
         obj = inspected[item.container_id]
@@ -241,6 +263,8 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             roles.append("management-command")
         if network_mode == "container:" + scope.management_id:
             roles.append("selected-management-network")
+        if item.container_id not in (scope.management_id, scope.proxy_id) and overlapping_management_source(obj["Mounts"]):
+            roles.append("selected-management-mount-source")
         if roles or "ExecIDs" not in obj:
             classified.append(replace(item, management_route_roles=tuple(roles)))
         else:

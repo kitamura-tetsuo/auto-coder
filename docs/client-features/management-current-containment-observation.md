@@ -74,6 +74,13 @@ management routes from the selected pair's Docker images, installed
 bootstrap/serve commands, and shared management network namespace. Unselected
 matches remain visible as refusals in the independent verifier. These are
 conservative candidates, not an authoritative inventory of all installed routes.
+The inventory also treats another container as a management candidate when its
+bind-mount source overlaps the selected manager's original bootstrap, child
+state, management-source or management-versions source root, even when the
+other container uses a different image and command. A similarly named but
+non-overlapping directory does not count as the same root. This detects an
+additional alternate-root path, but does not prove that all such paths have
+been enumerated outside Docker.
 
 The verifier independently reads the selected current files, Docker facts,
 selected Linux process facts and the fixed watcher systemd route; it never
