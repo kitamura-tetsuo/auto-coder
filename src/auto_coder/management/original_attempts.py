@@ -295,6 +295,12 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     seen_roots: set[tuple[int, int]] = set()
     earlier_predecessor_names: set[str] = set()
     for event in events:
+        if event.kind == "claimed":
+            # A later claim cannot authorize an earlier descendant anchor.
+            # Eligibility begins at this event, not at the parent's anchor.
+            claimed_intent = parse_fresh_intent(anchors[event.attempt]["intent"])
+            known_predecessors.add((claimed_intent.new_instance, claimed_intent.new_container_id))
+            continue
         if event.kind != "anchor":
             continue
         anchor = anchors[event.attempt]
@@ -321,8 +327,6 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         seen_targets.update(target_keys)
         seen_roots.update((state_id, journal_id))
         earlier_predecessor_names.add(intent.old_instance)
-        if "claimed" in branches[event.attempt]:
-            known_predecessors.add((intent.new_instance, intent.new_container_id))
 
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")

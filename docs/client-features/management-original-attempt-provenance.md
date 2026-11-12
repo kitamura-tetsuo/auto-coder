@@ -14,10 +14,14 @@ cannot establish a deployment-wide frontier across earlier or unenrolled calls.
 The initial predecessor is an external boundary, not proof that its missing
 history was empty. `earlier_history` is always `UNAVAILABLE: before prospective
 enrollment`. In particular this profile cannot make the current incident's
-missing failed-generation journal recoverable. Deployment-wide enrollment
-continuity, every possible admission bypass, and authentic earlier history
-remain unverified; do not use this implementation as a recovery completeness
-prerequisite.
+missing failed-generation journal recoverable. The supported host fresh,
+bootstrap-upgrade and continuous-cutover paths preserve the binding of an
+enrolled predecessor before any successor grant. An unrelated unenrolled
+deployment and any pre-enrollment interval remain outside this profile.
+A consumer may independently verify the exact covered frontier while holding
+its current fences; it must separately decide whether that explicitly bounded
+coverage supplies the history its own contract requires. Neither enrollment
+nor a matching evidence object supplies recovery or launch authority.
 
 ## Original producer and lifetime
 
@@ -124,6 +128,11 @@ An original target whose own admission ended `never-created`, `unresolved`, or
 only anchored without a durable claim is not a valid predecessor for a new
 covered attempt. Both the original producer and independent evidence consumer
 refuse such a lineage instead of promoting a failed branch into an ancestor.
+The claim must precede every descendant anchor in the original event sequence.
+A later parent claim cannot retroactively validate an earlier descendant even
+if each per-attempt sequence and the rehashed frontier are individually valid.
+Producer admission and grant validation enforce the same chronological rule
+as the independent consumer, preserving the corrupt originals on refusal.
 This check is limited to prospective capture and does not assert that a merely
 claimed predecessor was successfully launched or ready.
 
@@ -222,10 +231,11 @@ Observation resources close on refusal. Neither an earlier verification nor a
 released observation claims current exclusion; consumers still own their actual
 deployment fences and operation-history policy.
 
-## Evidence and remaining limits
+## Verification and supported limits
 
 Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py
 tests/test_management_original_predecessor_guard.py
+tests/test_management_original_event_order.py
 tests/test_management_original_bootstrap_integration.py
 tests/test_management_original_native_process.py
 tests/test_management_fresh_launch_exclusions.py`
@@ -342,3 +352,50 @@ deployment-wide enforcement against an unenrolled sibling origin. The native hos
 upgrade tests can fail in restricted execution environments; unavailable host
 behavior is not a successful acceptance result. No real management host, OAuth,
 workers or controller configuration is changed by this test selection.
+
+### Required acceptance coverage
+
+`scripts/supervisor_ci_profiles.py` makes eight original-history nodes mandatory
+in the existing `fresh-host` CI profile: the `original-lineage` second cutover,
+three original-profile first-launch/contention/crash variants, and four
+`test_original_host_durable_boundaries` variants. The original full test-file
+selectors remain in place. The planner and native evidence aggregate refuse a
+missing required node or an unexplained skip; collecting a smaller successful
+subset cannot establish this profile's acceptance.
+
+Each durable-boundary variant reuses real captured prior Docker identities,
+the pinned namespace, held owner fence, protected configuration and retained
+disposable OAuth. Separate `fresh_host` CLI producers are interrupted before
+event creation, after event durability, after pending-frontier durability,
+after atomic replacement, and after the final directory fsync. A contender
+must observably reach the held kernel history flock. The `never-created` case
+temporarily replaces the disposable OAuth pathname after the durable anchor,
+causing the native claim to refuse; the original directory identity and bytes
+are restored before observation. No producer or verifier success is supplied
+by a test double.
+
+Independent CLI readers inspect the interrupted originals without mutation.
+Terminal cases with a published original boundary verify successfully, then
+refuse a real host grant continuation supplied with current Docker observations
+and a physical `docker start` callback. Incomplete boundaries remain unavailable.
+Docker independently reports each refused candidate as never-started
+`created`, with PID zero, no native stores and no grant socket. Valid states
+that still permit their first grant are not misclassified as terminal refusal.
+Every variant finishes by completing the unchanged authenticated original-profile
+launch, proving that the harness has usable positive host prerequisites.
+SIGKILL observes process interruption; it does not simulate storage power loss.
+
+| Issue acceptance | Authoritative maintained oracle |
+| --- | --- |
+| AS-L01; REQ-301/302/304/306 | `test_real_second_cutover_preserves_all_owner_and_key_exclusions[original-lineage]`: real covered B/C grants and refused D, independent verification, omitted branch, changed source and missing expected journal refusal. |
+| AS-L02; REQ-301/303/305/306 | The four `test_original_host_durable_boundaries` variants: real CLI contention and interruption at five publication boundaries, native terminal refusal, no actual grant/launch; the 24 writer-syscall cases remain complementary. |
+| AS-L03; REQ-302/303/305/306 | `test_missing_legacy_histories_and_new_enrollment_are_unavailable_without_writes`, paired with the actual-host terminal positive above: legacy absence cannot supply a new original fact. |
+| AS-L04; REQ-302/304/305/306 | Real `original-lineage` separate consumers: unheld/released/duplicate owner descriptors, replaced history/owner/receipt inodes, valid foreign deployment, and a genuinely advanced original frontier invalidate the earlier object; fresh correct evidence verifies again. |
+| AS-L05; REQ-305/306 | Original-profile first-launch, contention and after-claim-crash Docker cases plus `test_ordinary_fresh_and_upgrade_refusals_preserve_original_records`: retained OAuth, controllers and old original records remain unchanged. |
+
+The source-order corruption tests are explicitly negative controls: they rehash
+invalid event order to demonstrate producer refusal. Native store and transport
+substitutions in lower-level tests remain component evidence, separate from the
+mandatory physical Docker and CLI origins above. The accepted scope stays the
+selected prospective history; it does not enroll a live deployment, recreate an
+old journal, or complete the independent recovery consumers in #2824/#2825.

@@ -41,8 +41,19 @@ MANAGEMENT_SKIPS = {
 }
 MANAGEMENT_SKIPS["tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port"] = "production-profile image is not available locally"
 
-FRESH_REQUIRED = tuple(f"tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[{variant}]" for variant in ("complete", "host-interrupted", "omitted-ancestor", "stopped-prior")) + tuple(
-    f"tests/test_management_installed_fresh_container.py::test_installed_initial_abc_real_handoff[{variant}]" for variant in ("complete", "before-stop", "before-forward-start", "ready-corrupt", "host-interrupted", "source-unavailable")
+INSTALLED_FRESH_REQUIRED = tuple(f"tests/test_management_installed_fresh_container.py::test_installed_initial_abc_real_handoff[{variant}]" for variant in ("complete", "before-stop", "before-forward-start", "ready-corrupt", "host-interrupted", "source-unavailable"))
+FRESH_REQUIRED = (
+    tuple(f"tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[{variant}]" for variant in ("complete", "host-interrupted", "omitted-ancestor", "stopped-prior", "original-lineage"))
+    + INSTALLED_FRESH_REQUIRED
+    + tuple(
+        f"tests/test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[{variant}]"
+        for variant in (
+            "False-False-None-True-False-False-True",
+            "False-True-None-True-False-False-True",
+            "False-False-after-claim-False-False-False-True",
+        )
+    )
+    + tuple(f"tests/test_management_fresh_end_to_end.py::test_original_host_durable_boundaries[{boundary}]" for boundary in ("anchor", "claimed", "never-created", "grant-possible"))
 )
 
 CONTAINER_REQUIRED = (
@@ -100,7 +111,7 @@ FRESH_SELECTORS = (
     "tests/test_management_archived_cutover_container.py",
     "tests/test_management_retained_startup_container.py",
     "tests/test_management_proxy_watcher_process_integration.py",
-    *FRESH_REQUIRED[4:],
+    *INSTALLED_FRESH_REQUIRED,
 )
 
 SELECTORS = {
