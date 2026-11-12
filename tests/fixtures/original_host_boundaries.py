@@ -184,7 +184,6 @@ def exercise_original_host_boundaries(
         intent = replace(
             original,
             request_id=str(uuid.uuid4()),
-            new_instance=name,
             new_container_id=container_id,
             host_state_root=str(state),
             host_journal_root=str(journal),
