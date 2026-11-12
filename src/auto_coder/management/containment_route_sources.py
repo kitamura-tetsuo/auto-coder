@@ -358,6 +358,7 @@ def observe_command_sources(
     uid: int,
     cues: tuple[str, ...],
     known_modules: tuple[tuple[str, str], ...] = (),
+    shell_source: bool = False,
 ) -> tuple[tuple[CommandSourceFact, ...], bool]:
     """Read known local inputs; selectors never decide whether a source is safe."""
     if len(text.encode()) > _MAX_SOURCE_BYTES:
@@ -386,7 +387,7 @@ def observe_command_sources(
             reviewed_module_inputs.add(selected_modules[module])
         return references
 
-    pending = inputs(text)
+    pending = inputs(text, shell_source=shell_source)
     facts: dict[str, CommandSourceFact] = {}
     inspected_shell_inputs: set[str] = set()
     inspected_environment_inputs: set[str] = set()
@@ -448,6 +449,7 @@ def observe_command_sources(
             if not _trusted_program(path) or name in environment_inputs:
                 facts[name] = CommandSourceFact(name, name, "missing", 0, 0, 0, 0, 0, "")
             continue
+        candidate = candidate or any(cue in str(resolved) for cue in cues)
         if _trusted_program(path) and _trusted_program(resolved) and name not in environment_inputs:
             # Trusted distro programs are not recursively interpreted. Root's
             # unrelated-service review remains a deliberate trust boundary.

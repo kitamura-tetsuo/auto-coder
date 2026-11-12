@@ -238,6 +238,7 @@ class _closed_routes:
         self.root = self.base / "approved"
         self.root.mkdir(mode=0o700)
         self.cron_roots = (self.base / "cron.d", self.base / "at")
+        self.cron_source_formats = ((self.cron_roots[0], "system-crontab"), (self.cron_roots[1], "shell"))
         self.cron_roots[0].mkdir()
         self.cron_roots[1].mkdir()
         (self.cron_roots[0] / "system-cron").write_text("# unrelated fixture\n")
@@ -289,7 +290,7 @@ class _closed_routes:
         self.path.chmod(0o600)
 
     def observe(self) -> routes.RouteManifestObservation:
-        return routes._observe_approved_route_manifest(self.approval, self.docker, root=self.root, expected_uid=os.geteuid(), cron_roots=self.cron_roots)
+        return routes._observe_approved_route_manifest(self.approval, self.docker, root=self.root, expected_uid=os.geteuid(), cron_roots=self.cron_roots, cron_source_formats=self.cron_source_formats)
 
     def __enter__(self) -> _closed_routes:
         return self
@@ -519,6 +520,7 @@ def test_v2_refuses_a_user_controller_change_during_second_read(monkeypatch: pyt
 def test_v2_draft_is_not_self_approval_and_includes_observed_user_and_root_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     with _closed_v2_routes(monkeypatch) as fixture:
         monkeypatch.setattr(routes, "_CRON_ROOTS", fixture.cron_roots)
+        monkeypatch.setattr(routes, "_CRON_SOURCE_FORMATS", fixture.cron_source_formats)
         original = fixture.path.read_bytes()
         draft = routes.propose_unapproved_route_draft(fixture.approval, fixture.docker, closed_profile=True)
         assert draft["schema"] == "approved-management-ordinary-routes-v2"
@@ -696,7 +698,7 @@ def test_v2_route_observer_refuses_mutated_external_cron_wrapper(tmp_path: Path,
         wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
         (fixture.cron_roots[0] / "system-cron").write_text("* * * * * root " + str(wrapper) + "\n")
         cues = routes._deployment_cues(fixture.approval, fixture.bindings)
-        fixture.manifest = replace(fixture.manifest, cron_entries=routes._cron_catalog(roots=fixture.cron_roots, trusted_uid=os.geteuid(), extra_cues=cues, inspect_local_inputs=True))
+        fixture.manifest = replace(fixture.manifest, cron_entries=routes._cron_catalog(roots=fixture.cron_roots, trusted_uid=os.geteuid(), extra_cues=cues, inspect_local_inputs=True, source_formats=fixture.cron_source_formats))
         fixture.save()
         assert fixture.observe().closed_profile
         wrapper.write_text("#!/bin/sh\nexec /usr/bin/false\n")

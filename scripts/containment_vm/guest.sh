@@ -53,7 +53,7 @@ for name, digest in manifest["inputs_sha256"].items():
 PY
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl docker.io git python3-venv
+apt-get install -y --no-install-recommends ca-certificates cron curl docker.io git python3-venv
 systemctl start docker
 python3 -m venv /opt/fixture-tools
 /opt/fixture-tools/bin/pip install uv==0.13.6

@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .archived_exclusions import unique_pairs
+from .containment_cron_inhibition import CRON_ROUTE_CUES, STOCK_INPUTS, CronInhibitedSource, exact_stock_source, observe_inhibited_stock_cron_scope
 from .containment_enrollment import (
     ENROLLMENT_ROOT,
     EnrollmentObservation,
@@ -31,6 +32,7 @@ from .containment_enrollment import (
     _trusted_ancestors,
 )
 from .containment_route_sources import CommandSourceFact, CommandSourceUnavailable, FsckBlockOperandFact, fsck_block_operand, observe_command_sources, observe_fsck_block_operand, observe_reviewed_fsck_fragment
+from .containment_systemd_exec import SYSTEMD_EXEC_CONTEXT_PROPERTIES, SystemdExecSearchFact, reobserve_systemd_exec_searches, resolve_direct_systemd_commands
 from .containment_user_routes import UserControllerInventory, observe_user_controller_inventory
 
 _UNIT_NAME = re.compile(r"(?:[A-Za-z0-9_.@:-]|\\x[0-9a-fA-F]{2})+\.(?:service|timer|socket|path|target|mount|automount|swap)")
@@ -54,6 +56,7 @@ _CRON_ROOTS = (
     Path("/var/spool/at"),
     Path("/var/spool/atjobs"),
 )
+_CRON_SOURCE_FORMATS = tuple(zip(_CRON_ROOTS, ("system-crontab", "anacrontab", "system-crontab", "shell", "shell", "shell", "shell", "user-crontab", "shell", "shell")))
 _CRON_SCHEDULERS = frozenset(("cron.service", "crond.service", "anacron.service", "atd.service"))
 _MANAGEMENT_CUES = (
     "auto_coder.management.bootstrap_supervisor",
@@ -61,7 +64,7 @@ _MANAGEMENT_CUES = (
     "auto-coder-management-",
     "auto-coder-proxy-",
 )
-_UNIT_PROPERTIES = (
+_UNIT_PROPERTIES: tuple[str, ...] = (
     "Id",
     "LoadState",
     "UnitFileState",
@@ -89,6 +92,7 @@ _UNIT_PROPERTIES = (
     "Wants",
     "Requires",
 )
+_UNIT_PROPERTIES += tuple(name for name in SYSTEMD_EXEC_CONTEXT_PROPERTIES if name not in _UNIT_PROPERTIES)
 _REQUIRED_UNIT_PROPERTIES = (
     "Id",
     "LoadState",
@@ -144,10 +148,11 @@ class CronEntry:
     target_inode: int = 0
     target_ctime_ns: int = 0
     command_sources: tuple[CommandSourceFact, ...] = ()
+    inhibited_source: CronInhibitedSource | None = None
 
     @classmethod
     def parse(cls, value: object) -> CronEntry:
-        if not isinstance(value, dict) or set(value) not in (set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - {"command_sources"}):
+        if not isinstance(value, dict) or set(value) not in (set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - {"inhibited_source"}, set(cls.__dataclass_fields__) - {"command_sources", "inhibited_source"}):
             raise RouteManifestUnavailable("approved cron entry schema differs")
         if not isinstance(value["path"], str) or not Path(value["path"]).is_absolute() or len(value["path"]) > 4096:
             raise RouteManifestUnavailable("approved cron entry path differs")
@@ -177,7 +182,10 @@ class CronEntry:
         parsed_sources = tuple(CommandSourceFact.parse(item) for item in sources)
         if tuple(item.path for item in parsed_sources) != tuple(sorted({item.path for item in parsed_sources})):
             raise RouteManifestUnavailable("approved cron command sources are duplicate or unsorted")
-        return cls(**{**value, "command_sources": parsed_sources})
+        inhibited = CronInhibitedSource.parse(value["inhibited_source"]) if value.get("inhibited_source") is not None else None
+        if inhibited is not None and (value["kind"] != "regular" or not value["management_candidate"] or parsed_sources or value["path"] not in STOCK_INPUTS or value["sha256"] != STOCK_INPUTS[value["path"]][1]):
+            raise RouteManifestUnavailable("inhibited stock cron source identity or classification differs")
+        return cls(**{**value, "command_sources": parsed_sources, "inhibited_source": inhibited})
 
 
 @dataclass(frozen=True)
@@ -378,6 +386,7 @@ class SystemdRouteFact:
     needs_daemon_reload: bool = False
     command_sources: tuple[CommandSourceFact, ...] = ()
     fsck_block_operands: tuple[FsckBlockOperandFact, ...] = ()
+    systemd_exec_searches: tuple[SystemdExecSearchFact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -505,7 +514,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
         properties = ""
         repeatable: dict[str, list[str]] = {}
     else:
-        properties = _command(*_systemctl_prefix(user), "show", "--property=" + ",".join(_UNIT_PROPERTIES), "--", unit)
+        properties = _command(*_systemctl_prefix(user), "show", "--all", "--property=" + ",".join(_UNIT_PROPERTIES), "--", unit)
         shown = {}
         repeatable = {}
         for line in properties.splitlines():
@@ -568,18 +577,23 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
     candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES + extra_cues)
     local_sources: tuple[CommandSourceFact, ...] = ()
     block_operands: tuple[FsckBlockOperandFact, ...] = ()
+    exec_searches: tuple[SystemdExecSearchFact, ...] = ()
     if inspect_local_inputs:
         rows, fragment_sources, block_operands = _fsck_data_inputs(unit, shown, repeatable, unit_source, user=user)
-        commands = "\n".join(rows)
+        mapped_rows, exec_searches = resolve_direct_systemd_commands(tuple(rows), unit=unit, shown=shown, environment_files=tuple(repeatable.get("EnvironmentFiles", [])), user=user, uid=trusted_uid, read_command=_command)
+        commands = "\n".join(mapped_rows)
         commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "WorkingDirectory", "RootDirectory", "RootImage"))
         local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources)
+        reobserve_systemd_exec_searches(exec_searches, uid=trusted_uid, read_command=_command)
         local_sources = tuple(sorted((*local_sources, *fragment_sources), key=lambda item: item.path))
         candidate = candidate or local_candidate
     fingerprint: tuple[object, ...] = (normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)
     if block_operands:
         fingerprint = (*fingerprint, [asdict(item) for item in block_operands])
+    if exec_searches:
+        fingerprint = (*fingerprint, [asdict(item) for item in exec_searches])
     digest = _digest((*fingerprint, [asdict(item) for item in local_sources])) if inspect_local_inputs else _digest(fingerprint)
-    return SystemdRouteFact(unit, digest, shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate, shown["NeedDaemonReload"] == "yes", local_sources, block_operands)
+    return SystemdRouteFact(unit, digest, shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate, shown["NeedDaemonReload"] == "yes", local_sources, block_operands, exec_searches)
 
 
 def _user_unit_paths(user: str) -> tuple[str, ...]:
@@ -642,11 +656,85 @@ def _deployment_root_bindings(approval: EnrollmentObservation, *, trusted_uid: i
     return bindings
 
 
-def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0, extra_cues: tuple[str, ...] = (), inspect_local_inputs: bool = False, module_sources: tuple[tuple[str, str], ...] = ()) -> tuple[CronEntry, ...]:
+def _cron_source_format(path: Path, formats: tuple[tuple[Path, str], ...]) -> str:
+    """Use controller-owned path roles, never command/username token guesses."""
+    matches = [(len(root.parts), kind) for root, kind in formats if path == root or path.is_relative_to(root)]
+    if not matches:
+        raise RouteManifestUnavailable("cron/at source lacks a supported installed path format")
+    longest = max(length for length, _ in matches)
+    selected = [kind for length, kind in matches if length == longest]
+    if len(selected) != 1 or selected[0] not in ("system-crontab", "user-crontab", "anacrontab", "shell"):
+        raise RouteManifestUnavailable("cron/at source format is ambiguous or unsupported")
+    return selected[0]
+
+
+def _cron_shell_text(text: str, kind: str) -> str:
+    """Remove only the fixed schedule fields before existing shell inspection."""
+    if kind == "shell":
+        return text
+    commands = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*)", line)
+        if assignment:
+            name, value = assignment.groups()
+            if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+                value = value[1:-1]
+            if not re.fullmatch(r"[A-Za-z0-9_./:+@=-]*", value):
+                raise RouteManifestUnavailable("cron environment assignment is outside the literal source profile")
+            if name == "SHELL":
+                if value not in ("/bin/sh", "/bin/dash", "/usr/bin/sh", "/usr/bin/dash"):
+                    raise RouteManifestUnavailable("cron shell selection is outside the supported nonlogin profile")
+                # This selects the fixed interpreter; it is not a command
+                # invoking a shell with missing arguments. Raw bytes remain
+                # bound in the enclosing cron entry's digest.
+                continue
+            commands.append(name + "=" + value)
+            continue
+        if kind == "anacrontab":
+            fields = line.split(None, 3)
+            if len(fields) != 4 or not re.fullmatch(r"(?:[0-9]{1,10}|@monthly)", fields[0]) or not re.fullmatch(r"[0-9]{1,10}", fields[1]) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", fields[2]):
+                raise RouteManifestUnavailable("anacron schedule source is outside the supported format")
+            command = fields[3]
+        else:
+            system = kind == "system-crontab"
+            if line.startswith("@"):
+                fields = line.split(None, 2 if system else 1)
+                if len(fields) != (3 if system else 2) or fields[0] not in ("@reboot", "@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"):
+                    raise RouteManifestUnavailable("cron macro source is outside the supported format")
+                user_index = 1
+            else:
+                fields = line.split(None, 6 if system else 5)
+                if len(fields) != (7 if system else 6) or any(not re.fullmatch(r"[A-Za-z0-9*,/-]{1,128}", value) for value in fields[:5]):
+                    raise RouteManifestUnavailable("cron schedule source is outside the supported format")
+                user_index = 5
+            if system and not re.fullmatch(r"(?:[A-Za-z_][A-Za-z0-9_.-]{0,63}\$?|[0-9]{1,20})", fields[user_index]):
+                raise RouteManifestUnavailable("system cron account field is outside the supported format")
+            command = fields[-1]
+        if "%" in command:
+            raise RouteManifestUnavailable("cron percent/stdin dispatch is outside the supported format")
+        commands.append(command)
+    return "\n".join(commands)
+
+
+def _cron_command_sources(data: bytes, path: Path, *, uid: int, cues: tuple[str, ...], module_sources: tuple[tuple[str, str], ...], source_formats: tuple[tuple[Path, str], ...]) -> tuple[tuple[CommandSourceFact, ...], bool]:
+    source = data.decode("utf-8")
+    kind = _cron_source_format(path, source_formats)
+    sources, candidate = observe_command_sources(_cron_shell_text(source, kind), uid=uid, cues=cues, known_modules=module_sources, shell_source=True)
+    return sources, candidate or any(cue in source for cue in cues)
+
+
+def _cron_catalog(
+    *, roots: tuple[Path, ...], trusted_uid: int = 0, extra_cues: tuple[str, ...] = (), inspect_local_inputs: bool = False, module_sources: tuple[tuple[str, str], ...] = (), source_formats: tuple[tuple[Path, str], ...] | None = None, systemd_facts: tuple[SystemdRouteFact, ...] = ()
+) -> tuple[CronEntry, ...]:
     """Scan a fixed whole-cron/at surface; missing roots remain in the digest."""
     pending = list(roots)
     observed: dict[str, CronEntry] = {}
     aggregate_bytes = 0
+    stock_inhibition: CronInhibitedSource | None = None
+    local_sources: tuple[CommandSourceFact, ...] = ()
     while pending:
         path = pending.pop()
         name = str(path)
@@ -671,8 +759,18 @@ def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0, extra_cues: 
             aggregate_bytes += len(data)
             if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
                 raise RouteManifestUnavailable("cron source changed or exceeded bounded read")
-            local_sources, candidate = observe_command_sources(data.decode("utf-8"), uid=info.st_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources) if inspect_local_inputs else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
-            observed[name] = CronEntry(name, "regular", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), candidate, command_sources=local_sources)
+            inhibited_source = None
+            formats = _CRON_SOURCE_FORMATS if source_formats is None else source_formats
+            if inspect_local_inputs and name in STOCK_INPUTS and exact_stock_source(path, data, _cron_source_format(path, formats)):
+                if info.st_uid != trusted_uid or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    raise RouteManifestUnavailable("inhibited stock cron source is not owner-protected")
+                if stock_inhibition is None:
+                    stock_inhibition = observe_inhibited_stock_cron_scope(systemd_facts)
+                inhibited_source = stock_inhibition
+                local_sources, candidate = (), True
+            else:
+                local_sources, candidate = _cron_command_sources(data, path, uid=info.st_uid, cues=_MANAGEMENT_CUES + extra_cues, module_sources=module_sources, source_formats=formats) if inspect_local_inputs else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
+            observed[name] = CronEntry(name, "regular", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), candidate, command_sources=local_sources, inhibited_source=inhibited_source)
         elif stat.S_ISLNK(info.st_mode):
             target_text = os.readlink(path)
             if not target_text or len(target_text) > 4096 or info.st_uid != trusted_uid:
@@ -691,7 +789,11 @@ def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0, extra_cues: 
             aggregate_bytes += len(data)
             if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(resolved.lstat()) or _file_identity(path.lstat()) != _file_identity(info) or os.readlink(path) != target_text:
                 raise RouteManifestUnavailable("installed cron symbolic link or its target changed during observation")
-            local_sources, candidate = observe_command_sources(data.decode("utf-8"), uid=after.st_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources) if inspect_local_inputs else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
+            local_sources, candidate = (
+                _cron_command_sources(data, path, uid=after.st_uid, cues=_MANAGEMENT_CUES + extra_cues, module_sources=module_sources, source_formats=_CRON_SOURCE_FORMATS if source_formats is None else source_formats)
+                if inspect_local_inputs
+                else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
+            )
             observed[name] = CronEntry(name, "symlink", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), candidate, target_text, after.st_dev, after.st_ino, after.st_ctime_ns, local_sources)
         else:
             raise RouteManifestUnavailable("symlink or unsupported installed cron route requires explicit refusal")
@@ -715,7 +817,7 @@ def _local_script(path: Path, *, expected_uid: int) -> tuple[str, int, int]:
 
 
 def _deployment_cues(approval: EnrollmentObservation, bindings: tuple[DeploymentRootBinding, ...]) -> tuple[str, ...]:
-    return tuple(sorted({item.source for item in bindings} | {item.path for item in approval.enrollment.original_files} | {approval.enrollment.management_id, approval.enrollment.proxy_id}))
+    return tuple(sorted({item.source for item in bindings} | {item.path for item in approval.enrollment.original_files} | {approval.enrollment.management_id, approval.enrollment.proxy_id} | set(CRON_ROUTE_CUES)))
 
 
 def _deployment_modules(approval: EnrollmentObservation) -> tuple[tuple[str, str], ...]:
@@ -756,6 +858,7 @@ def _observe_approved_route_manifest(
     root: Path,
     expected_uid: int,
     cron_roots: tuple[Path, ...] = _CRON_ROOTS,
+    cron_source_formats: tuple[tuple[Path, str], ...] | None = None,
 ) -> RouteManifestObservation:
     """Internal root/cron injection exists only for independently protected fixtures."""
     if os.geteuid() != expected_uid:
@@ -795,7 +898,7 @@ def _observe_approved_route_manifest(
             raise RouteManifestUnavailable("ordinary systemd restarter remains enabled: " + approved.unit)
     if manifest.cron_restarter_paths and not _CRON_SCHEDULERS.intersection(restarters):
         raise RouteManifestUnavailable("ordinary cron restarter lacks scheduler inhibition")
-    cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules)
+    cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules, source_formats=cron_source_formats, systemd_facts=observed_systemd)
     if cron != manifest.cron_entries:
         raise RouteManifestUnavailable("unknown, omitted or changed cron/at route")
     if any(entry.management_candidate and entry.path not in manifest.cron_restarter_paths for entry in cron):
@@ -819,7 +922,7 @@ def _observe_approved_route_manifest(
     if (
         _systemd_catalog() != first_catalog
         or tuple(_systemd_unit(unit, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules) for unit in first_catalog) != observed_systemd
-        or _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules) != cron
+        or _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules, source_formats=cron_source_formats, systemd_facts=observed_systemd) != cron
     ):
         raise RouteManifestUnavailable("installed ordinary routes changed during observation")
     if is_closed_version and (_deployment_root_bindings(approval, trusted_uid=expected_uid) != bindings or _user_controllers(observed_systemd, cues, modules) != (users, user_units)):
@@ -849,7 +952,7 @@ def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tupl
     modules = _deployment_modules(approval) if closed_profile else ()
     catalog = _systemd_catalog()
     systemd = tuple(_systemd_unit(unit, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules) for unit in catalog)
-    cron = _cron_catalog(roots=_CRON_ROOTS, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules)
+    cron = _cron_catalog(roots=_CRON_ROOTS, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules, systemd_facts=systemd)
     users, user_units = _user_controllers(systemd, cues, modules) if closed_profile else (None, ())
     return {
         "schema": "approved-management-ordinary-routes-v2" if closed_profile else "approved-management-ordinary-routes-v1",
@@ -860,7 +963,10 @@ def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tupl
         "enrollment_sha256": approval.enrollment_sha256,
         "approved_observation_only": True,
         "complete_ordinary_routes_attested": False,
-        "systemd_routes": [asdict(SystemdRoute(item.unit, item.sha256, "restarter" if item.management_candidate or item.unit == "auto-coder-management-proxy-watch.service" else "unrelated")) for item in systemd],
+        "systemd_routes": [
+            asdict(SystemdRoute(item.unit, item.sha256, "restarter" if item.management_candidate or item.unit == "auto-coder-management-proxy-watch.service" or any(entry.inhibited_source is not None and entry.inhibited_source.scheduler_unit == item.unit for entry in cron) else "unrelated"))
+            for item in systemd
+        ],
         "docker_container_ids": sorted(getattr(item, "container_id", "") for item in docker),
         "cron_entries": [asdict(item) for item in cron],
         "cron_restarter_paths": [item.path for item in cron if item.management_candidate],

@@ -54,8 +54,19 @@ if TYPE_CHECKING:
 MARKER = Path("/etc/auto-coder-disposable-containment-host.json")
 RESULT_ROOT = Path("/var/lib/auto-coder/containment-closed-host-results")
 MARKER_SCHEMA = "auto-coder-disposable-containment-host-v1"
-STOCK_UNITS = ("motd-news.timer", "motd-news.service")
+STOCK_UNITS = (
+    "motd-news.timer",
+    "motd-news.service",
+    "cloud-init-hotplugd.socket",
+    "cloud-init-hotplugd.service",
+    "debug-shell.service",
+    "grub-common.service",
+    "cron.service",
+)
 STOCK_MASK_ROOT = Path("/etc/systemd/system")
+CRON_ENTRY_ROOT = Path("/etc/cron.d")
+CRON_TASK_GROUP = Path("/sys/fs/cgroup/system.slice/cron.service")
+CUSTOM_UNIT_ROOT = Path("/run/systemd/system")
 _IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
@@ -162,6 +173,13 @@ def _footprint(paths: tuple[Path, ...], worker: subprocess.Popen[str]) -> tuple[
         raise AssertionError("the preserved worker exited during containment observation")
     values: list[object] = [(worker.pid, _start_token(worker.pid))]
     for root in paths:
+        try:
+            root.lstat()
+        except FileNotFoundError:
+            # Negative fixtures may deliberately remove one approved mask.
+            # Its absence is still bound across the read-only CLI invocation.
+            values.append((str(root), "missing"))
+            continue
         for path in (root, *(sorted(root.rglob("*")) if root.is_dir() else ())):
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
@@ -194,10 +212,10 @@ class InhibitedStockRoutes:
     @classmethod
     def install(cls) -> InhibitedStockRoutes:
         if not set(STOCK_UNITS) <= set(_systemd_catalog()):
-            raise AssertionError("required stock service/timer are absent from the installed catalog")
+            raise AssertionError("required stock controller is absent from the installed catalog")
         initial = tuple(_systemd_unit(name) for name in STOCK_UNITS)
         if any(fact.unit_file_state not in {"enabled", "disabled", "static", "masked"} for fact in initial):
-            raise AssertionError("required stock service/timer has no supported installed unit state")
+            raise AssertionError("required stock controller has no supported installed unit state")
         state = cls(initial_facts=initial)
         for name in STOCK_UNITS:
             path = STOCK_MASK_ROOT / name
@@ -205,7 +223,7 @@ class InhibitedStockRoutes:
                 state.identities[path] = _stock_mask_identity(path)
         try:
             # Reloading an active timer's mask can leave it failed instead of
-            # inactive. Stop both original units before changing their files.
+            # inactive. Stop the original units before changing their files.
             _systemctl("stop", *STOCK_UNITS)
             for name in STOCK_UNITS:
                 path = STOCK_MASK_ROOT / name
@@ -347,6 +365,8 @@ class Case:
     watcher: WatcherFixture | None = None
     routes: DisposableSystemdRoutes | None = None
     stock_routes: InhibitedStockRoutes | None = None
+    cron_dispatch: CronDispatchFixture | None = None
+    custom_cron: MaskedCronController | None = None
     artifacts: list[Path] = field(default_factory=list)
     protected: tuple[Path, ...] = ()
     scope: Path | None = None
@@ -418,6 +438,256 @@ class Case:
         if self.namespace_fd >= 0:
             os.close(self.namespace_fd)
             self.namespace_fd = -1
+
+
+@dataclass
+class BoundFixtureTask:
+    """Retain a real PID lifetime before signalling fixture-owned work."""
+
+    pid: int
+    start_token: str
+    parent: int
+    command: tuple[str, ...]
+    cgroup: str
+    descriptor: int
+
+    @classmethod
+    def capture(cls, pid: int) -> BoundFixtureTask:
+        start = _start_token(pid)
+        descriptor = os.pidfd_open(pid, 0)
+        try:
+            base = Path(f"/proc/{pid}")
+            fields = (base / "stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()
+            command = tuple(part.decode("utf-8", errors="strict") for part in (base / "cmdline").read_bytes().split(b"\0") if part)
+            group = (base / "cgroup").read_text(encoding="ascii")
+            if fields[19] != start or _start_token(pid) != start:
+                raise AssertionError("fixture task lifetime changed during capture")
+            return cls(pid, start, int(fields[1]), command, group, descriptor)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def assert_current(self) -> None:
+        if _start_token(self.pid) != self.start_token or Path(f"/proc/{self.pid}/cgroup").read_text(encoding="ascii") != self.cgroup:
+            raise AssertionError("fixture task lifetime or cgroup changed")
+
+    def send(self, number: int) -> None:
+        self.assert_current()
+        signal.pidfd_send_signal(self.descriptor, number)
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+@dataclass
+class CronDispatchFixture:
+    """Install one immutable benign job before any complete approval."""
+
+    source: Path
+    identity: tuple[int, ...]
+    digest: str
+
+    @classmethod
+    def install(cls, name: str) -> CronDispatchFixture:
+        if not re.fullmatch(r"ac-test-pr2829-[0-9a-f]{32}", name):
+            raise ValueError("cron fixture name is not independently scoped")
+        source = CRON_ENTRY_ROOT / name
+        content = b"* * * * * root /usr/bin/sleep 120\n"
+        _write_private(source, content)
+        return cls(source, cls._identity(source), hashlib.sha256(content).hexdigest())
+
+    @staticmethod
+    def _identity(path: Path) -> tuple[int, ...]:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise AssertionError("cron fixture source is not a private owned regular file")
+        return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_size
+
+    def assert_unchanged(self) -> None:
+        if self._identity(self.source) != self.identity or hashlib.sha256(self.source.read_bytes()).hexdigest() != self.digest:
+            raise AssertionError("cron fixture source was externally replaced")
+
+    def cleanup(self) -> None:
+        self.assert_unchanged()
+        self.source.unlink()
+
+
+@dataclass
+class MaskedCronController:
+    """Keep a real differently named controller masked before every baseline."""
+
+    source: Path
+    source_identity: tuple[int, ...]
+    mask: Path
+    mask_identity: tuple[int, ...] | None = None
+
+    @classmethod
+    def install(cls, name: str) -> MaskedCronController:
+        if not re.fullmatch(r"ac-test-pr2829-[0-9a-f]{32}", name):
+            raise ValueError("custom cron controller name is not independently scoped")
+        source = CUSTOM_UNIT_ROOT / (name + "-custom-cron.service")
+        content = b"[Unit]\nDescription=Disposable differently named cron controller\n[Service]\nType=simple\nExecStart=/usr/sbin/cron -f -P\nKillMode=process\n"
+        _write_private(source, content)
+        controller = cls(source, CronDispatchFixture._identity(source), STOCK_MASK_ROOT / source.name)
+        try:
+            controller.mask.symlink_to("/dev/null")
+            controller.mask_identity = _stock_mask_identity(controller.mask)
+            _systemctl("daemon-reload")
+            controller.assert_inhibited()
+            return controller
+        except BaseException:
+            controller.cleanup()
+            raise
+
+    def assert_inhibited(self) -> None:
+        if CronDispatchFixture._identity(self.source) != self.source_identity or _stock_mask_identity(self.mask) != self.mask_identity or not _systemd_unit(self.source.name).inhibited:
+            raise AssertionError("the owned custom cron controller is not unchanged and inhibited")
+
+    def cleanup(self) -> None:
+        if self.mask_identity is not None:
+            if _stock_mask_identity(self.mask) != self.mask_identity:
+                raise AssertionError("custom cron mask was externally replaced")
+            self.mask.unlink()
+            self.mask_identity = None
+        if CronDispatchFixture._identity(self.source) != self.source_identity:
+            raise AssertionError("custom cron source was externally replaced")
+        self.source.unlink()
+        _systemctl("daemon-reload")
+
+
+def _cron_group_pids(group: Path) -> tuple[int, ...]:
+    if any(path.is_dir() for path in group.iterdir()):
+        raise AssertionError("fixture cron unexpectedly created a nested cgroup")
+    values = (group / "cgroup.procs").read_text(encoding="ascii").split()
+    if len(values) > 128 or any(not value.isdecimal() or int(value) <= 1 for value in values):
+        raise AssertionError("fixture cron cgroup has unsupported process readback")
+    return tuple(sorted({int(value) for value in values}))
+
+
+def _owned_cron_descendant(pid: int, daemon: int, retained: dict[int, BoundFixtureTask]) -> bool:
+    """Bind ancestry while the real daemon or a retained parent still exists."""
+    seen: set[int] = set()
+    for _ in range(64):
+        if pid in seen or pid <= 1:
+            return False
+        seen.add(pid)
+        if pid == daemon:
+            return True
+        if pid in retained:
+            retained[pid].assert_current()
+            return True
+        pid = int(Path(f"/proc/{pid}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[1])
+    return False
+
+
+def _require_refusal_reason(reports: tuple[dict[str, object], dict[str, object]], reason: str) -> None:
+    for report in reports:
+        unavailable = report.get("unavailable")
+        if not isinstance(unavailable, list) or not any(isinstance(item, dict) and item.get("authority") == "approved-route-manifest" and reason in str(item.get("reason", "")) for item in unavailable):
+            raise AssertionError("actual CLI did not refuse the intended cron predicate: " + repr(report))
+
+
+def _cron_task_negative(case: Case, *, controller: str = "cron.service", label: str = "genuine-cron-retained-task") -> None:
+    """Dispatch actual cron work while preserving the already approved mask."""
+    if controller != "cron.service" and (case.custom_cron is None or controller != case.custom_cron.source.name):
+        raise ValueError("fixture task fault cannot target an unowned cron controller")
+    assert case.cron_dispatch is not None and case.stock_routes is not None
+    case.cron_dispatch.assert_unchanged()
+    mask = STOCK_MASK_ROOT / controller
+    group = CRON_TASK_GROUP.parent / controller
+    mask_identity = _stock_mask_identity(mask)
+    created = not group.exists()
+    if created:
+        group.mkdir()
+    if group.is_symlink() or group.resolve(strict=True) != group:
+        raise AssertionError("fixture cron cgroup is not canonical")
+    group_info = group.stat()
+    group_identity = group_info.st_dev, group_info.st_ino
+    if _cron_group_pids(group) or (group / "cgroup.threads").read_text().strip():
+        raise AssertionError("fixture never adopts a populated cron cgroup")
+    retained: dict[int, BoundFixtureTask] = {}
+    daemon: subprocess.Popen[str] | None = None
+    output = case.root / "evidence" / (label + "-daemon.log")
+    _write_private(output, b"")
+    case.artifacts.append(output)
+    try:
+        # The child enters the empty owned scope before exec of the real daemon.
+        program = "import os,sys; f=open(sys.argv[1], 'w'); f.write(str(os.getpid())); f.close(); os.execv('/usr/sbin/cron', ('/usr/sbin/cron', '-f', '-P'))"
+        with output.open("a", encoding="utf-8") as stream:
+            daemon = subprocess.Popen((sys.executable, "-I", "-B", "-c", program, str(group / "cgroup.procs")), stdout=stream, stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 90
+            job: BoundFixtureTask | None = None
+            while job is None:
+                if daemon.poll() is not None:
+                    raise AssertionError("genuine cron exited before dispatch: " + output.read_text())
+                for pid in _cron_group_pids(group):
+                    try:
+                        if pid not in retained:
+                            if not _owned_cron_descendant(pid, daemon.pid, retained):
+                                raise AssertionError("cron cgroup contains a task outside the owned daemon ancestry")
+                            retained[pid] = BoundFixtureTask.capture(pid)
+                        task = retained[pid]
+                        task.assert_current()
+                        task.command = tuple(part.decode("utf-8", errors="strict") for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part)
+                        if task.command == ("/usr/bin/sleep", "120") and Path(f"/proc/{pid}/exe").resolve(strict=True) == Path("/usr/bin/sleep"):
+                            if task.cgroup != "0::/system.slice/" + controller + "\n":
+                                raise AssertionError("genuine cron job escaped the expected measured scope")
+                            task.send(signal.SIGSTOP)
+                            job = task
+                    except FileNotFoundError:
+                        continue
+                if job is None and time.monotonic() >= deadline:
+                    raise AssertionError("genuine cron never dispatched the immutable sleep entry: " + output.read_text())
+                if job is None:
+                    time.sleep(0.2)
+            daemon.terminate()
+            daemon.wait(timeout=15)
+            job.assert_current()
+            if _stock_mask_identity(mask) != mask_identity or not _systemd_unit(controller).inhibited:
+                raise AssertionError("cron task fault altered the approved controller mask")
+            facts = {
+                "source": str(case.cron_dispatch.source),
+                "source_sha256": case.cron_dispatch.digest,
+                "mask_identity": list(mask_identity),
+                "cgroup": str(group),
+                "daemon_pid": daemon.pid,
+                "daemon_returncode": daemon.returncode,
+                "retained_tasks": [asdict(task) for task in retained.values()],
+                "actual_job_stat": Path(f"/proc/{job.pid}/stat").read_text(),
+                "job_stopped_after_real_dispatch": True,
+            }
+            evidence = case.root / "evidence" / (label + ".json")
+            _write_private(evidence, _json(facts))
+            case.artifacts.append(evidence)
+            reports = case.refusal_pair(label, authority="approved-route-manifest")
+            _require_refusal_reason(reports, "inhibited stock cron scope retains tasks: /system.slice/" + controller)
+            job.assert_current()
+            case.cron_dispatch.assert_unchanged()
+            if _stock_mask_identity(mask) != mask_identity:
+                raise AssertionError("cron mask identity changed during actual task refusal")
+    finally:
+        if daemon is not None and daemon.poll() is None:
+            daemon.terminate()
+            daemon.wait(timeout=15)
+        try:
+            for task in reversed(tuple(retained.values())):
+                try:
+                    task.send(signal.SIGKILL)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+            deadline = time.monotonic() + 10
+            while _cron_group_pids(group):
+                if time.monotonic() >= deadline:
+                    raise AssertionError("owned cron task cleanup did not empty its scope")
+                time.sleep(0.1)
+            current = group.stat()
+            if (current.st_dev, current.st_ino) != group_identity:
+                raise AssertionError("owned cron task cgroup was externally replaced")
+            if created:
+                group.rmdir()
+        finally:
+            for task in retained.values():
+                task.close()
 
 
 def _namespace_pin(prior: PriorContainer) -> tuple[int, OriginalNetworkPin]:
@@ -529,6 +799,10 @@ def _classify_fixture_restarter_routes(case: Case, draft: dict[str, object]) -> 
         raise AssertionError("the fixture restarter prerequisites are missing")
     case.stock_routes.assert_inhibited()
     expected = {*case.routes.names, WATCHER_UNIT, *STOCK_UNITS}
+    custom_cron = getattr(case, "custom_cron", None)
+    if custom_cron is not None:
+        custom_cron.assert_inhibited()
+        expected.add(custom_cron.source.name)
     routes = draft["systemd_routes"]
     if not isinstance(routes, list):
         raise AssertionError("route proposal has no actual systemd catalog")
@@ -768,7 +1042,89 @@ def _race_and_producer_death(case: Case, *, kill: bool) -> None:
             case.config.write_bytes(original)
 
 
-def _reapprove_restored_mask(case: Case, manifest: Path) -> None:
+def _alternative_cron_controller_negative(case: Case) -> None:
+    """Misclassify one real, fully catalogued controller to test cue detection."""
+    assert case.scope is not None
+    manifest = APPROVAL_ROOT / (case.fixture_id + ".routes.json")
+    original = manifest.read_bytes()
+    source = Path("/run/systemd/system") / (case.fixture_id + "-cron-alternative.service")
+    content = b"[Unit]\nDescription=Disposable alternative cron controller\n[Service]\nType=oneshot\nExecStart=/usr/bin/run-parts /etc/cron.daily\n"
+    _write_private(source, content)
+    identity = CronDispatchFixture._identity(source)
+    try:
+        _systemctl("daemon-reload")
+        scope = read_scope(case.scope)
+        draft = propose_unapproved_route_draft(observe_approved_enrollment(scope), inspect_complete_docker(scope), closed_profile=True)
+        draft = json.loads(_json(draft))
+        draft["complete_ordinary_routes_attested"] = True
+        _classify_fixture_restarter_routes(case, draft)
+        matches = [route for route in draft["systemd_routes"] if route["unit"] == source.name]
+        if len(matches) != 1 or matches[0]["role"] != "restarter":
+            raise AssertionError("actual source readback failed to identify the alternative run-parts controller")
+        # A deliberately wrong approval is a negative fixture, never a
+        # claimed successful observation or a generated launch grant.
+        matches[0]["role"] = "unrelated"
+        manifest.write_bytes(_json(draft))
+        evidence = case.root / "evidence" / "misclassified-run-parts-approval.json"
+        _write_private(evidence, _json(draft))
+        case.artifacts.append(evidence)
+        reports = case.refusal_pair("excluded-run-parts-controller", authority="approved-route-manifest")
+        _require_refusal_reason(reports, "detected management systemd route is excluded: " + source.name)
+    finally:
+        manifest.write_bytes(original)
+        if CronDispatchFixture._identity(source) != identity or source.read_bytes() != content:
+            raise AssertionError("fixture alternative controller was externally replaced")
+        source.unlink()
+        _systemctl("daemon-reload")
+
+
+def _allow_restored_cron_proofs(prior: dict[str, object], current: dict[str, object], *, old_digest: str, new_digest: str, mask: Path, target: str = "cron.service") -> None:
+    """Permit only one actual remasked controller's fields to change."""
+    info = mask.lstat()
+    expected_identity = [info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid]
+    old_entries, new_entries = prior["cron_entries"], current["cron_entries"]
+    if not isinstance(old_entries, list) or not isinstance(new_entries, list) or len(old_entries) != len(new_entries):
+        raise AssertionError("cron catalog changed while restoring its mask")
+    count = 0
+    for old, new in zip(old_entries, new_entries):
+        proof = old.get("inhibited_source")
+        if proof is None:
+            continue
+        observed = new.get("inhibited_source")
+        if not isinstance(proof, dict) or not isinstance(observed, dict) or proof.get("scheduler_unit") != "cron.service" or observed.get("scheduler_unit") != "cron.service":
+            raise AssertionError("restored cron proof changed its scheduler authority")
+        old_controllers, new_controllers = proof.get("inhibited_services"), observed.get("inhibited_services")
+        if not isinstance(old_controllers, list) or not isinstance(new_controllers, list) or [target, old_digest] not in old_controllers or [target, new_digest] not in new_controllers:
+            raise AssertionError("restored cron proof is not bound to the actual remasked controller")
+        proof["inhibited_services"] = [[name, new_digest if name == target else digest] for name, digest in old_controllers]
+        if target == "cron.service":
+            if proof.get("mask_path") != str(mask) or observed.get("mask_path") != str(mask) or proof.get("scheduler_sha256") != old_digest or observed.get("scheduler_sha256") != new_digest or observed.get("mask_identity") != expected_identity:
+                raise AssertionError("restored cron proof is not bound to the actual new mask")
+            proof["scheduler_sha256"] = observed["scheduler_sha256"]
+            proof["mask_identity"] = observed["mask_identity"]
+        if old != new:
+            raise AssertionError("another cron source or task authority changed while restoring its mask")
+        count += 1
+    if not count:
+        raise AssertionError("the approved stock cron inhibition proof is absent")
+
+
+def _unmasked_cron_negative(case: Case, manifest: Path) -> None:
+    assert case.stock_routes is not None
+    mask = STOCK_MASK_ROOT / "cron.service"
+    if mask not in case.stock_routes.created or _stock_mask_identity(mask) != case.stock_routes.identities[mask]:
+        raise AssertionError("fixture will not unmask an unowned cron controller")
+    _systemctl("unmask", "cron.service")
+    try:
+        case.refusal_pair("unmasked-cron-controller", authority="approved-route-manifest")
+    finally:
+        _systemctl("mask", "cron.service")
+        case.stock_routes.identities[mask] = _stock_mask_identity(mask)
+        case.stock_routes.assert_inhibited()
+    _reapprove_restored_mask(case, manifest, target="cron.service")
+
+
+def _reapprove_restored_mask(case: Case, manifest: Path, *, target: str | None = None) -> None:
     """Approve only the known recreated fixture mask after exact comparison."""
     assert case.scope is not None and case.routes is not None
     case.routes.assert_inhibited()
@@ -781,23 +1137,33 @@ def _reapprove_restored_mask(case: Case, manifest: Path) -> None:
     if not isinstance(routes, list):
         raise AssertionError("restored route approval has no systemd catalog")
     _classify_fixture_restarter_routes(case, current)
-    target = case.routes.names[0]
+    target = target or case.routes.names[0]
     changed = [route for route in routes if route["unit"] == target]
     if len(changed) != 1:
         raise AssertionError("restored fixture mask is absent from actual catalog")
     for route in prior["systemd_routes"]:
         if route["unit"] == target:
+            old_digest = route["sha256"]
             route["sha256"] = changed[0]["sha256"]
+            _allow_restored_cron_proofs(prior, current, old_digest=old_digest, new_digest=changed[0]["sha256"], mask=STOCK_MASK_ROOT / target, target=target)
     if current != prior:
         raise AssertionError("another approved authority changed while restoring the one fixture mask")
     manifest.write_bytes(_json(current))
-    evidence = case.root / "evidence" / "restored-mask-approval.json"
+    evidence = case.root / "evidence" / ("restored-" + target + "-mask-approval.json")
     _write_private(evidence, _json(current))
     case.artifacts.append(evidence)
 
 
 def _negative_cases(case: Case) -> None:
     assert case.previous is not None and case.routes is not None
+    case.baseline("genuine-cron-retained-task")
+    _cron_task_negative(case)
+    assert case.custom_cron is not None
+    case.custom_cron.assert_inhibited()
+    case.baseline("custom-cron-retained-task")
+    _cron_task_negative(case, controller=case.custom_cron.source.name, label="custom-cron-retained-task")
+    case.baseline("excluded-run-parts-controller")
+    _alternative_cron_controller_negative(case)
     case.baseline("escaped-nonleader")
     _escaped_nonleader(case)
     case.baseline("conflicting-host-listener")
@@ -904,6 +1270,8 @@ def _negative_cases(case: Case) -> None:
     finally:
         _systemctl("mask", case.routes.names[0])
     _reapprove_restored_mask(case, manifest)
+    case.baseline("unmasked-cron-controller")
+    _unmasked_cron_negative(case, manifest)
     case.baseline("released-original-namespace-pin")
     os.close(case.namespace_fd)
     case.namespace_fd = -1
@@ -935,6 +1303,8 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     worker = subprocess.Popen((sys.executable, "-I", "-B", "-c", "import signal; signal.pause()"), text=True)
     cases: list[Case] = []
     stock_routes: InhibitedStockRoutes | None = None
+    cron_dispatch: CronDispatchFixture | None = None
+    custom_cron: MaskedCronController | None = None
     stock_evidence: list[Path] = []
     completed_profiles: list[str] = []
     refused_variants: list[str] = []
@@ -945,8 +1315,21 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
         stock_record = root / "stock-systemd-inhibition.json"
         _write_private(stock_record, _json(result["stock_systemd_inhibition"]))
         stock_evidence.append(stock_record)
+        cron_dispatch = CronDispatchFixture.install(root.name)
+        result["cron_dispatch_fixture"] = {"source": str(cron_dispatch.source), "sha256": cron_dispatch.digest, "identity": list(cron_dispatch.identity)}
+        cron_record = root / "cron-dispatch-fixture.json"
+        _write_private(cron_record, _json(result["cron_dispatch_fixture"]))
+        stock_evidence.append(cron_record)
+        custom_cron = MaskedCronController.install(root.name)
+        custom_record = root / "custom-cron-controller.json"
+        result["custom_cron_controller"] = {"source": str(custom_cron.source), "source_identity": list(custom_cron.source_identity), "source_sha256": hashlib.sha256(custom_cron.source.read_bytes()).hexdigest(), "mask": str(custom_cron.mask), "mask_identity": list(custom_cron.mask_identity or ())}
+        _write_private(custom_record, _json(result["custom_cron_controller"]))
+        stock_evidence.append(custom_record)
         ordinary = _prepare_ordinary(root / "ordinary", ordinary_image, worker, worker_config)
         ordinary.stock_routes = stock_routes
+        ordinary.cron_dispatch = cron_dispatch
+        ordinary.custom_cron = custom_cron
+        ordinary.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
         cases.append(ordinary)
         _close_and_approve(ordinary, caddy_image, authorization_id)
         ordinary.positive_pair()
@@ -977,6 +1360,9 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
             ):
                 case = _quarantine_case(prepared, worker, worker_config)
                 case.stock_routes = stock_routes
+                case.cron_dispatch = cron_dispatch
+                case.custom_cron = custom_cron
+                case.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
                 cases.append(case)
                 # Remove the proxy before the helper removes the manager that
                 # supplies its network namespace, including assertion failures.
@@ -1007,6 +1393,9 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 ):
                     variant_case = _quarantine_case(altered, worker, worker_config)
                     variant_case.stock_routes = stock_routes
+                    variant_case.cron_dispatch = cron_dispatch
+                    variant_case.custom_cron = custom_cron
+                    variant_case.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
                     cases.append(variant_case)
                     cleanup.callback(variant_case.cleanup)
                     _close_and_approve(variant_case, caddy_image, authorization_id, stop_manager=altered.stop)
@@ -1031,6 +1420,16 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
             if case.owner_fd >= 0:
                 os.close(case.owner_fd)
                 case.owner_fd = -1
+        if custom_cron is not None:
+            try:
+                custom_cron.cleanup()
+            except (OSError, ValueError, AssertionError, subprocess.SubprocessError) as exc:
+                cleanup_errors.append(type(exc).__name__ + ": " + str(exc))
+        if cron_dispatch is not None:
+            try:
+                cron_dispatch.cleanup()
+            except (OSError, ValueError, AssertionError) as exc:
+                cleanup_errors.append(type(exc).__name__ + ": " + str(exc))
         if stock_routes is not None:
             try:
                 stock_routes.cleanup()

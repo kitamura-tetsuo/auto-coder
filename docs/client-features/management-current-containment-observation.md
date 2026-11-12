@@ -209,6 +209,60 @@ helpers. Direct absolute packaged executables retain the existing trusted-progra
 boundary, and an explicitly reviewed isolated `-I -B -m` module retains its
 separate source binding.
 
+A direct system-manager executable name has a separate measured systemd 255
+profile. The installed `systemd-path` utility and running manager versions must
+match, and the native compiled search order must be exactly
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`. The reader binds each concrete
+candidate in that order, including missing earlier candidates, protected ancestor
+and symlink identities, and the selected executable bytes. It preserves the
+original `argv[0]`, arguments and full systemd command row. The native search
+utility, search order and every candidate are read again after source inspection.
+Alternate roots, search overrides, filesystem remapping, non-default execution
+identity/environment and unsupported argument expansion refuse. Bare shell,
+interpreter and launcher names, including aliases resolving to those programs,
+do not gain this direct-executable profile. This follows systemd's documented
+[compiled direct-command search](https://manpages.ubuntu.com/manpages/noble/man5/systemd.service.5.html#command_lines);
+it does not infer a shell's executable search from the observer's environment.
+
+Cron sources retain their actual system-crontab, user-spool, anacron or
+periodic/at script role. The reader extracts only the fixed scheduling fields
+for that role and checks the command as shell input. Bare PATH helpers, unknown
+source roles, unsupported shell selection and percent/stdin syntax refuse.
+Source formats cannot be inferred from whether a command resembles an account
+name. Full source bytes, identities, symlinks and the whole catalog remain bound.
+
+The finite `ubuntu24-stock-cron-inhibited-v1` profile supports exactly the measured
+Ubuntu 24.04 `/etc/crontab`, `/etc/cron.d/e2scrub_all`, and the `apport`,
+`apt-compat`, and `dpkg` daily scripts.
+Their installed paths, source roles, protected raw bytes and reviewed SHA-256
+values must match. Other stock versions and arbitrary opaque scripts retain the
+ordinary strict parser. Each supported entry carries a typed inhibition proof
+and is always a relevant restarter; its executable dependencies are not silently
+classified as unrelated.
+
+This proof requires one real installed, masked, inactive `cron.service`, the
+reviewed protected vendor unit and PAM/default/environment files, a bound
+canonical cron executable, and absence of the other standard scheduler binaries.
+It independently inspects the complete unified cgroup directory inventory and
+binds the name and digest of every currently inhibited installed service. All
+of their actual service components, descendants and alternate slices must be
+empty, together with the canonical service scopes and ordinary PAM user scopes.
+This includes a differently named controller whose mask hides an earlier cron
+command. Every process/thread membership is also checked, including nonleader
+or zombie tasks. Canonical scopes are checked even when a masked service reports
+an empty `ControlGroup`. Unsupported masked template, instance, escaped or
+reserved service names refuse instead of guessing their kernel group mapping.
+Source, mask, controller, boot and kernel scope observations must agree across
+fresh reads. A process running a scheduler outside its normal service also
+refuses. This initial profile conservatively refuses unrelated masked services
+that retain work as well.
+
+Cron files, periodic directories and scheduler executables remain relevance cues
+for host systemd, user controllers and local wrappers. An alternative `run-parts`
+controller cannot be excluded by approving it as unrelated. Empty current scopes
+are present-time evidence only; the observer neither stops tasks nor claims that
+a masked controller historically killed every child.
+
 One measured stock data operand is supported separately from executable and
 configuration sources. A direct `systemd-fsck` instance can use one literal
 `/dev/...` block operand only with the exact protected vendor fragment
@@ -314,17 +368,31 @@ an otherwise empty Docker inventory, an absent fixed watcher and an actual
 QEMU/KVM VM. The driver does not install its own authorization marker or turn a
 production host into a disposable test environment.
 
-The supported Ubuntu fixture also requires the already installed
-`motd-news.service` and `motd-news.timer`. After authorization, fixture setup
-stops both and installs protected persistent masks, retaining them across all
-ordinary and quarantine cases. Both appear explicitly as inhibited restarter
-routes in every approval; their exact mask identities are preserved during each
-CLI observation and recorded in the result and a separate evidence artifact.
+The supported Ubuntu fixture installs real cron and also requires the existing
+`motd-news.service`/timer, `cloud-init-hotplugd.service`/socket,
+`debug-shell.service` and `grub-common.service`. After authorization, fixture setup
+stops these controllers and `cron.service` before installing protected persistent
+masks, retaining them across all ordinary and quarantine cases. Each appears
+explicitly as an inhibited restarter in every approval; its exact mask identity
+is preserved during each CLI observation and recorded in the result and a
+separate evidence artifact. Stock vendor units and cron source files remain
+unchanged.
 Cleanup removes only unchanged masks created by this fixture, preserving
 preexisting masks and vendor fragments; the disposable VM is then discarded.
 Unknown dynamic command sources still refuse until their actual controller is
 separately inhibited. Other routes that reach such sources remain subject to
 the same ordinary source inspection.
+
+Before any complete approval, the fixture installs one private benign cron entry
+and one separately named, masked cron service. Two negatives start the genuine
+daemon in the canonical and differently named controlled service cgroups and
+wait for that unchanged entry to dispatch a real job. Each retains the job
+lifetime with a PIDFD, stops that job, terminates the daemon and requires both
+production CLIs to refuse the remaining task while the original mask and source
+identities remain unchanged. Other negatives deliberately misclassify a real, fully catalogued
+`run-parts` controller and unmask cron. The observer must report the relevant
+route/task authority in each case. Cleanup signals only independently retained
+fixture task lifetimes and removes only the unchanged fixture source and masks.
 
 The concrete VM package is under `scripts/containment_vm/`. Preparation exports
 only immutable preexisting images and the committed source; it does not launch

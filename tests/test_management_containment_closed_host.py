@@ -10,8 +10,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -405,7 +408,7 @@ def test_stock_cleanup_refuses_replaced_mask_without_removing_it(tmp_path: Path,
 
 
 @pytest.mark.parametrize("omitted", (None, *fixture.STOCK_UNITS))
-def test_every_approval_requires_both_inhibited_stock_restarter_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omitted: str | None) -> None:
+def test_every_approval_requires_all_inhibited_stock_restarter_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omitted: str | None) -> None:
     _stock_routes(tmp_path, monkeypatch)
     stock = fixture.InhibitedStockRoutes.install()
     names = ("fixture.service", "fixture.timer", "fixture.socket")
@@ -423,3 +426,201 @@ def test_every_approval_requires_both_inhibited_stock_restarter_routes(tmp_path:
             assert next(route for route in routes if route["unit"] == "unrelated.service")["role"] == "unrelated"
     finally:
         stock.cleanup()
+
+
+def test_fixed_cron_job_is_installed_once_without_modifying_vendor_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixture, "CRON_ENTRY_ROOT", tmp_path)
+    vendor = tmp_path / "vendor"
+    vendor.write_bytes(b"unchanged vendor schedule\n")
+    before = vendor.lstat(), vendor.read_bytes()
+    job = fixture.CronDispatchFixture.install("ac-test-pr2829-" + "d" * 32)
+    assert job.source.read_bytes() == b"* * * * * root /usr/bin/sleep 120\n"
+    assert job.source.stat().st_mode & 0o777 == 0o600
+    job.assert_unchanged()
+    with pytest.raises(FileExistsError):
+        fixture.CronDispatchFixture.install("ac-test-pr2829-" + "d" * 32)
+    job.cleanup()
+    assert (vendor.lstat(), vendor.read_bytes()) == before
+    assert list(tmp_path.iterdir()) == [vendor]
+
+
+def test_cron_job_cleanup_refuses_replacement_or_in_place_source_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixture, "CRON_ENTRY_ROOT", tmp_path)
+    job = fixture.CronDispatchFixture.install("ac-test-pr2829-" + "e" * 32)
+    job.source.write_bytes(b"* * * * * root /usr/bin/sleep 121\n")
+    changed = job.source.lstat()
+    with pytest.raises(AssertionError, match="externally replaced"):
+        job.cleanup()
+    assert job.source.lstat() == changed
+
+
+def test_cron_task_refusal_oracle_requires_both_actual_reasons() -> None:
+    expected = "inhibited stock cron scope retains tasks"
+    refusal = {"unavailable": [{"authority": "approved-route-manifest", "reason": expected}]}
+    fixture._require_refusal_reason((refusal, copy.deepcopy(refusal)), expected)
+    for changed in (
+        {"unavailable": [{"authority": "approved-route-manifest", "reason": "unknown, omitted or newly installed systemd route"}]},
+        {"unavailable": [{"authority": "kernel-subcomponent", "reason": expected}]},
+    ):
+        with pytest.raises(AssertionError, match="intended cron predicate"):
+            fixture._require_refusal_reason((refusal, changed), expected)
+
+
+@pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+def test_fixture_task_pins_real_lifetime_and_refuses_wrong_start_before_signalling() -> None:
+    child = subprocess.Popen(("/usr/bin/sleep", "120"), text=True)
+    task = fixture.BoundFixtureTask.capture(child.pid)
+    try:
+        assert task.pid == child.pid and task.parent == os.getpid()
+        assert task.command == ("/usr/bin/sleep", "120")
+        task.send(signal.SIGSTOP)
+        deadline = time.monotonic() + 3
+        while Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T":
+            if time.monotonic() >= deadline:
+                raise AssertionError("the real owned task did not stop")
+            time.sleep(0.01)
+        wrong = replace(task, start_token=str(int(task.start_token) + 1))
+        with pytest.raises(AssertionError, match="lifetime or cgroup changed"):
+            wrong.send(signal.SIGKILL)
+        assert child.poll() is None
+        task.send(signal.SIGKILL)
+        assert child.wait(timeout=5) == -signal.SIGKILL
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        task.close()
+
+
+def _cron_approval_mask_change(tmp_path: Path) -> tuple[dict[str, object], dict[str, object], Path]:
+    mask = tmp_path / "cron.service"
+    mask.symlink_to("/dev/null")
+    info = mask.lstat()
+    observed_identity = [info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid]
+    proof = {
+        "scheduler_unit": "cron.service",
+        "scheduler_sha256": "a" * 64,
+        "inhibited_services": [["cron.service", "a" * 64], ["fixture.service", "f" * 64]],
+        "mask_path": str(mask),
+        "mask_identity": [1, 2, 3, info.st_mode, info.st_uid, info.st_gid],
+        "sources": [{"sha256": "unchanged"}],
+        "cgroups": {"missing_roots": ["/system.slice/cron.service"]},
+    }
+    prior = {"cron_entries": [{"path": "/etc/crontab", "sha256": "original raw source", "inhibited_source": proof}]}
+    current = copy.deepcopy(prior)
+    current["cron_entries"][0]["inhibited_source"].update(scheduler_sha256="b" * 64, mask_identity=observed_identity)
+    current["cron_entries"][0]["inhibited_source"]["inhibited_services"][0][1] = "b" * 64
+    return prior, current, mask
+
+
+def test_cron_reapproval_allows_only_actual_recreated_mask_fields(tmp_path: Path) -> None:
+    prior, current, mask = _cron_approval_mask_change(tmp_path)
+    fixture._allow_restored_cron_proofs(prior, current, old_digest="a" * 64, new_digest="b" * 64, mask=mask)
+    assert prior == current
+
+
+@pytest.mark.parametrize("change", ("source", "scope", "raw", "mask", "scheduler", "another-controller", "added-controller"))
+def test_cron_reapproval_refuses_other_authority_changes(tmp_path: Path, change: str) -> None:
+    prior, current, mask = _cron_approval_mask_change(tmp_path)
+    entry = current["cron_entries"][0]
+    proof = entry["inhibited_source"]
+    if change == "source":
+        proof["sources"][0]["sha256"] = "substituted"
+    elif change == "scope":
+        proof["cgroups"]["missing_roots"] = []
+    elif change == "raw":
+        entry["sha256"] = "substituted raw cron"
+    elif change == "mask":
+        proof["mask_identity"][1] += 1
+    elif change == "scheduler":
+        proof["scheduler_sha256"] = "c" * 64
+    elif change == "another-controller":
+        proof["inhibited_services"][1][1] = "e" * 64
+    else:
+        proof["inhibited_services"].append(["new-controller.service", "c" * 64])
+    with pytest.raises(AssertionError, match="(another cron source or task authority|actual new mask)"):
+        fixture._allow_restored_cron_proofs(prior, current, old_digest="a" * 64, new_digest="b" * 64, mask=mask)
+
+
+@pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+def test_preservation_oracle_binds_deliberately_absent_mask(tmp_path: Path) -> None:
+    mask = tmp_path / "cron.service"
+    worker = subprocess.Popen((sys.executable, "-I", "-B", "-c", "import signal; signal.pause()"), text=True)
+    try:
+        before = fixture._footprint((mask,), worker)
+        assert fixture._footprint((mask,), worker) == before
+        mask.symlink_to("/dev/null")
+        assert fixture._footprint((mask,), worker) != before
+    finally:
+        worker.terminate()
+        worker.wait(timeout=5)
+
+
+def test_generic_controller_remask_updates_only_its_bound_pair(tmp_path: Path) -> None:
+    prior, _, cron_mask = _cron_approval_mask_change(tmp_path)
+    mask = tmp_path / "fixture.service"
+    mask.symlink_to("/dev/null")
+    current = copy.deepcopy(prior)
+    current["cron_entries"][0]["inhibited_source"]["inhibited_services"][1][1] = "g" * 64
+    unchanged_scheduler = current["cron_entries"][0]["inhibited_source"]["scheduler_sha256"]
+    unchanged_mask = copy.deepcopy(current["cron_entries"][0]["inhibited_source"]["mask_identity"])
+    fixture._allow_restored_cron_proofs(prior, current, old_digest="f" * 64, new_digest="g" * 64, mask=mask, target="fixture.service")
+    assert prior == current
+    assert current["cron_entries"][0]["inhibited_source"]["scheduler_sha256"] == unchanged_scheduler
+    assert current["cron_entries"][0]["inhibited_source"]["mask_identity"] == unchanged_mask
+    assert cron_mask.is_symlink()
+
+
+def _custom_cron_controller_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, list[tuple[str, ...]]]:
+    sources, masks = tmp_path / "sources", tmp_path / "masks"
+    sources.mkdir()
+    masks.mkdir()
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(fixture, "CUSTOM_UNIT_ROOT", sources)
+    monkeypatch.setattr(fixture, "STOCK_MASK_ROOT", masks)
+    monkeypatch.setattr(fixture, "_systemctl", lambda *args: calls.append(args))
+    monkeypatch.setattr(fixture, "_systemd_unit", lambda name: fixture.SystemdRouteFact(name, "a" * 64, "masked", "inactive", 0, True))
+    return sources, masks, calls
+
+
+def test_custom_cron_controller_is_real_owned_source_with_unchanged_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sources, masks, calls = _custom_cron_controller_roots(tmp_path, monkeypatch)
+    controller = fixture.MaskedCronController.install("ac-test-pr2829-" + "f" * 32)
+    assert controller.source.parent == sources and controller.mask.parent == masks
+    assert "ExecStart=/usr/sbin/cron -f -P\nKillMode=process\n" in controller.source.read_text()
+    before = controller.mask.lstat()
+    controller.assert_inhibited()
+    assert controller.mask.lstat() == before
+    controller.cleanup()
+    assert not list(sources.iterdir()) and not list(masks.iterdir())
+    assert calls == [("daemon-reload",), ("daemon-reload",)]
+
+
+def test_custom_cron_controller_mask_collision_preserves_preexisting_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sources, masks, _ = _custom_cron_controller_roots(tmp_path, monkeypatch)
+    name = "ac-test-pr2829-" + "f" * 32
+    preexisting = masks / (name + "-custom-cron.service")
+    preexisting.symlink_to("/dev/null")
+    before = preexisting.lstat()
+    with pytest.raises(FileExistsError):
+        fixture.MaskedCronController.install(name)
+    assert preexisting.lstat() == before
+    assert not list(sources.iterdir())
+
+
+def test_custom_cron_cleanup_refuses_replaced_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, masks, _ = _custom_cron_controller_roots(tmp_path, monkeypatch)
+    controller = fixture.MaskedCronController.install("ac-test-pr2829-" + "f" * 32)
+    controller.mask.rename(masks / "original-mask")
+    controller.mask.symlink_to("/dev/null")
+    replacement = controller.mask.lstat()
+    with pytest.raises(AssertionError, match="externally replaced"):
+        controller.cleanup()
+    assert controller.mask.lstat() == replacement
+    assert controller.source.is_file()
+
+
+def test_cron_task_fault_never_targets_an_unowned_service() -> None:
+    case = SimpleNamespace(custom_cron=None)
+    with pytest.raises(ValueError, match="unowned cron controller"):
+        fixture._cron_task_negative(case, controller="another.service")
