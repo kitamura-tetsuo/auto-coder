@@ -26,6 +26,7 @@ from .containment_enrollment import (
     ENROLLMENT_ROOT,
     EnrollmentObservation,
     EnrollmentUnavailable,
+    OriginalFile,
     _approved_directory,
     _file_identity,
     _protected,
@@ -111,6 +112,34 @@ _UNORDERED_UNIT_PROPERTIES = frozenset(("Triggers", "TriggeredBy", "Wants", "Req
 
 class RouteManifestUnavailable(ValueError):
     """An approved, complete and currently inhibited route set is unavailable."""
+
+
+@dataclass(frozen=True)
+class RecoveryRouteScope:
+    """The protected recovery selection, without a historical or grant claim."""
+
+    deployment_id: str
+    enrollment_id: str
+    authorization_id: str
+    profile: str
+    container_ids: tuple[str, ...]
+    original_files: tuple[OriginalFile, ...]
+
+
+@dataclass(frozen=True)
+class RecoveryRouteSelection:
+    enrollment: RecoveryRouteScope
+    enrollment_sha256: str
+
+
+def _route_container_ids(approval: EnrollmentObservation | RecoveryRouteSelection) -> tuple[str, ...]:
+    if isinstance(approval, RecoveryRouteSelection):
+        scope = approval.enrollment
+        selected = scope.container_ids
+        if scope.profile != "ordinary-recovery-v1" or not 3 <= len(selected) <= 64 or selected != tuple(sorted(set(selected))) or any(not _CONTAINER.fullmatch(item) for item in selected):
+            raise RouteManifestUnavailable("recovery route selection differs")
+        return selected
+    return approval.enrollment.management_id, approval.enrollment.proxy_id
 
 
 @dataclass(frozen=True)
@@ -282,9 +311,10 @@ class ApprovedRouteManifest:
             bindings: tuple[DeploymentRootBinding, ...] = ()
             user_digest = ""
             user_routes: tuple[UserSystemdRoute, ...] = ()
-        elif value.get("schema") == "approved-management-ordinary-routes-v2" and set(value) == set(cls.__dataclass_fields__):
+        elif value.get("schema") in ("approved-management-ordinary-routes-v2", "approved-management-recovery-routes-v1") and set(value) == set(cls.__dataclass_fields__):
             raw_bindings = value["deployment_roots"]
-            if not isinstance(raw_bindings, list) or not 1 <= len(raw_bindings) <= 128:
+            limit = 1024 if value["schema"] == "approved-management-recovery-routes-v1" else 128
+            if not isinstance(raw_bindings, list) or not 1 <= len(raw_bindings) <= limit:
                 raise RouteManifestUnavailable("approved deployment root inventory is absent or oversized")
             bindings = tuple(DeploymentRootBinding.parse(item) for item in raw_bindings)
             binding_keys = tuple((item.container_id, item.destination) for item in bindings)
@@ -307,7 +337,8 @@ class ApprovedRouteManifest:
         for name in ("deployment_id", "enrollment_id", "authorization_id"):
             if not isinstance(value[name], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value[name]):
                 raise RouteManifestUnavailable("approved ordinary-route deployment differs")
-        if value["profile"] not in ("ordinary-v1", "quarantined-original-v1"):
+        profiles = ("ordinary-recovery-v1",) if value["schema"] == "approved-management-recovery-routes-v1" else ("ordinary-v1", "quarantined-original-v1")
+        if value["profile"] not in profiles:
             raise RouteManifestUnavailable("approved ordinary-route profile differs")
         if not isinstance(value["enrollment_sha256"], str) or not _HASH.fullmatch(value["enrollment_sha256"]):
             raise RouteManifestUnavailable("approved ordinary-route enrollment binding differs")
@@ -626,14 +657,20 @@ def _user_controllers(systemd: tuple[SystemdRouteFact, ...], cues: tuple[str, ..
     return inventory, tuple(sorted(units, key=lambda item: (item.uid, item.fact.unit)))
 
 
-def _deployment_root_bindings(approval: EnrollmentObservation, *, trusted_uid: int = 0) -> tuple[DeploymentRootBinding, ...]:
+def _deployment_root_bindings(approval: EnrollmentObservation | RecoveryRouteSelection, *, trusted_uid: int = 0) -> tuple[DeploymentRootBinding, ...]:
     """Derive scope roots from the exact enrolled pair, never a caller root list."""
+    return observe_selected_bind_roots(_route_container_ids(approval), trusted_uid=trusted_uid)
+
+
+def observe_selected_bind_roots(selected: tuple[str, ...], *, trusted_uid: int = 0) -> tuple[DeploymentRootBinding, ...]:
+    """Read actual selected-object bind identities; this does not enroll them."""
     if os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"):
         raise RouteManifestUnavailable("remote Docker root discovery is unsupported")
-    selected = (approval.enrollment.management_id, approval.enrollment.proxy_id)
+    if not 1 <= len(selected) <= 64 or len(set(selected)) != len(selected) or any(not isinstance(item, str) or not _CONTAINER.fullmatch(item) for item in selected):
+        raise RouteManifestUnavailable("selected bind-root Docker identities differ")
     raw = _command("docker", "inspect", "--type", "container", *selected, max_bytes=8 * _MAX_MANIFEST_BYTES)
     decoded = json.loads(raw, object_pairs_hook=unique_pairs)
-    if not isinstance(decoded, list) or len(decoded) != 2 or {item.get("Id") for item in decoded if isinstance(item, dict)} != set(selected):
+    if not isinstance(decoded, list) or len(decoded) != len(selected) or {item.get("Id") for item in decoded if isinstance(item, dict)} != set(selected):
         raise RouteManifestUnavailable("deployment root Docker scope differs")
     result = []
     for container in decoded:
@@ -821,14 +858,14 @@ def _local_script(path: Path, *, expected_uid: int) -> tuple[str, int, int]:
     return hashlib.sha256(data).hexdigest(), after.st_dev, after.st_ino
 
 
-def _deployment_cues(approval: EnrollmentObservation, bindings: tuple[DeploymentRootBinding, ...]) -> tuple[str, ...]:
-    return tuple(sorted({item.source for item in bindings} | {item.path for item in approval.enrollment.original_files} | {approval.enrollment.management_id, approval.enrollment.proxy_id} | set(CRON_ROUTE_CUES)))
+def _deployment_cues(approval: EnrollmentObservation | RecoveryRouteSelection, bindings: tuple[DeploymentRootBinding, ...]) -> tuple[str, ...]:
+    return tuple(sorted({item.source for item in bindings} | {item.path for item in approval.enrollment.original_files} | set(_route_container_ids(approval)) | set(CRON_ROUTE_CUES)))
 
 
-def _deployment_modules(approval: EnrollmentObservation) -> tuple[tuple[str, str], ...]:
+def _deployment_modules(approval: EnrollmentObservation | RecoveryRouteSelection) -> tuple[tuple[str, str], ...]:
     # This known original controller is supported only through its separately
     # approved source binding and isolated Python command, not arbitrary -m.
-    return tuple(("auto_coder.management.proxy_watch_cli", item.path) for item in approval.enrollment.original_files if getattr(item, "purpose", None) == "watcher-source")
+    return tuple(sorted({("auto_coder.management.proxy_watch_cli", item.path) for item in approval.enrollment.original_files if getattr(item, "purpose", None) == "watcher-source"}))
 
 
 def _validate_user_scope(manifest: ApprovedRouteManifest, inventory: UserControllerInventory, facts: tuple[UserSystemdRouteFact, ...]) -> None:
@@ -857,7 +894,7 @@ def _validate_user_scope(manifest: ApprovedRouteManifest, inventory: UserControl
 
 
 def _observe_approved_route_manifest(
-    approval: EnrollmentObservation,
+    approval: EnrollmentObservation | RecoveryRouteSelection,
     docker: tuple[object, ...],
     *,
     root: Path,
@@ -883,7 +920,9 @@ def _observe_approved_route_manifest(
     ids = tuple(sorted(getattr(item, "container_id", "") for item in docker))
     if ids != manifest.docker_container_ids:
         raise RouteManifestUnavailable("whole-engine Docker inventory differs from approved routes")
-    is_closed_version = manifest.schema == "approved-management-ordinary-routes-v2"
+    is_closed_version = manifest.schema in ("approved-management-ordinary-routes-v2", "approved-management-recovery-routes-v1")
+    if isinstance(approval, RecoveryRouteSelection) != (manifest.schema == "approved-management-recovery-routes-v1"):
+        raise RouteManifestUnavailable("route manifest and selection profile differ")
     bindings = _deployment_root_bindings(approval, trusted_uid=expected_uid) if is_closed_version else ()
     if bindings != manifest.deployment_roots:
         raise RouteManifestUnavailable("original deployment root/config binding differs from approved routes")
@@ -945,13 +984,23 @@ def observe_approved_route_manifest(approval: EnrollmentObservation, docker: tup
     return _observe_approved_route_manifest(approval, docker, root=ENROLLMENT_ROOT, expected_uid=0)
 
 
-def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tuple[object, ...], *, closed_profile: bool = False) -> dict[str, object]:
+def observe_recovery_route_manifest(approval: RecoveryRouteSelection, docker: tuple[object, ...]) -> RouteManifestObservation:
+    """Read only the fixed recovery approval and the entire real route scope."""
+    from .recovery_containment_model import RECOVERY_ENROLLMENT_ROOT
+
+    return _observe_approved_route_manifest(approval, docker, root=RECOVERY_ENROLLMENT_ROOT, expected_uid=0)
+
+
+def propose_unapproved_route_draft(approval: EnrollmentObservation | RecoveryRouteSelection, docker: tuple[object, ...], *, closed_profile: bool = False) -> dict[str, object]:
     """Provide inspectable values for a human review; never attest completeness.
 
     All exclusions and absent local/remote sources are unreviewed. This draft
     cannot be installed as usable approval until a trusted root explicitly
     audits and replaces the false completeness declaration.
     """
+    recovery = isinstance(approval, RecoveryRouteSelection)
+    if recovery and not closed_profile:
+        raise RouteManifestUnavailable("recovery requires complete current user/root observations")
     bindings = _deployment_root_bindings(approval) if closed_profile else ()
     cues = _deployment_cues(approval, bindings) if closed_profile else ()
     modules = _deployment_modules(approval) if closed_profile else ()
@@ -960,7 +1009,7 @@ def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tupl
     cron = _cron_catalog(roots=_CRON_ROOTS, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules, systemd_facts=systemd)
     users, user_units = _user_controllers(systemd, cues, modules) if closed_profile else (None, ())
     return {
-        "schema": "approved-management-ordinary-routes-v2" if closed_profile else "approved-management-ordinary-routes-v1",
+        "schema": "approved-management-recovery-routes-v1" if recovery else "approved-management-ordinary-routes-v2" if closed_profile else "approved-management-ordinary-routes-v1",
         "deployment_id": approval.enrollment.deployment_id,
         "enrollment_id": approval.enrollment.enrollment_id,
         "authorization_id": approval.enrollment.authorization_id,

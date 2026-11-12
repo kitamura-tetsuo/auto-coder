@@ -6,15 +6,18 @@ result is a current, exact-target, one-use grant composed from independently
 verified original history, current containment and retained fences. This
 fragment records implementation boundaries found at source
 [`e742338b3f311e6d30a22a8f5341b8072513d813`](https://github.com/kitamura-tetsuo/auto-coder/commit/e742338b3f311e6d30a22a8f5341b8072513d813).
-It is a design and prerequisite audit, not a recovery procedure or evidence
-that a production grant can currently be issued.
+This is the retained audit of that original source, not a recovery procedure or
+live-operation authority. The implemented producer and its current interfaces are
+described in [management-recovery-epoch.md](management-recovery-epoch.md),
+[management-original-genesis.md](management-original-genesis.md), and
+[management-recovery-containment-observation.md](management-recovery-containment-observation.md).
+The missing-capability tables below describe the audited base and explain why
+the two additional evidence-only prerequisites were necessary.
 
-The bounded durable-state prototype accompanying this design does not wire a
-production issuer or authorize recovery. In particular, an unused state API,
-component test, operator inventory or saved prerequisite verdict cannot satisfy
-the full Issue. Existing unknown-outcome refusals remain correct. No original
-claim, missing journal, operation key, target root or initialization outcome is
-repaired or reset by this design.
+An unused state API, component test, operator inventory or saved prerequisite
+verdict cannot satisfy the full Issue. Existing unknown-outcome refusals remain
+correct. No original claim, missing journal, operation key, target root or
+initialization outcome is repaired or reset by this design or implementation.
 
 ## Existing authoritative producers
 
@@ -121,9 +124,10 @@ single deployment's ownership or controller scope.
 
 ## Minimal prerequisite capabilities proposed for review
 
-These are proposed capability boundaries, not newly published Issues,
-authorizations, changes to #2824's Objective, or waivers of its Requirements.
-The existing recovery issuer remains responsible for REQ-101 through REQ-108.
+These capability boundaries preserve #2824's Objective and Requirements.
+The existing recovery issuer remains responsible for REQ-101 through REQ-108;
+extracting prerequisites neither supplies live-operation authorization nor
+waives its integrated obligations.
 
 **Prospective deployment genesis and complete lineage bridge.** Establish an
 original, protected binding between a never-before-launched deployment origin
@@ -154,17 +158,22 @@ or consuming an epoch. Their state/lifetime and runtime authorities differ.
 The host issuer should compose their defined outputs at one durable issuance
 boundary rather than silently invent both producers inside a nominal adapter.
 
-**Unresolved supported-profile decision:** choose the production origin and
-engine model for the first supported complete recovery deployment. Two concrete
-paths are a prospective genesis path using the local system engine, with its
-own explicit closed-controller admission, or extending the genesis/lineage and
-containment observers to the existing private-engine NEW origin. The former
-changes the supported genesis admission surface; the latter must bind both
-outer private-engine custody and inner deployment facts. Existing component
-code does not select between them. Neither option authorizes migrating,
-re-enrolling or launching the current incident's deployment.
+**Selected implementation profile:** retain the ordinary deployment on the local
+system Docker Engine. Add prospective original provenance at its actual
+original production boundary, before any supported first launch or successor
+admission. The trusted producer must create and authenticate a genuinely new
+deployment identity and its original roots, configuration and history binding;
+an empty preexisting directory is not proof that a prior launch never happened.
+All ordinary bootstrap routes in this profile must enforce that binding.
 
-## Requirement-by-requirement implementation audit
+This follows the existing-deployment profile in #2824 and leaves NEW/#2672's
+private-engine admission unchanged. Reusing the private-engine NEW receipt was
+considered, but would add an unnecessary engine/topology dependency. A missing
+producer is implementation work, not by itself an architectural approval
+boundary. The selected prospective profile still cannot migrate, re-enroll or
+launch the current incident's deployment, or fill any missing original history.
+
+## Requirement-by-requirement audit of the original base
 
 | Requirement | Reusable implementation | Missing production fact or integration |
 | --- | --- | --- |
@@ -177,11 +186,32 @@ re-enrolling or launching the current incident's deployment.
 | REQ-107 | Existing old-root unknown-outcome and first-launch refusals. | Explicit new-epoch authorization and original-exclusion composition that cannot reuse an old root, plan, claim or operation key. |
 | REQ-108 | Real original-host boundary fixtures, Docker fresh tests and disposable closed-host fixture components. | All integrated AS-B01 through AS-B05 scenarios through the recovery production issuer and actual prerequisite verifiers. Existing component receipts do not satisfy this row. |
 
-The durable prototype may verify persistence and locking behavior independently.
-It does not make any missing row ready, and the absence of an issuer entry point
-must not be presented as successful fail-closed completion of the Issue.
+The durable component verifies persistence and locking independently. It cannot
+establish any of these prerequisite joins by itself. The current implementation
+connects the new original-genesis and full-scope containment producers to the
+zero-argument issuer; all integrated acceptance obligations remain required.
 
 ## Issuer and consumer protocol boundary
+
+`recovery_epoch_peer.PeerSession` implements bounded authenticated transport and
+current custody observation. The issuer supplies an `ExpectedPeer` already
+bound by its real Docker/target validator, the complete `HeldFence` set and any
+`HeldResource` network-namespace pins. The session pins the peer with a pidfd,
+checks `SO_PEERCRED` and the exact current start-token/boot lifetime, exchanges a
+fresh challenge-bound offer and receipt, and returns immutable `PeerCustody`.
+`session.check(custody)` repeats actual file, lock, namespace and peer-lifetime
+observations. There is no grant method: the issuer separately owns durable
+consumption and grant ordering. Caller-owned fences remain open on refusal;
+the session closes its own socket/PID pin and any unexpected received FDs.
+
+Real subprocess tests in `tests/test_management_recovery_epoch_peer.py` exercise
+independent SH/target EX acquisition, passed EX open-file-description custody,
+network namespace transfer, observable queued/received/acknowledged boundaries,
+malformed or incomplete receipts, inherited-as-independent locks and current
+custody loss. The independent consumer creates a local socket pair and passes
+the issuer endpoint over an inherited mailbox, preserving real consumer PID
+credentials without requiring a filesystem listener. These are kernel/peer
+component tests, not Docker, complete deployment scope or recovery-grant tests.
 
 A prospective issuer needs a fresh authenticated local challenge bound to the
 fixed deployment, explicit authorization, exact target/preparation and exact
@@ -248,7 +278,7 @@ receipts must be collected and required by an appropriate isolated profile;
 no missing-node or skip allowance may silently convert unavailable authority
 into acceptance.
 
-## Durable state component in this draft
+## Durable state component and its authority boundary
 
 `recovery_epoch_state.hold_recovery_epoch()` has no arguments. Its production
 root is fixed at `/var/lib/auto-coder/recovery-epoch`; environment variables,
@@ -256,7 +286,7 @@ request paths, target names and preparation names cannot select another root.
 The factory requires the approved Unix owner and protected, canonical directory
 ancestors. It does not provision or repair a missing directory, inventory or
 lock. An operator would have to separately review and install the inventory;
-this draft performs no such operation.
+the feature implementation performs no such live operation.
 
 The finite `EpochInventory` binds the exact root and lock device/inode identities,
 deployment, authorization, sorted unique enrollment set, request, preparation,
@@ -264,8 +294,8 @@ Docker target, source digest and configuration digest. An `EpochBinding` must
 match those fields and additionally binds the verified-evidence digest and the
 actual current issuer boot/PID/start lifetime. The component validates those
 joins and their exact schema, but cannot establish that the supplied evidence
-was independently produced. The missing issuer must establish that fact before
-calling it; inventing a digest is not an authorization mechanism.
+was independently produced. The issuer in `recovery_epoch.py` establishes that
+fact before calling it; inventing a digest is not an authorization mechanism.
 
 An independently opened exclusive flock serializes the whole state invocation.
 The component rechecks the current process's actual kernel lock, protected
@@ -307,21 +337,64 @@ bash scripts/test.sh --ci-tests-only tests/test_management_recovery_epoch_state.
 
 The component uses the existing Loguru configuration with console and rotating
 file sinks. Its phase records explicitly carry `grant_delivered=False`; they
-never report authenticated readiness or recovery success. The eventual issuer's
-production trace integration remains part of the unfinished contract below.
+never report authenticated readiness or recovery success. The issuer's real
+phase, refusal and dispatch events are documented in
+`docs/dashboard-observability.md` and retain the same distinction.
+
+## Prelaunch consumer custody
+
+`recovery_epoch_consumer.connect_recovery_epoch(config_path, target_owner_fd,
+timeout=...)` accepts only `/bootstrap/recovery-epoch.json` and connects only
+`/management-recovery/issuer.sock`. The target's independently verified Docker
+configuration must bind that configuration's bytes, the read-only mounted issuer
+directory and its device/inode identity. The configuration contains the exact
+request, authorization and target IDs; each independently acquired original or
+history shared fence's local path and device/inode; the target owner identity;
+and every transferred controller, deployment or network-namespace identity.
+Host paths are never assumed to be valid target paths.
+
+The consumer authenticates the connected issuer with `SO_PEERCRED` and obtains
+its lifetime pin directly from the kernel with `SO_PEERPIDFD`. That capability is
+mandatory: a private Docker PID namespace may expose the host peer as PID zero,
+so a caller-supplied PID or pidfd cannot substitute for socket-bound kernel
+identity. The consumer independently acquires the declared shared locks and
+checks its already held target exclusive lock. It acknowledges only the exact
+challenge-bound received resource set, with current kernel flock records for
+exclusive descriptors and exact nsfs objects for namespace pins. It accepts a
+grant only after that receipt and only with the exact request/challenge binding,
+all four durable digest fields and `granted="recovery-epoch-consumed"`.
+
+`RecoveryEpochConsumer` retains its original shared locks, transferred exclusive
+locks and namespace pins, socket and issuer pidfd. The caller continues to own
+the target exclusive descriptor. `check_current()` rechecks custody and the
+issuer's process and socket lifetime; failure does not implicitly close retained
+resources. An explicit `close()` or context exit releases them only when the
+owning Supervisor establishes that it is safe. The helper has no child claim,
+store creation, launch or readiness operation; those remain the separate child
+contract. The configurable overall offer/grant deadline is positive and at most
+one hour, allowing full host observations while keeping each protocol send
+bounded to at most sixty seconds.
+
+`tests/test_management_recovery_epoch_consumer.py` uses independent real issuer
+and consumer processes, actual flocks, namespace descriptors and kernel peer
+pidfds. It observes the offer/receipt/grant barriers, rejects incomplete custody
+and stale grants, and proves that both the independent shared fence and received
+exclusive fence still prevent a new exclusive contender after issuer death,
+until explicit consumer close. Its wire issuer supplies protocol grant bytes;
+these tests do not establish Docker, lineage, durable consumption or complete
+production grant authority. A real connected production issuer/consumer path
+in the isolated native profile is still required for that claim.
 
 ## Observability and completion boundary
 
-The unwired persistence/design work adds no production processing origin,
-admission grant, success event, worker action or dashboard-owned state.
-Consequently it supplies no recovery-success trace and no dashboard claim of
-readiness. Wiring the eventual issuer must include its real reservation,
-refusal, consumption, dispatch and current-host-loss observations in the
-production trace contract and `docs/dashboard-observability.md`, with runnable
-tests for those boundaries.
+The host issuer adds no GitHub processing attempt, management operation admission,
+worker action or dashboard-owned state. Its actual reservation, refusal,
+consumption and grant-send observations use the existing Loguru stdout/file
+configuration and explicitly distinguish dispatch from current readiness.
+`docs/dashboard-observability.md` describes those events and their maintained
+checks. Full native VM results must still substantiate the integrated contract.
 
 Do not close #2824, merge an implementation as its completion, or deploy a
-recovery issuer until the supported-profile decision and missing producers are
-resolved, all eight requirements are actually connected, and the integrated
-native evidence passes. Completion of a prototype or this audit is not that
-result.
+recovery issuer until the missing producers are implemented, all eight
+requirements are actually connected, and the integrated native evidence
+passes. Completion of a prototype or this audit is not that result.

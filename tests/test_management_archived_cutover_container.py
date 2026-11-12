@@ -147,7 +147,11 @@ class Generation:
 
 
 class Chain:
-    def __init__(self, root: Path, *, with_workers: bool = False, original_history: bool = False):
+    def __init__(self, root: Path, *, with_workers: bool = False, original_history: bool = False, original_genesis: bool = False):
+        if original_genesis and original_history:
+            raise ValueError("original genesis cannot reenroll a prospective history")
+        self.original_genesis = original_genesis
+        self.genesis = None
         self.root = root
         self.names: list[str] = []
         self.generations: list[Generation] = []
@@ -162,7 +166,8 @@ class Chain:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
         self.oauth = root / "oauth"
-        self.oauth.mkdir(mode=0o700)
+        if not original_genesis:
+            self.oauth.mkdir(mode=0o700)
         self.history_binding = None
         if original_history:
             history = root / "original-history"
@@ -185,6 +190,8 @@ class Chain:
 
     def prepare_caddy_image(self) -> str:
         """Use the real pinned Caddy binary with the supported bind-only profile."""
+        if self.original_genesis:
+            return _resolve_fixture_base(os.environ.get("AUTOCODER_RECOVERY_CADDY_IMAGE", "caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489"))
         source = _resolve_fixture_base("caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
         binary = self.root / "caddy"
         donor = self.docker("create", "--network", "none", source)
@@ -249,6 +256,8 @@ class Chain:
         root = self.root / name
         root.mkdir(mode=0o700)
         for part in ("state", "journal", "guard", "bootstrap"):
+            if self.original_genesis and prior is None and part in ("state", "journal"):
+                continue
             (root / part).mkdir(mode=0o700)
         runtime = {
             "reference": "bootstrap",
@@ -275,7 +284,7 @@ class Chain:
         if prior is not None:
             captured = capture_prior_container(prior.container, self.image, expected_mounts=tuple((str(a), b, c) for a, b, c in prior.mounts), require_owner_lock=True, require_deployment_identity=True)
             self.ensure_proxy(prior)
-            proxy = capture_prior_container(prior.proxy, self.proxy_image, expected_mounts=((str(prior.path("Caddyfile")), "/etc/caddy/Caddyfile", False),))
+            proxy = capture_prior_container(prior.proxy, self.proxy_image, expected_mounts=self.proxy_mounts(prior))
             bindings = required_exclusions(captured)
             config.update(fresh_guard_path="/management-initialization/fresh-guard.sock", fresh_prior_lock_path="/management-prior-owner.lock", archived_exclusions=[] if omit_archive else [asdict(item) for item in bindings])
         if self.worker_environment is not None:
@@ -329,7 +338,26 @@ class Chain:
                 for item in bindings:
                     mounts += [(Path(item.host_journal_root), item.journal_root, False), (Path(item.host_fence), item.fence, False)]
         self.configure_profile(name, root, config, runtime, management, mounts, fresh=prior is not None)
+        if self.original_genesis and prior is None:
+            config["original_genesis"] = "/bootstrap/original-genesis.json"
         config_file.write_text(json.dumps(config))
+        if self.original_genesis:
+            management.chmod(0o600)
+        root_authority = None
+        if self.original_genesis and prior is None:
+            from auto_coder.management.original_attempts import canonical
+            from auto_coder.management.original_genesis import ROOTS_PROFILE, GenesisRootAuthorization, prepare_original_genesis_roots
+
+            caddyfile = self._write_proxy_config(root)
+            history = self.root / "original-history"
+            roots_request = GenesisRootAuthorization(
+                ROOTS_PROFILE, "separately-authorized-new-deployment", "isolated-original-recovery-" + uuid.uuid4().hex, str(uuid.uuid4()), str(config_file), str(management), str(caddyfile), str(root / "state"), str(root / "journal"), str(self.oauth), str(history)
+            )
+            roots_authorization = root / "original-root-authorization.json"
+            roots_authorization.write_bytes(canonical(asdict(roots_request)))
+            roots_authorization.chmod(0o600)
+            root_authority = prepare_original_genesis_roots(roots_authorization)
+            mounts.append((history, "/management-original-history", False))
         container_name = "ancestor-fixture-" + uuid.uuid4().hex[:16]
         self.names.append(container_name)
         args = ["create", "--name", container_name, "--read-only", "--publish", f"127.0.0.1:{self.port}:8080"]
@@ -338,7 +366,10 @@ class Chain:
         args += ["--network", "bridge"]
         for source, target, writable in mounts:
             args += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
-        args += [self.image, "--config", "/bootstrap/config.json"]
+        if self.original_genesis:
+            args += ["--env", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]
+        else:
+            args += [self.image, "--config", "/bootstrap/config.json"]
         if prior is not None:
             args += ["--fresh-initialization"]
         container = self.docker(*args)
@@ -348,6 +379,18 @@ class Chain:
             assert set(connected) == {"bridge", self.worker_network}
         generation = Generation(name, root, container, mounts)
         self.generations.append(generation)
+        if self.original_genesis:
+            self._create_recovery_proxy(generation)
+        if root_authority is not None:
+            from auto_coder.management.original_genesis import PROFILE, GenesisSelection, capture_original_genesis
+
+            assert generation.proxy is not None
+            selected = GenesisSelection(PROFILE, roots_request.purpose, roots_request.deployment_id, roots_request.authorization_id, generation.container, generation.proxy, roots_request.history_root, str(config_file), str(management), roots_request.proxy_config_path, str(root_authority))
+            authorization = root / "original-capture-authorization.json"
+            authorization.write_bytes(canonical(asdict(selected)))
+            authorization.chmod(0o600)
+            self.genesis = capture_original_genesis(authorization)
+            self.history_binding = self.genesis.binding
         if captured is not None:
             generation.network_fd = os.open(f"/proc/{captured.pid}/ns/net", os.O_RDONLY)
             self.fds.append(generation.network_fd)
@@ -440,6 +483,8 @@ class Chain:
 
     def ensure_proxy(self, generation: Generation) -> None:
         if generation.proxy is not None:
+            if self.original_genesis and self.docker("inspect", "--format", "{{.State.Status}}", generation.proxy) == "created":
+                self.docker("start", generation.proxy)
             return
         actual = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", generation.container))
         assert actual == {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(self.port)}]}, "actual loopback Caddy port mapping unavailable"
@@ -451,6 +496,32 @@ class Chain:
         generation.proxy = self.docker(
             "run", "-d", "--name", name, "--network", "container:" + generation.container, "--mount", f"type=bind,src={caddyfile},dst=/etc/caddy/Caddyfile,readonly", "--entrypoint", "caddy", self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"
         )
+
+    def proxy_mounts(self, generation: Generation) -> tuple[tuple[str, str, bool], ...]:
+        mounts = ((str(generation.path("Caddyfile")), "/etc/caddy/Caddyfile", False),)
+        if self.original_genesis:
+            mounts += ((str(generation.path("caddy-data")), "/data", True), (str(generation.path("caddy-config")), "/config", True))
+        return mounts
+
+    @staticmethod
+    def _write_proxy_config(root: Path) -> Path:
+        path = root / "Caddyfile"
+        if not path.exists():
+            path.write_text("{\n admin off\n auto_https off\n}\nhttp://127.0.0.1:8080 {\n reverse_proxy 127.0.0.1:8081 {\n header_up Host 127.0.0.1:8081\n }\n}\n")
+            path.chmod(0o600)
+        return path
+
+    def _create_recovery_proxy(self, generation: Generation) -> None:
+        """Create the real paired object before original capture, without start."""
+        self._write_proxy_config(generation.root)
+        for name in ("caddy-data", "caddy-config"):
+            generation.path(name).mkdir(mode=0o700)
+        name = "original-recovery-proxy-" + uuid.uuid4().hex[:16]
+        self.names.append(name)
+        arguments = ["create", "--name", name, "--network", "container:" + generation.container, "--entrypoint", "caddy"]
+        for source, destination, writable in self.proxy_mounts(generation):
+            arguments += ["--mount", f"type=bind,src={source},dst={destination}" + ("" if writable else ",readonly")]
+        generation.proxy = self.docker(*arguments, self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
 
     def call(self, generation: Generation, tool: str, arguments: dict[str, object], *, authenticated: bool = True):
         assert generation.proxy is not None

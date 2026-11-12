@@ -169,6 +169,21 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         raise HostObservationUnavailable("unsupported prior container containment")
     initialized_fresh = False
     allowed_destinations = {"/bootstrap", "/management-child-state", "/management-oauth", "/management-operations", "/management-policy", "/management-versions", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge", "/etc/caddy/Caddyfile"}
+    if not require_owner_lock and not require_deployment_identity and values[15:17] == [["caddy"], ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]]:
+        # The stock Caddy image declares these data volumes. Its explicit
+        # bind-only profile must select the actual private roots, not silently
+        # create Docker volumes or admit executable/configuration overlays.
+        if isinstance(mounts, list):
+            data_roots = [item for item in mounts if isinstance(item, dict) and item.get("Destination") in ("/data", "/config")]
+            if data_roots:
+                if len(data_roots) != 2 or {item.get("Destination") for item in data_roots} != {"/data", "/config"}:
+                    raise HostObservationUnavailable("Caddy data root bindings are incomplete")
+                for item in data_roots:
+                    path = Path(item.get("Source", ""))
+                    info = path.lstat()
+                    if item.get("Type") != "bind" or item.get("RW") is not True or path != path.resolve(strict=True) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                        raise HostObservationUnavailable("Caddy data root binding differs")
+                allowed_destinations.update(("/data", "/config"))
     if require_deployment_identity:
         from .exclusion_host import inherited_support
 
@@ -663,6 +678,10 @@ def assert_host_listener_absent(port: int) -> None:
 
 
 def assert_replacement_published_listener(intent: FreshInitializationIntent) -> None:
+    assert_container_published_listener(intent.new_container_id, intent.image_digest, intent.host_listener_port)
+
+
+def assert_container_published_listener(container_id: str, image_id: str, published_port: int) -> None:
     """Prove the host listener is Docker's proxy for this exact replacement.
 
     This intentionally supports only the Docker userland-proxy profile. Kernel
@@ -672,8 +691,10 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
     try:
         if os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net") or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
             raise ValueError("observer is not in the host namespaces")
-        values = _inspect(intent.new_container_id)
-        if values[1] != intent.image_digest or values[2] is not True or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(intent.host_listener_port)}]}:
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) or type(published_port) is not int or not 0 < published_port <= 65535:
+            raise ValueError("published endpoint selection differs")
+        values = _inspect(container_id)
+        if values[1] != image_id or values[2] is not True or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(published_port)}]}:
             raise ValueError("replacement published endpoint differs")
         networks = values[18]
         if not isinstance(networks, dict):
@@ -693,7 +714,7 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
                     if len(fields) < 10:
                         raise ValueError("listener table incomplete")
                     address, port = fields[1].rsplit(":", 1)
-                    if int(port, 16) == intent.host_listener_port and fields[3] == "0A":
+                    if int(port, 16) == published_port and fields[3] == "0A":
                         if table != "tcp" or address != "0100007F" or not fields[9].isdecimal():
                             raise ValueError("unexpected host listener")
                         found.add(fields[9])
@@ -705,8 +726,8 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
         daemon = int(Path("/var/run/docker.pid").read_text(encoding="ascii").strip())
         if daemon <= 0 or os.stat(f"/proc/{daemon}/exe") != os.stat("/usr/bin/dockerd"):
             raise ValueError("Docker daemon identity differs")
-        expected_prefix = ["/usr/bin/docker-proxy", "-proto", "tcp", "-host-ip", "127.0.0.1", "-host-port", str(intent.host_listener_port), "-container-ip"]
-        socket_owners = subprocess.run(["ss", "-ltnpH", f"sport = :{intent.host_listener_port}"], check=True, capture_output=True, text=True, timeout=10).stdout
+        expected_prefix = ["/usr/bin/docker-proxy", "-proto", "tcp", "-host-ip", "127.0.0.1", "-host-port", str(published_port), "-container-ip"]
+        socket_owners = subprocess.run(["ss", "-ltnpH", f"sport = :{published_port}"], check=True, capture_output=True, text=True, timeout=10).stdout
         candidates = [int(value) for value in re.findall(r'"docker-proxy",pid=(\d+),fd=\d+', socket_owners)]
         if len(candidates) != 1:
             raise ValueError("Docker proxy is missing or ambiguous")
@@ -729,7 +750,7 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
                 raise ValueError("replacement proxy lifetime changed")
             if listener_inodes() != inodes:
                 raise ValueError("replacement listener inode changed")
-            final_values = _inspect(intent.new_container_id)
+            final_values = _inspect(container_id)
 
             # Docker reports mounts as an unordered collection. Compare every
             # complete mount object, including duplicate entries, independent

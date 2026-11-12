@@ -31,7 +31,7 @@ class Installed:
 def _dockerfile_embed_command() -> str:
     """The production Dockerfile's embed RUN instruction, verbatim."""
     lines = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
-    match = [m.group(1) for line in lines if (m := re.match(r"RUN (python -m auto_coder\.build_provenance embed)$", line))]
+    match = [m.group(1) for line in lines if (m := re.match(r"RUN (python -B -m auto_coder\.build_provenance embed)$", line))]
     assert len(match) == 1
     return match[0]
 

@@ -42,7 +42,7 @@ RUN groupadd --gid 65532 auto-coder-worker && useradd --uid 65532 --gid 65532 --
 COPY --from=python-environment /opt/auto-coder/.venv /opt/auto-coder/.venv
 ENV PATH="/opt/auto-coder/.venv/bin:/home/node/.opencode/bin:${PATH}"
 # Embed the trusted build input so the installed artifact reports it without Docker/Git/network access.
-RUN python -m auto_coder.build_provenance embed
+RUN python -B -m auto_coder.build_provenance embed
 COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode
 COPY --from=build /usr/local/bin/codex /usr/local/bin/codex
 WORKDIR /workspace

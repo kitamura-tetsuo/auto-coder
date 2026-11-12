@@ -52,6 +52,7 @@ class EpochInventory:
     target_id: str
     source_sha256: str
     config_sha256: str
+    authorization_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ class EpochBinding:
     host_boot_id: str
     host_pid: int
     host_start_token: str
+    authorization_sha256: str = ""
+    evidence_json: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,8 @@ def _validate_static(value: EpochInventory | EpochBinding) -> None:
         digest = getattr(value, field)
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise EpochUnavailable("invalid recovery epoch " + field)
+    if not isinstance(value.authorization_sha256, str) or (value.authorization_sha256 and not _SHA256.fullmatch(value.authorization_sha256)):
+        raise EpochUnavailable("invalid recovery epoch authorization digest")
 
 
 def _parse_inventory(encoded: bytes, root: Path, root_id: tuple[int, int], lock_id: tuple[int, int]) -> EpochInventory:
@@ -122,8 +127,10 @@ def _parse_inventory(encoded: bytes, root: Path, root_id: tuple[int, int], lock_
     raw["enrollment_ids"] = tuple(raw["enrollment_ids"])
     inventory = EpochInventory(**raw)
     _validate_static(inventory)
-    if type(inventory.schema_version) is not int or inventory.schema_version != 1:
+    if type(inventory.schema_version) is not int or inventory.schema_version not in (1, 2):
         raise EpochUnavailable("unsupported recovery epoch inventory schema")
+    if inventory.schema_version == 2 and not inventory.authorization_sha256:
+        raise EpochUnavailable("issuer inventory requires its complete authorization digest")
     if any(type(getattr(inventory, field)) is not int or getattr(inventory, field) < 0 for field in ("root_device", "root_inode", "lock_device", "lock_inode")):
         raise EpochUnavailable("invalid recovery epoch inventory identity")
     if inventory.root != str(root) or (inventory.root_device, inventory.root_inode) != root_id or (inventory.lock_device, inventory.lock_inode) != lock_id:
@@ -148,6 +155,16 @@ class RecoveryEpochState:
         self._phase = 0
         self._active = True
         self._failed = False
+
+    @property
+    def descriptor(self) -> int:
+        """Return the still-held epoch fence for verified receiver custody."""
+        self._check()
+        return self._lock
+
+    def check(self) -> None:
+        """Revalidate the original inventory and every durable publication."""
+        self._check()
 
     def _check(self) -> None:
         if not self._active or self._failed or issuer_lifetime() != self._lifetime:
@@ -178,11 +195,17 @@ class RecoveryEpochState:
         if not isinstance(binding, EpochBinding):
             raise EpochUnavailable("typed recovery epoch binding required")
         _validate_static(binding)
-        for field in ("deployment_id", "authorization_id", "enrollment_ids", "request_id", "preparation_id", "target_id", "source_sha256", "config_sha256"):
+        for field in ("deployment_id", "authorization_id", "enrollment_ids", "request_id", "preparation_id", "target_id", "source_sha256", "config_sha256", "authorization_sha256"):
             if getattr(binding, field) != getattr(self.inventory, field):
                 raise EpochUnavailable("recovery epoch binding differs from fixed inventory: " + field)
         if not isinstance(binding.evidence_sha256, str) or not _SHA256.fullmatch(binding.evidence_sha256):
             raise EpochUnavailable("invalid independently verified recovery evidence digest")
+        if not isinstance(binding.evidence_json, str):
+            raise EpochUnavailable("invalid retained recovery evidence")
+        if self.inventory.schema_version == 2 or binding.evidence_json:
+            evidence = binding.evidence_json.encode()
+            if len(evidence) > _MAX_BYTES // 2 or not isinstance(json.loads(evidence), dict) or canonical(json.loads(evidence)) != evidence or _digest(evidence) != binding.evidence_sha256:
+                raise EpochUnavailable("retained recovery evidence differs from its complete digest")
         if type(binding.host_pid) is not int or (binding.host_boot_id, binding.host_pid, binding.host_start_token) != self._lifetime:
             raise EpochUnavailable("recovery epoch binding differs from current issuer lifetime")
         if self._binding is not None and binding != self._binding:
