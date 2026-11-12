@@ -211,7 +211,14 @@ class RecoveryEpochState:
 
     def _append(self, phase: str, binding: EpochBinding) -> str:
         self._check()
-        self._require_binding(binding)
+        try:
+            self._require_binding(binding)
+        except BaseException:
+            # An already reserved epoch cannot recover from conflicting authority
+            # in the same issuer lifetime, even when the caller catches refusal.
+            if self._phase:
+                self._failed = True
+            raise
         if self._phase >= len(_PHASES) or _PHASES[self._phase] != phase:
             raise EpochUnavailable("recovery epoch transition is out of order or already consumed")
         previous = _digest(self._records[_PHASES[self._phase - 1] + "-head.json"][1]) if self._phase else ""

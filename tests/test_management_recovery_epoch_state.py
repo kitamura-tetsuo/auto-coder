@@ -129,6 +129,25 @@ def test_binding_differences_refuse_before_persistence(tmp_path, field, value):
     assert _snapshot(root) == initial
 
 
+@pytest.mark.parametrize("field,value", [("authorization_id", "reviewed-B"), ("evidence_sha256", "e" * 64), ("host_start_token", "999")])
+def test_conflicting_binding_after_durable_reservation_poisons_invocation(tmp_path, field, value):
+    root, inventory = _inventory(tmp_path)
+    binding = _binding(inventory)
+    with pytest.raises(epoch.EpochUnavailable, match="closed, failed or inherited"):
+        with epoch._hold_recovery_epoch(root, expected_uid=os.geteuid()) as state:
+            state.reserve(binding)
+            with pytest.raises(epoch.EpochUnavailable):
+                state.record_intent(replace(binding, **{field: value}))
+            before = _snapshot(root)
+            with pytest.raises(epoch.EpochUnavailable, match="closed, failed or inherited"):
+                state.record_intent(binding)
+            assert _snapshot(root) == before
+    with pytest.raises(epoch.EpochUnavailable, match="existing, partial or conflicting"):
+        with epoch._hold_recovery_epoch(root, expected_uid=os.geteuid()):
+            pytest.fail("an interrupted authorization was reused")
+    assert _snapshot(root) == before
+
+
 @pytest.mark.parametrize("name", ["inventory.json", "epoch.lock"])
 def test_missing_or_aliased_fixed_files_are_never_recreated(tmp_path, name):
     root, _ = _inventory(tmp_path)

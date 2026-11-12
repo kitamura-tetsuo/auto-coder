@@ -271,7 +271,10 @@ An independently opened exclusive flock serializes the whole state invocation.
 The component rechecks the current process's actual kernel lock, protected
 inventory identity and bytes, every retained record and the complete namespace
 before each transition. A forked or released holder, replaced lock/root/record,
-changed inventory, conflicting alias or existing phase refuses.
+changed inventory, conflicting alias or existing phase refuses. Once a reservation
+is durable, a conflicting authorization, evidence or issuer-lifetime binding
+poisons that same invocation, even when its caller catches the refusal. A
+subsequent call using the original binding cannot continue consumption.
 
 | Transition | Persisted fact | Reentry behavior |
 | --- | --- | --- |
