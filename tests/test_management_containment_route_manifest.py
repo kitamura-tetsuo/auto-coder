@@ -725,12 +725,7 @@ def test_systemd_source_boundary_refuses_bare_shell_path_dispatch(tmp_path: Path
     helper = tools / "maintenance"
     helper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
     helper.chmod(0o700)
-    shown = (
-        "Id=desktop.service\nLoadState=loaded\nUnitFileState=enabled\n"
-        "ActiveState=active\nSubState=running\n"
-        "FragmentPath=/etc/systemd/system/desktop.service\nNeedDaemonReload=no\nMainPID=123\n"
-        f"ExecStart=/bin/sh -c maintenance\nEnvironment=PATH={tools}\n"
-    )
+    shown = "Id=desktop.service\nLoadState=loaded\nUnitFileState=enabled\n" "ActiveState=active\nSubState=running\n" "FragmentPath=/etc/systemd/system/desktop.service\nNeedDaemonReload=no\nMainPID=123\n" f"ExecStart=/bin/sh -c maintenance\nEnvironment=PATH={tools}\n"
     monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if "show" in args else "[Service]\nExecStart=/bin/sh -c maintenance\n")
     with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
         routes._systemd_unit("desktop.service", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
