@@ -183,10 +183,12 @@ def inspect_new_instance_origin(
             additions = (state_entries, operation_entries, guard_entries, frozenset())[index]
             now = _root(Path(path), private=index < 3, empty=index < 2 and additions == frozenset())
             expected = roots[index]
-            if index == 2 or additions is None or additions:
+            if index >= 2 or additions is None or additions:
                 # A newly created record changes the directory mtime/ctime.
-                # Only the fixed original device/inode/ownership is retained;
-                # consumers must verify every expected new entry themselves.
+                # OAuth reads may also create/remove SQLite journal sidecars.
+                # Retain the original device/inode/owner/access boundary, not
+                # incidental directory timestamps. New entries in the state
+                # and operation roots need their own producer verification.
                 for field in ("path", "device", "inode", "uid", "mode"):
                     if getattr(now, field) != expected[field]:
                         raise ValueError("original NEW root identity replaced")

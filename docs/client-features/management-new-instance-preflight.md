@@ -43,7 +43,11 @@ owned by the acting effective UID with mode 0700. All four roots must exist,
 be canonical absolute non-symlink directories, be distinct and non-overlapping,
 and have distinct observed device/inode identities. The existing OAuth root is
 observed only as directory metadata: its contents, ownership and access are not
-changed, and its database and grants are never opened. These observations do
+changed, and its database and grants are never opened. Subsequent original-
+source inspections preserve the OAuth root's device/inode/owner/mode binding,
+but permit harmless directory timestamp changes during retained-grant SQLite
+journal activity; the selected database schema is independently rechecked.
+These observations do
 not establish that retained grants are usable or that an instance name is unused
 elsewhere. This is a trusted local file boundary, never an OAuth authorization or
 management MCP action. It does not assume a hostile coding agent or create a
