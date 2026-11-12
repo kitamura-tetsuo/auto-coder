@@ -109,6 +109,84 @@ def test_command_failure_exports_bounded_diagnostics_without_inputs_or_credentia
     assert fixture._command_failure(ValueError("unrelated error")) is None
 
 
+def _diagnostic_generation(root: Path, name: str = "A") -> Generation:
+    generation = Generation(name, root / name, "component-container", [])
+    generation.root.mkdir(parents=True)
+    for directory in ("state", "journal"):
+        generation.path(directory).mkdir()
+    return generation
+
+
+def test_failure_sidecar_metadata_identifies_nonempty_shm_without_reading_stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generation = _diagnostic_generation(tmp_path)
+    selected = generation.path("journal") / "management-operations.sqlite3-shm"
+    selected.write_bytes(b"private SQL and OAuth data must never be exported")
+    (generation.path("journal") / "management-operations.sqlite3-wal").touch()
+    (generation.path("state") / "oauth.sqlite3-shm").write_bytes(b"unrelated database")
+    (generation.path("state") / "management-child.sqlite3").write_bytes(b"private original database")
+    before = selected.stat()
+    with monkeypatch.context() as bounded:
+        bounded.setattr(Path, "read_bytes", lambda _: pytest.fail("sidecar diagnostics must not read file contents"))
+        bounded.setattr(fixture.sqlite3, "connect", lambda *_args, **_kwargs: pytest.fail("sidecar diagnostics must not connect to SQLite"))
+        rows = fixture._original_sidecar_diagnostics(tmp_path, (generation,))
+    assert len(rows) == 6
+    shm = next(row for row in rows if row["database"] == "management-operations.sqlite3" and row["suffix"] == "-shm")
+    assert shm == {"generation": "A", "database": "management-operations.sqlite3", "suffix": "-shm", "status": "observed", "type": "regular", "size": before.st_size, "device": before.st_dev, "inode": before.st_ino}
+    wal = next(row for row in rows if row["database"] == "management-operations.sqlite3" and row["suffix"] == "-wal")
+    assert wal["status"] == "observed" and wal["size"] == 0
+    assert sum(row["status"] == "absent" for row in rows) == 4
+    assert selected.stat() == before
+    assert "private" not in json.dumps(rows) and "oauth" not in json.dumps(rows) and str(tmp_path) not in json.dumps(rows)
+
+
+def test_failure_sidecar_diagnostics_do_not_follow_links_or_export_other_scopes(tmp_path: Path) -> None:
+    generation = _diagnostic_generation(tmp_path)
+    private = tmp_path / "private-target"
+    private.write_bytes(b"not inspected")
+    sidecar = generation.path("state") / "management-child.sqlite3-shm"
+    sidecar.symlink_to(private)
+    (generation.path("journal") / "management-operations.sqlite3-journal").mkdir()
+    unrelated = _diagnostic_generation(tmp_path, "recovery-target")
+    rows = fixture._original_sidecar_diagnostics(tmp_path, (generation, unrelated))
+    assert len(rows) == 6 and {row["generation"] for row in rows} == {"A"}
+    linked = next(row for row in rows if row.get("type") == "symlink")
+    assert linked["inode"] == sidecar.lstat().st_ino and linked["inode"] != private.stat().st_ino
+    assert any(row.get("type") == "directory" for row in rows)
+    assert "private-target" not in json.dumps(rows)
+
+
+def test_failure_sidecar_diagnostics_are_finite_and_reject_ambiguous_original_roots(tmp_path: Path) -> None:
+    generations = tuple(_diagnostic_generation(tmp_path, name) for name in ("A", "B", "C", "D"))
+    assert len(fixture._original_sidecar_diagnostics(tmp_path, generations)) == 24
+    ambiguous = fixture._original_sidecar_diagnostics(tmp_path, generations + (generations[0],) * 20)
+    assert len(ambiguous) == 24
+    assert all(row["status"] == "unavailable" and row["error_type"] == "ValueError" for row in ambiguous if row["generation"] == "A")
+    foreign = Generation("A", tmp_path / "not-original-A", "component-container", [])
+    assert all(row["status"] == "unavailable" for row in fixture._original_sidecar_diagnostics(tmp_path, (foreign,)))
+
+
+def test_unavailable_sidecar_diagnostics_preserve_the_original_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    chain = object.__new__(fixture.Chain)
+    chain.root = tmp_path
+    chain.generations = [_diagnostic_generation(tmp_path)]
+    result = {"status": "failed", "failure_type": "AssertionError"}
+
+    def unavailable(*_args):
+        raise PermissionError("private diagnostic input must not be exported")
+
+    monkeypatch.setattr(fixture, "_original_sidecar_diagnostics", unavailable)
+    original = AssertionError("the original native oracle failed")
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise original
+        except AssertionError:
+            fixture._record_failure_sidecars(result, chain)
+            raise
+    assert caught.value is original
+    assert result["original_database_sidecars"] == [{"status": "unavailable", "error_type": "PermissionError"}]
+    assert "private" not in json.dumps(result)
+
+
 def test_no_child_or_admission_oracle_rejects_any_native_store(tmp_path: Path) -> None:
     state, journal = tmp_path / "state", tmp_path / "journal"
     state.mkdir()

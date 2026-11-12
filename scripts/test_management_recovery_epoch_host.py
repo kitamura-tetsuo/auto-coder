@@ -199,6 +199,47 @@ def _command_failure(error: BaseException) -> dict[str, object] | None:
     return {"type": type(error).__name__, "returncode": getattr(error, "returncode", None), "diagnostics": lines[-60:]}
 
 
+def _original_sidecar_diagnostics(root: Path, generations: tuple[Generation, ...]) -> list[dict[str, object]]:
+    """Inspect only fixed original sidecar metadata, without opening a database."""
+    observations: list[dict[str, object]] = []
+    for label in ("A", "B", "C", "D"):
+        selected = [generation for generation in generations if generation.name == label]
+        if not selected:
+            continue
+        for directory, database in (("state", "management-child.sqlite3"), ("journal", "management-operations.sqlite3")):
+            for suffix in ("-wal", "-shm", "-journal"):
+                row: dict[str, object] = {"generation": label, "database": database, "suffix": suffix}
+                try:
+                    if len(selected) != 1 or selected[0].root != root / label or selected[0].root.resolve(strict=True) != root / label:
+                        raise ValueError("the selected diagnostic generation has no exact original root")
+                    parent = selected[0].path(directory)
+                    if not stat.S_ISDIR(parent.lstat().st_mode):
+                        raise ValueError("the selected diagnostic directory is not an original directory")
+                    info = (parent / (database + suffix)).lstat()
+                except FileNotFoundError:
+                    row["status"] = "absent"
+                except (OSError, ValueError) as error:
+                    row.update(status="unavailable", error_type=type(error).__name__)
+                else:
+                    kind = "regular" if stat.S_ISREG(info.st_mode) else "symlink" if stat.S_ISLNK(info.st_mode) else "directory" if stat.S_ISDIR(info.st_mode) else "socket" if stat.S_ISSOCK(info.st_mode) else "other"
+                    row.update(status="observed", type=kind, size=info.st_size, device=info.st_dev, inode=info.st_ino)
+                observations.append(row)
+    return observations
+
+
+def _record_failure_sidecars(result: dict[str, object], chain: Chain | None) -> None:
+    """Keep diagnostic failures from replacing the original native failure."""
+    if chain is None:
+        return
+    try:
+        rows = _original_sidecar_diagnostics(chain.root, tuple(chain.generations))
+        result["original_database_sidecars"] = rows
+        for row in rows:
+            logger.error("Native original database sidecar metadata: {}", canonical(row).decode())
+    except Exception as error:
+        result["original_database_sidecars"] = [{"status": "unavailable", "error_type": type(error).__name__}]
+
+
 def _checkpoint_stopped(generation: Generation) -> None:
     """The stopped fixture producer settles its own stores before inspection."""
     for directory in (generation.path("state"), generation.path("journal")):
@@ -1147,6 +1188,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     except BaseException as error:
         result["status"] = "failed"
         result["failure_type"] = type(error).__name__
+        _record_failure_sidecars(result, chain)
         command_failure = _command_failure(error)
         if command_failure is not None:
             result["command_failure"] = command_failure

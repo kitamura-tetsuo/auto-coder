@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -243,11 +243,13 @@ class Chain:
 
     @staticmethod
     def checkpoint(database: Path) -> None:
-        with sqlite3.connect(database) as connection:
+        # Checkpoint an existing producer store, then release its WAL/SHM
+        # handles before the immutable original-evidence baseline is taken.
+        with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True)) as connection:
             assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
     def grants(self):
-        with sqlite3.connect(self.oauth / "oauth.sqlite3") as connection:
+        with closing(sqlite3.connect(self.oauth / "oauth.sqlite3")) as connection:
             return {name: connection.execute(f"SELECT * FROM {name} ORDER BY 1").fetchall() for name in ("authority", "grants", "access_tokens", "refresh_tokens")}
 
     def prepare(self, name: str, prior: Generation | None = None, *, omit_archive: bool = False) -> Generation:
@@ -567,7 +569,7 @@ class Chain:
 
     @staticmethod
     def child(generation: Generation):
-        with sqlite3.connect((generation.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect((generation.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True)) as connection:
             return json.loads(connection.execute("SELECT record_json FROM child_state").fetchone()[0])
 
     def prove_child(self, generation: Generation) -> None:
@@ -831,7 +833,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
     deadline = time.monotonic() + 30
     while True:
         try:
-            with sqlite3.connect((a.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect((a.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True)) as db:
                 row = db.execute("SELECT record_json FROM child_state").fetchone()
                 record = json.loads(row[0]) if row else {}
             if record.get("phase") == "running" and record.get("pid", 0) > 0:
@@ -891,7 +893,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
         assert not (c.path("state") / "fresh-launch-claimed.json").exists()
         ledger = c.path("state") / "management-child.sqlite3"
         if ledger.exists():
-            with sqlite3.connect(ledger) as db:
+            with closing(sqlite3.connect(ledger)) as db:
                 assert db.execute("SELECT count(*) FROM effects").fetchone()[0] == 0
                 assert db.execute("SELECT count(*) FROM child_state").fetchone()[0] == 0
         assert not list(c.path("journal").iterdir())
@@ -908,7 +910,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
                 assert chain.call(c, "auto_coder_operation_get", {"operation_id": old.operation_id})["status"] == "NOT_FOUND"
             else:
                 assert response["operation_id"] == old.operation_id and response["history_origin"] == "retained_prior_instance"
-        with sqlite3.connect(c.path("journal") / "management-operations.sqlite3") as db:
+        with closing(sqlite3.connect(c.path("journal") / "management-operations.sqlite3")) as db:
             assert db.execute("SELECT count(*) FROM operations").fetchone()[0] == 0
         # Preserve host fences across the deliberate clean C reconstruction.
         held = []

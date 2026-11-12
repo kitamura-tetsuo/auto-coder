@@ -18,6 +18,7 @@ import struct
 import subprocess
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -313,7 +314,7 @@ def _capture_supervisor_identity(prior: PriorContainer, values: list[object], ob
     ledger = Path(state_sources[0]) / "management-child.sqlite3"
     if ledger.is_symlink() or not ledger.is_file():
         raise ValueError("prior supervisor ledger unavailable")
-    with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+    with closing(sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
         rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
     if len(rows) != 1 or rows[0][0] != instance_id or rows[0][2:] != (1, token) or not isinstance(rows[0][1], str) or str(uuid.UUID(rows[0][1])) != rows[0][1]:
         raise ValueError("prior live supervisor identity differs")
@@ -872,7 +873,7 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
         ledger = Path(intent.host_state_root) / "management-child.sqlite3"
         if ledger.is_symlink() or not ledger.is_file():
             raise ValueError("replacement ledger unavailable")
-        with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        with closing(sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
             rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
         fields = (Path("/proc") / str(peer_pid) / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
         if len(fields) < 20 or rows != [(intent.new_instance, incarnation, 1, fields[19])]:
