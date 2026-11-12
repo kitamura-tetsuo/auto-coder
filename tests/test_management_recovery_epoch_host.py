@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from scripts import recovery_epoch_native_negatives as negatives
 from scripts import test_management_recovery_epoch_host as fixture
 
 from auto_coder.management.original_attempts import canonical
@@ -107,6 +108,50 @@ def test_command_failure_exports_bounded_diagnostics_without_inputs_or_credentia
     short = fixture._command_failure(subprocess.CalledProcessError(1, ["docker", "compose"], output=b"Error response from daemon: AppArmor profile could not be loaded\n"))
     assert "AppArmor profile could not be loaded" in "".join(short["diagnostics"])
     assert fixture._command_failure(ValueError("unrelated error")) is None
+
+
+def test_cli_failure_causes_survive_the_actual_final_result_log_truncation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path, monkeypatch)
+    root = tmp_path / "fixtures" / "original"
+    for name, path in (("FIXTURE_ROOT", root.parent), ("EPOCH_ROOT", tmp_path / "epoch"), ("PEER_ROOT", tmp_path / "peer"), ("AUTHORIZATION_ROOT", tmp_path / "authorization")):
+        monkeypatch.setattr(fixture, name, path)
+    monkeypatch.setattr(fixture, "_fixture_directory", lambda: root)
+    monkeypatch.setattr(fixture, "require_disposable_host", lambda _: {})
+
+    def private_directory(path: Path) -> None:
+        if path not in (Path("/var/lib/auto-coder"), Path("/etc/auto-coder")):
+            path.mkdir(mode=0o700)
+
+    causes = [{"type": "OSError", "errno": 5, "file": "observed_component.py", "function": "read_current", "line": 42}]
+    document = {"schema": "current-recovery-containment-v1", "status": "unavailable", "grant_issued": False, "history_asserted": False, "admission_created": False, "reason": "fixed masked refusal", "causes": causes, "unrelated": "private-subprocess-data"}
+    monkeypatch.setattr(fixture, "_private_directory", private_directory)
+    monkeypatch.setattr(negatives.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 2, json.dumps(document) + "\n", ""))
+
+    def refuse() -> None:
+        negatives._containment_cli(root, "original-observer", "component-observation", tmp_path / "private-resources.json")
+
+    def many_later_diagnostics(_result: object, _chain: object) -> None:
+        (root / "issuer.log").write_text("RuntimeError: observed_component.py read_current line42\n" + "".join("RuntimeError: Later issuer diagnostic " + str(index) + "\n" for index in range(150)))
+        for index in range(150):
+            fixture.logger.error("Later bounded native diagnostic {}", index)
+
+    monkeypatch.setattr(fixture.InhibitedStockRoutes, "install", refuse)
+    monkeypatch.setattr(fixture, "_record_failure_sidecars", many_later_diagnostics)
+    previous_umask = os.umask(0o077)
+    try:
+        with pytest.raises(negatives.NativeContainmentFailure, match="fixed masked refusal"):
+            fixture.run_fixture(**inputs)
+        fixture.logger.complete()
+        result = json.loads(inputs["output"].read_bytes())
+    finally:
+        os.umask(previous_umask)
+        fixture.logger.remove()
+    assert result["status"] == "failed" and result["failure_type"] == "NativeContainmentFailure"
+    assert result["containment_failure"] == {"schema": "native-recovery-containment-cli-failure-v1", "action": "observe", "returncode": 2, "causes": causes}
+    assert 1 <= len(result["diagnostics"]) <= 120 and any("Later issuer diagnostic 149" in line for line in result["diagnostics"])
+    assert "observed_component.py" not in "\n".join(result["diagnostics"])
+    assert all(result[name] is False for name in ("no_child_started", "preserved_originals", "preserved_workers"))
+    assert "private-subprocess-data" not in json.dumps(result) and "private-resources.json" not in json.dumps(result)
 
 
 def _diagnostic_generation(root: Path, name: str = "A") -> Generation:

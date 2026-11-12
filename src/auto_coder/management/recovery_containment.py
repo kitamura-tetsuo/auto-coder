@@ -16,6 +16,7 @@ import select
 import sqlite3
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -24,7 +25,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
-from auto_coder.logger_config import get_logger
+from auto_coder.logger_config import get_logger, setup_logger
 
 from .archived_exclusions import unique_pairs
 from .containment_enrollment import OriginalFile, _approved_directory, _file_identity, _protected, _trusted_ancestors
@@ -64,6 +65,7 @@ from .recovery_containment_model import (
 )
 from .recovery_containment_profile import RecoveryManagerFact, _mapped_file, assert_disjoint_target, digest, read_bound_file, validate_manager_profile, validate_proxy_profile
 from .recovery_containment_resources import RecoveryResourceObservation, _private_lock, hold_observed_resources
+from .recovery_diagnostics import refusal_causes
 from .recovery_watcher_source import RecoveryWatcherUnitFact, observe_recovery_watcher_unit
 
 logger = get_logger(__name__)
@@ -555,16 +557,22 @@ def main() -> int:
     parser.add_argument("--resources", required=True, type=Path)
     parser.add_argument("--previous", type=Path)
     args = parser.parse_args()
+    setup_logger(stream=sys.stdout, log_file="/var/log/auto-coder/recovery-containment.log")
     try:
         resources = RecoveryResources.parse(_input(args.resources))
         if (args.action == "verify") != (args.previous is not None):
             raise RecoveryContainmentUnavailable("separate verification requires exactly one previous report")
         report = verify(args.enrollment, _input(args.previous), resources) if args.previous is not None else observe(args.enrollment, resources)
+        logger.complete()
         print(json.dumps(asdict(report), sort_keys=True, separators=(",", ":")), flush=True)
         return 0
     except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, subprocess.SubprocessError) as error:
         logger.bind(observation_only=True, recovery_grant=False, admission_created=False).warning("Current recovery containment unavailable: {}", str(error))
-        print(json.dumps({"schema": _REPORT_SCHEMA, "status": "unavailable", "grant_issued": False, "history_asserted": False, "admission_created": False, "reason": str(error)}, sort_keys=True), flush=True)
+        causes = refusal_causes(error)
+        for index, cause in enumerate(causes, start=1):
+            logger.bind(observation_only=True, recovery_grant=False, admission_created=False).warning("Current recovery containment refusal cause {}: {}", index, json.dumps(cause, sort_keys=True, separators=(",", ":")))
+        logger.complete()
+        print(json.dumps({"schema": _REPORT_SCHEMA, "status": "unavailable", "grant_issued": False, "history_asserted": False, "admission_created": False, "reason": str(error), "causes": causes}, sort_keys=True), flush=True)
         return 2
 
 

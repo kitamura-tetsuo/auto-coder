@@ -31,7 +31,7 @@ from typing import Callable
 from scripts.recovery_epoch_containment_fixture import CapturedGeneration, capture_generation, enroll_recovery_scope, selected_file, start_watcher, target_from_container
 from scripts.recovery_epoch_fault_tracer import BOUNDARY_SCENARIOS, PUBLICATIONS, KernelPublicationBarrier, PublicationObservation, parse_boundary
 from scripts.recovery_epoch_mutation_control import CONTROL, CONTROL_SCHEMA, ORACLE, PostReceiptGrantDispatched, assert_post_receipt_refusal, validate_control_result, verify_source_evidence
-from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
+from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeContainmentFailure, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
 from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, POST_RECEIPT_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_publication, observe_post_receipt_dispatch, observe_queued_grant, pause_target_before_grant, run_native_peer_cases
 from scripts.test_management_containment_closed_host import InhibitedStockRoutes, WatcherFixture, require_disposable_host
 from scripts.test_management_containment_enrollment_host import DisposableSystemdRoutes, _private_directory, _write_private
@@ -1329,6 +1329,8 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     except BaseException as error:
         result["status"] = "failed"
         result["failure_type"] = type(error).__name__
+        if isinstance(error, NativeContainmentFailure):
+            result["containment_failure"] = error.diagnostics
         _record_failure_sidecars(result, chain)
         _record_failure_catalog(result, target.enrollment_id if target is not None else None)
         command_failure = _command_failure(error)

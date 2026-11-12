@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import signal
 import socket
 import stat
@@ -34,6 +33,7 @@ from .recovery_containment import RecoveryContainmentReport, load_enrollment
 from .recovery_containment import observe as observe_containment
 from .recovery_containment import verify as verify_containment
 from .recovery_containment_model import RecoveryEnrollment, RecoveryEnrollmentObservation
+from .recovery_diagnostics import refusal_causes as _refusal_causes
 from .recovery_epoch_authorization import (
     PEER_ROOT,
     PEER_SOCKET,
@@ -359,30 +359,6 @@ def run_issuer() -> EpochDispatch:
         finally:
             for saved_signal, handler in handlers.items():
                 signal.signal(saved_signal, handler)  # type: ignore[arg-type]
-
-
-def _refusal_causes(error: BaseException) -> list[dict[str, str | int]]:
-    """Describe bounded code locations, never exception data or frame locals."""
-    causes: list[dict[str, str | int]] = []
-    visited: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in visited and len(causes) < 8:
-        visited.add(id(current))
-        name = type(current).__name__
-        row: dict[str, str | int] = {"type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,95}", name) else "Exception"}
-        if isinstance(current, OSError) and type(current.errno) is int:
-            row["errno"] = current.errno
-        trace = current.__traceback__
-        if trace is not None:
-            while trace.tb_next is not None:
-                trace = trace.tb_next
-            code = trace.tb_frame.f_code
-            filename = Path(code.co_filename).name
-            if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\.py", filename) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,95}|<module>", code.co_name):
-                row.update(file=filename, function=code.co_name, line=trace.tb_lineno)
-        causes.append(row)
-        current = current.__cause__
-    return causes
 
 
 def main(argv: list[str] | None = None) -> int:

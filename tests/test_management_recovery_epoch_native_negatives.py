@@ -48,6 +48,24 @@ def _context(tmp_path: Path) -> fixture.NativeNegativeContext:
     return fixture.NativeNegativeContext(_enrollment(), tmp_path, epoch)
 
 
+@pytest.mark.parametrize("previous,refusal", [(False, None), (True, None), (True, "expected distinct refusal")])
+def test_containment_cli_propagates_only_safe_failure_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: bool, refusal: str | None) -> None:
+    causes = [{"type": "OSError", "errno": 5, "file": "observed_component.py", "function": "read_current", "line": 42}]
+    document = {"schema": "current-recovery-containment-v1", "status": "unavailable", "grant_issued": False, "history_asserted": False, "admission_created": False, "reason": "fixed masked refusal", "causes": causes, "unrelated": "private-data"}
+    monkeypatch.setattr(fixture.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 2, "diagnostic prefix\n" + json.dumps(document) + "\n", ""))
+    with pytest.raises(fixture.NativeContainmentFailure, match="fixed masked refusal") as caught:
+        fixture._containment_cli(tmp_path, "original-observer", "component-observation", tmp_path / "private-resources.json", previous=tmp_path / "private-previous.json" if previous else None, refusal=refusal)
+    assert caught.value.diagnostics == {"schema": "native-recovery-containment-cli-failure-v1", "action": "verify" if previous else "observe", "returncode": 2, "causes": causes}
+    assert "private" not in json.dumps(caught.value.diagnostics)
+    assert (tmp_path / "original-observer.log").is_file()
+
+
+def test_containment_cli_diagnostics_do_not_change_expected_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    document = {"schema": "current-recovery-containment-v1", "status": "unavailable", "grant_issued": False, "history_asserted": False, "admission_created": False, "reason": "expected refusal", "causes": [{"type": "ValueError", "message": "private-data"}]}
+    monkeypatch.setattr(fixture.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 2, json.dumps(document) + "\n", ""))
+    assert fixture._containment_cli(tmp_path, "expected-refusal", "component-observation", tmp_path / "resources.json", refusal="expected refusal") == document
+
+
 def test_unreserved_guard_observes_but_never_rewrites_original_inputs(tmp_path: Path) -> None:
     context = _context(tmp_path)
     before = {path.name: fixture._projection(path) for path in context.epoch_root.iterdir()}

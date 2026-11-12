@@ -39,6 +39,7 @@ from auto_coder.management.installed_bootstrap_mount_profile import _inspect
 from auto_coder.management.original_attempts import canonical
 from auto_coder.management.recovery_containment_model import RECOVERY_ENROLLMENT_ROOT, NamedDescriptor, RecoveryEnrollment, RecoveryLock, RecoveryOriginal, RecoveryResources
 from auto_coder.management.recovery_containment_profile import digest
+from auto_coder.management.recovery_diagnostics import safe_refusal_causes
 from auto_coder.management.recovery_epoch_peer import inspect_kernel_lock
 from auto_coder.management.recovery_epoch_state import EPOCH_ROOT
 
@@ -89,6 +90,14 @@ class NativeNegativeContext:
 
 class EpochAlreadyPublished(AssertionError):
     """The fresh fixture has become uncertain and must never be reused."""
+
+
+class NativeContainmentFailure(AssertionError):
+    """Carry only bounded non-authorizing CLI metadata to the failure artifact."""
+
+    def __init__(self, message: str, *, action: str, returncode: int, causes: object):
+        super().__init__(message)
+        self.diagnostics = {"schema": "native-recovery-containment-cli-failure-v1", "action": action, "returncode": returncode, "causes": safe_refusal_causes(causes)}
 
 
 def assert_unreserved_epoch(root: Path) -> None:
@@ -750,9 +759,9 @@ def _containment_cli(directory: Path, label: str, enrollment: str, resources: Pa
         raise AssertionError("the actual containment CLI returned an incomplete or authorizing result")
     if refusal is None:
         if completed.returncode != 0 or value.get("status") != "observed-current-recovery-containment":
-            raise AssertionError("the genuine native containment positive control was unavailable: " + str(value.get("reason")))
+            raise NativeContainmentFailure("the genuine native containment positive control was unavailable: " + str(value.get("reason")), action="verify" if previous is not None else "observe", returncode=completed.returncode, causes=value.get("causes"))
     elif completed.returncode != 2 or value.get("status") != "unavailable" or refusal not in str(value.get("reason")):
-        raise AssertionError("the actual containment verifier did not reject the injected condition: " + label + " " + str(value.get("reason")))
+        raise NativeContainmentFailure("the actual containment verifier did not reject the injected condition: " + label + " " + str(value.get("reason")), action="verify" if previous is not None else "observe", returncode=completed.returncode, causes=value.get("causes"))
     return value
 
 

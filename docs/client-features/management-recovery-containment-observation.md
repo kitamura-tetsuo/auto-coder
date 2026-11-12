@@ -178,6 +178,14 @@ cannot create a lock, pin or approval. Reports expose hashes and identities rath
 than configuration contents. Logger diagnostics may also appear on stdout, so a
 machine caller selects the structured JSON result line.
 
+Unavailable CLI results and Loguru stdout/file diagnostics also retain at most
+eight explicit exception causes, limited to type, integer error number and safe
+code basename/function/line. They omit inner messages, arguments, full paths and
+frame locals. The native fixture preserves validated causes in its separate
+`containment_failure` result field, so truncating ordinary diagnostic log lines
+cannot erase the causal locations. This metadata never changes a refusal,
+acceptance predicate, report authority or exit status.
+
 The separate verifier repeats real source, kernel, controller and holder reads.
 It rejects changed facts, malformed or authorizing reports, invalid digests,
 foreign boots, future samples and samples older than ten minutes. The earlier
