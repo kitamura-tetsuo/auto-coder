@@ -533,11 +533,47 @@ class Chain:
                 return {"http_status": error.code}
             raise ValueError("synthetic authenticated proxy HTTP unavailable") from None
 
-    def fresh_status(self, generation: Generation) -> dict[str, object]:
-        code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
+    def fresh_status(self, generation: Generation, *, require_live: bool = False) -> dict[str, object]:
+        code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;status=read_fresh_status(Path('/management-child-state'))\n"
+        if require_live:
+            code += (
+                "import time\n"
+                "from auto_coder.management.bootstrap_supervisor import BootstrapConfig,ManagementBootstrapSupervisor\n"
+                "from auto_coder.management.self_update_handoff import observe_supervisor\n"
+                "config=BootstrapConfig.read(Path('/bootstrap/config.json'))\n"
+                "observed=observe_supervisor(config)\n"
+                "if status.get('status') not in {'launched','succeeded'} or observed is None:\n"
+                " raise ValueError('fresh launch is not live')\n"
+                "owner,child=observed\n"
+                "if child.phase.value!='running' or owner!=status['owner_incarnation'] or child.supervisor_incarnation!=owner or ManagementBootstrapSupervisor._identity(child)!=status['child_identity']:\n"
+                " raise ValueError('fresh launch lifetime differs')\n"
+                "if not status['started']<=time.time()<=status['deadline'] or not 0<status['deadline']-status['started']<=config.verification_timeout:\n"
+                " raise ValueError('fresh launch observation window expired or differs')\n"
+            )
+        code += "print(json.dumps(status))"
         return json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
 
-    def ready(self, generation: Generation, *, fresh: bool) -> None:
+    def wait_for_fresh_launch(self, generation: Generation) -> dict[str, object]:
+        # Source verification precedes dispatch. Give that phase its own finite
+        # budget, just as the first A child is observed before HTTP readiness.
+        deadline = time.monotonic() + 60
+        last = "not observed"
+        while time.monotonic() < deadline:
+            try:
+                launch = self.fresh_status(generation, require_live=True)
+                last = str(launch["status"])
+                if launch["status"] in {"launched", "succeeded"} and time.monotonic() < deadline:
+                    return launch
+            except (subprocess.CalledProcessError, ValueError, KeyError, OSError) as error:
+                last = type(error).__name__
+            time.sleep(0.1)
+        raise AssertionError("exact synthetic fresh launch was not proven; " + last)
+
+    @staticmethod
+    def same_fresh_launch(first: dict[str, object], second: dict[str, object]) -> bool:
+        return {key: value for key, value in first.items() if key != "status"} == {key: value for key, value in second.items() if key != "status"}
+
+    def ready(self, generation: Generation, *, fresh: bool, expected_launch: dict[str, object] | None = None) -> None:
         self.ensure_proxy(generation)
         deadline = time.monotonic() + 60
         last = "not observed"
@@ -550,6 +586,8 @@ class Chain:
                     if status["status"] not in {"launched", "succeeded"}:
                         time.sleep(0.1)
                         continue
+                    if expected_launch is not None and not self.same_fresh_launch(status, expected_launch):
+                        raise ValueError("fresh initialization launch changed after dispatch")
                     observation = status["observation_id"]
                 last = "unauthenticated Caddy challenge"
                 if self.call(generation, "auto_coder_whoami", {}, authenticated=False)["http_status"] != 401:
@@ -563,7 +601,7 @@ class Chain:
                     # sample. Require a current terminal result for that same launch.
                     terminal = self.fresh_status(generation)
                     last = "fresh initialization terminal status=" + str(terminal["status"])
-                    if {key: value for key, value in terminal.items() if key != "status"} != {key: value for key, value in status.items() if key != "status"}:
+                    if not self.same_fresh_launch(terminal, status):
                         raise ValueError("fresh initialization launch changed during authenticated readback")
                     confirmed = terminal["status"] == "succeeded"
                 if confirmed:
@@ -608,7 +646,8 @@ class Chain:
         self.docker("start", new.container)
         out, err = process.communicate(timeout=60)
         assert process.returncode == 0, (out, err)
-        self.ready(new, fresh=True)
+        launch = self.wait_for_fresh_launch(new)
+        self.ready(new, fresh=True, expected_launch=launch)
         self.prove_child(new)
 
     def seed(self, generation: Generation):
