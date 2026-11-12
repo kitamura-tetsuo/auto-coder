@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 # Export exact reviewed source/images; preparation does not launch a guest.
-if [[ "$#" != 6 || ! "$1" =~ ^/var/tmp/ac-recovery-vm-[a-zA-Z0-9_-]+$ || ! "$2" =~ ^[a-zA-Z0-9_.:-]{1,128}$ || ! "$3" =~ ^sha256:[0-9a-f]{64}$ || ! "$4" =~ ^sha256:[0-9a-f]{64}$ || ! "$6" =~ ^(grant|kill-after-intent|kill-after-consume|lost-reply)$ ]]; then
+if [[ "$#" != 6 || ! "$1" =~ ^/var/tmp/ac-recovery-vm-[a-zA-Z0-9_-]+$ || ! "$2" =~ ^[a-zA-Z0-9_.:-]{1,128}$ || ! "$3" =~ ^sha256:[0-9a-f]{64}$ || ! "$4" =~ ^sha256:[0-9a-f]{64}$ || ! "$6" =~ ^[a-z][a-z-]{1,63}$ ]]; then
     echo 'Usage: prepare.sh /var/tmp/ac-recovery-vm-UNIQUE AUTHORIZATION_ID MANAGER_IMAGE_ID CADDY_IMAGE_ID READ_TOKEN_FILE SCENARIO' >&2
     exit 2
 fi
@@ -15,7 +15,21 @@ source_token_file=$5
 fixture_scenario=$6
 tooling_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$tooling_root" rev-parse --show-toplevel)
-test -c /dev/kvm
+cd -- "$repo_root"
+"$repo_root/.venv/bin/python" - "$fixture_scenario" <<'PY'
+import sys
+from scripts.test_management_recovery_epoch_host import required_cases
+
+required_cases(sys.argv[1])
+PY
+fixture_accelerator=tcg
+fixture_kvm_gid=0
+fixture_compose_files="$tooling_root/compose.yaml"
+if [[ -c /dev/kvm ]]; then
+    fixture_accelerator=kvm
+    fixture_kvm_gid=$(stat -c '%g' /dev/kvm)
+    fixture_compose_files="$fixture_compose_files:$tooling_root/compose.kvm.yaml"
+fi
 test -f "$source_token_file"
 if [[ -e "$fixture_root" || -L "$fixture_root" ]]; then
     echo 'The recovery fixture directory must not exist.' >&2
@@ -35,7 +49,7 @@ docker image save "$manager_image" "$proxy_image" | tee "$fixture_root/input/ima
 cp "$tooling_root/guest.sh" "$fixture_root/input/guest.sh"
 install -m 600 "$source_token_file" "$fixture_root/input/source-token"
 fixture_commit=$(git -C "$repo_root" rev-parse HEAD)
-python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" <<'PY'
+python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" "$fixture_accelerator" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -43,7 +57,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 inputs = root / "input"
-manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario"), sys.argv[2:]))
+manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario", "accelerator"), sys.argv[2:]))
 manifest["schema"] = "auto-coder-recovery-vm-input-v1"
 manifest["ready_source_sha"] = "e742338b3f311e6d30a22a8f5341b8072513d813"
 manifest["inputs_sha256"] = {}
@@ -74,6 +88,7 @@ RECOVERY_VM_TOOLING=$tooling_root
 RECOVERY_VM_ROOT=$fixture_root
 RECOVERY_VM_UID=$(id -u)
 RECOVERY_VM_GID=$(id -g)
-RECOVERY_KVM_GID=$(stat -c '%g' /dev/kvm)
+RECOVERY_KVM_GID=$fixture_kvm_gid
+COMPOSE_FILE=$fixture_compose_files
 ENV
-printf 'Prepared exact recovery source %s in %s.\n' "$fixture_commit" "$fixture_root"
+printf 'Prepared exact recovery source %s in %s with QEMU %s.\n' "$fixture_commit" "$fixture_root" "$fixture_accelerator"

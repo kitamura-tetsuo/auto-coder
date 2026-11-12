@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Callable
 
 from scripts.recovery_epoch_containment_fixture import CapturedGeneration, capture_generation, enroll_recovery_scope, selected_file, start_watcher, target_from_container
+from scripts.recovery_epoch_fault_tracer import BOUNDARY_SCENARIOS, PUBLICATIONS, KernelPublicationBarrier, PublicationObservation, parse_boundary
+from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
 from scripts.test_management_containment_closed_host import InhibitedStockRoutes, WatcherFixture, require_disposable_host
 from scripts.test_management_containment_enrollment_host import DisposableSystemdRoutes, _private_directory, _write_private
 
@@ -52,7 +54,9 @@ from tests.test_management_archived_cutover_container import Chain, Generation, 
 logger = get_logger(__name__)
 FIXTURE_ROOT = Path("/var/lib/auto-coder/recovery-epoch-fixtures")
 RESULT_SCHEMA = "auto-coder-native-recovery-epoch-result-v1"
-SCENARIOS = ("grant", "kill-after-intent", "kill-after-consume", "lost-reply")
+ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "changed-installed-ready-refused", "changed-target-management-config-refused"})
+LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused"})
+SCENARIOS = ("grant", "kill-after-intent", "kill-after-consume", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS)
 REQUIRED_CASES = frozenset(
     {
         "affirmative-original-genesis",
@@ -62,6 +66,7 @@ REQUIRED_CASES = frozenset(
         "missing-original-refused",
         "genuine-installed-ready-in-target",
         "independent-issuer-contender-refused",
+        "reservation-barrier-contender-refused",
         "complete-native-epoch-granted",
         "old-owner-and-controller-contenders-refused",
         "issuer-death-ended-current-custody",
@@ -76,8 +81,8 @@ def required_cases(scenario: str) -> frozenset[str]:
     if scenario not in SCENARIOS:
         raise ValueError("unsupported native recovery fixture scenario")
     if scenario == "grant":
-        return REQUIRED_CASES
-    return (REQUIRED_CASES - {"complete-native-epoch-granted", "old-owner-and-controller-contenders-refused", "issuer-death-ended-current-custody", "consumed-epoch-replay-refused"}) | {"native-" + scenario, "interrupted-epoch-replay-refused"}
+        return REQUIRED_CASES | REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES | ORIGINAL_NEGATIVE_CASES | LINEAGE_REPORT_CASES
+    return (REQUIRED_CASES - {"complete-native-epoch-granted", "old-owner-and-controller-contenders-refused", "issuer-death-ended-current-custody", "consumed-epoch-replay-refused", "reservation-barrier-contender-refused"}) | {"native-" + scenario, "interrupted-epoch-replay-refused"}
 
 
 class WorkerFixture(Chain):
@@ -110,7 +115,7 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _snapshot(roots: tuple[Path, ...]) -> str:
+def _snapshot(roots: tuple[Path, ...], *, semantic: bool = False) -> str:
     """Fingerprint protected original bytes/objects without exporting their data."""
     entries = []
     for root in roots:
@@ -126,7 +131,10 @@ def _snapshot(roots: tuple[Path, ...]) -> str:
                 content = "socket"
             else:
                 raise AssertionError("unsupported original fixture object")
-            entries.append((str(path), info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns, content))
+            if semantic:
+                entries.append((str(path), info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size if path.is_file() else 0, info.st_mtime_ns if path.is_file() else 0, content))
+            else:
+                entries.append((str(path), info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns, content))
     return hashlib.sha256(canonical(entries)).hexdigest()
 
 
@@ -245,6 +253,12 @@ def _check_lineage(chain: Chain, captures: tuple[CapturedGeneration, ...]) -> di
         complete = derive_lineage(chain.history_binding, history, tuple(descriptors))
         assert not complete.unavailable, complete.unavailable
         assert verify_lineage(complete, chain.history_binding, history, tuple(descriptors)) == complete
+        try:
+            verify_lineage(replace(complete, generations=complete.generations[:-1]), chain.history_binding, history, tuple(descriptors))
+        except OriginalEvidenceUnavailable:
+            pass
+        else:
+            raise AssertionError("a truncated original lineage was accepted as complete")
         outcomes = {item.instance_id: item.outcome for item in complete.generations}
         assert set(outcomes) == {"A", "B", "C", "D"}
         assert outcomes["B"] == "succeeded" and outcomes["C"] in {"launched", "unknown"} and outcomes["D"] == "never-created"
@@ -325,7 +339,7 @@ def _target(
         crash_budget=0,
         management_version_root=versions,
         management_config=Path("/bootstrap/management.yaml"),
-        verification_timeout=600,
+        verification_timeout=1800,
         recovery_epoch_config=Path("/bootstrap/recovery-epoch.json"),
     )
     runtime = runtime_for_receipt(bootstrap, receipt)
@@ -340,7 +354,7 @@ def _target(
         "crash_budget": 0,
         "management_version_root": str(versions),
         "management_config": str(bootstrap.management_config),
-        "verification_timeout": 600,
+        "verification_timeout": 1800,
         "recovery_epoch_config": "/bootstrap/recovery-epoch.json",
     }
     config = root / "bootstrap" / "config.json"
@@ -491,6 +505,14 @@ def validate_result(value: dict[str, object]) -> None:
     assert isinstance(value.get("durable"), dict)
     if scenario == "grant":
         assert set(value["durable"]["record_sha256"]) == {"reserved", "intent", "consumed", "receipt"}
+    elif scenario in BOUNDARY_SCENARIOS:
+        publication, when = parse_boundary(scenario)
+        assert value["durable"]["publication"] == publication and value["durable"]["when"] == when
+        assert value["durable"]["consumer_grant_acknowledged"] is False
+        assert value["durable"]["file_fsync_observed"] is (when == "after") and value["durable"]["directory_fsync_observed"] is (when == "after")
+    elif scenario == "retarget-after-reservation":
+        assert value["durable"]["phase"] == "reserved" and value["durable"]["consumer_grant_acknowledged"] is False
+        assert value["durable"]["inventory_sha256"] != value["durable"]["retargeted_inventory_sha256"]
     else:
         assert value["durable"]["phase"] == ("intent" if scenario == "kill-after-intent" else "consumed" if scenario == "kill-after-consume" else "receipt")
         assert value["durable"]["consumer_grant_acknowledged"] is False
@@ -527,11 +549,134 @@ def _interrupted_issuer(scenario: str, issuer: subprocess.Popen, issuer_log: Pat
     return {"phase": phase, "record_sha256": hashlib.sha256(encoded).hexdigest(), "consumer_grant_acknowledged": False, "grant_send_completed": False}
 
 
+def _publication_interruption(scenario: str, observed: PublicationObservation, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
+    """Verify exactly the actual interrupted original publication prefix."""
+    name, when = parse_boundary(scenario)
+    assert (observed.name, observed.when) == (name, when)
+    index = PUBLICATIONS.index(name) + (1 if when == "after" else 0)
+    assert set(os.listdir(EPOCH_ROOT)) == {"inventory.json", "epoch.lock", *PUBLICATIONS[:index]}, "issuer crossed the selected native publication boundary"
+    if when == "after":
+        published = EPOCH_ROOT / name
+        info = published.stat()
+        assert (observed.file_device, observed.file_inode, observed.file_sha256) == (info.st_dev, info.st_ino, _digest(published))
+        assert observed.file_fsync_observed and observed.directory_fsync_observed
+    else:
+        assert observed.file_device is None and observed.file_inode is None and observed.file_sha256 is None
+        assert not observed.file_fsync_observed and not observed.directory_fsync_observed
+    _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "native publication interruption ends target custody", timeout=90)
+    _no_target_child(target.generation, running=False)
+    assert "Recovery custody acknowledged" not in consumer_log.read_text()
+    assert "One consumed recovery epoch grant send completed" not in issuer_log.read_text()
+    before = _snapshot((EPOCH_ROOT,))
+    replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
+    assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == before, "interrupted publication or original endpoint was repaired/reissued"
+    return {
+        "publication": name,
+        "when": when,
+        "file_fsync_observed": observed.file_fsync_observed,
+        "directory_fsync_observed": observed.directory_fsync_observed,
+        "consumer_grant_acknowledged": False,
+        "grant_send_completed": False,
+        "published_names": list(PUBLICATIONS[:index]),
+        "native_observation": asdict(observed),
+    }
+
+
 def _passed(result: dict[str, object], cases: list[str], preserved: str, worker_claims: str, worker_baseline: dict[str, object], worker_posts: dict[str, int]) -> None:
     cases.extend(("originals-oauth-and-workers-preserved", "no-consumer-child-or-admission"))
     result.update(status="passed", no_child_started=True, preserved_originals=True, preserved_workers=True, preserved_originals_sha256=preserved, preserved_worker_claims_sha256=worker_claims, worker_lifetimes=worker_baseline, worker_effect_posts=worker_posts)
     validate_result(result)
     logger.info("All {} native recovery ownership cases passed; no consumer child was launched", len(cases))
+
+
+def _issuer_refusal(context: NativeNegativeContext, target: PreparedTarget, label: str) -> None:
+    """Run the actual complete issuer, allowing no first publication on error."""
+    assert_unreserved_epoch(context.epoch_root)
+    log_path = context.fixture_root / ("refusal-" + label + ".log")
+    assert Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false"
+    process = None
+    started = False
+    with log_path.open("xb") as output:
+        try:
+            process = subprocess.Popen([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], stdout=output, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+            _wait(lambda: process.poll() is not None or PEER_SOCKET.exists() and "Fixed recovery issuer endpoint is listening" in log_path.read_text(), "actual refused issuer startup " + label, timeout=180)
+            if process.poll() is None:
+                Chain.docker("start", target.generation.container)
+                started = True
+                _wait(lambda: process.poll() is not None or set(os.listdir(context.epoch_root)) != {"inventory.json", "epoch.lock"}, "actual prepublication refusal " + label, timeout=1800)
+            assert_unreserved_epoch(context.epoch_root)
+            assert process.wait(timeout=30) == 2, "the complete issuer did not refuse the injected original condition"
+            assert "One consumed recovery epoch grant send completed" not in log_path.read_text()
+            if started:
+                _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "refused target exits without native state", timeout=120)
+                assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
+                consumer_log = target.generation.path("state") / "logs" / "recovery-epoch-bootstrap.log"
+                assert "Recovery custody acknowledged" not in consumer_log.read_text()
+            _no_target_child(target.generation, running=False)
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=30)
+            if started and Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "true":
+                Chain.docker("kill", target.generation.container)
+            assert_unreserved_epoch(context.epoch_root)
+
+
+def _original_negatives(context: NativeNegativeContext, target: PreparedTarget, chain: Chain, preserved_snapshot: Callable[[], object]) -> list[str]:
+    directory = context.fixture_root / "native-original-negative-backups"
+    directory.mkdir(mode=0o700)
+    database = chain.generations[0].path("journal") / "management-operations.sqlite3"
+    saved = directory / "absent-original.sqlite3"
+    baseline = preserved_snapshot()
+    original = (database.stat().st_dev, database.stat().st_ino, _digest(database))
+    database.rename(saved)
+    try:
+        injected = preserved_snapshot()
+        _issuer_refusal(context, target, "original-journal-absence-refused")
+        assert preserved_snapshot() == injected
+    finally:
+        assert_unreserved_epoch(context.epoch_root)
+        assert not database.exists() and (saved.stat().st_dev, saved.stat().st_ino, _digest(saved)) == original
+        saved.rename(database)
+    assert preserved_snapshot() == baseline
+    for label, path in (("changed-installed-ready-refused", Path(target.receipt.environment_path).parent / "MANAGEMENT_READY.json"), ("changed-target-management-config-refused", target.generation.path("bootstrap") / "management.yaml")):
+        baseline = preserved_snapshot()
+        with _replacement(context.epoch_root, path, directory / label, path.read_bytes() + b"\n"):
+            injected = preserved_snapshot()
+            _issuer_refusal(context, target, label)
+            assert preserved_snapshot() == injected
+        assert preserved_snapshot() == baseline
+    return sorted(ORIGINAL_NEGATIVE_CASES)
+
+
+def _reserved_contender() -> None:
+    assert set(os.listdir(EPOCH_ROOT)) == {"inventory.json", "epoch.lock", "reserved.json", "reserved-head.json"}
+    before = _snapshot((EPOCH_ROOT,))
+    contender = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
+    assert contender.returncode == 2 and _snapshot((EPOCH_ROOT,)) == before, "a contender overlapped the actual original durable reservation"
+
+
+def _retarget_reserved(barrier: KernelPublicationBarrier, issuer: subprocess.Popen, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
+    inventory = EPOCH_ROOT / "inventory.json"
+    original_digest = _digest(inventory)
+    raw = json.loads(inventory.read_bytes())
+    raw["preparation_id"] = "foreign-" + uuid.uuid4().hex
+    raw["target_id"] = ("f" if raw["target_id"] != "f" * 64 else "e") * 64
+    with inventory.open("wb") as stream:
+        stream.write(canonical(raw))
+        stream.flush()
+        os.fsync(stream.fileno())
+    _reserved_contender()
+    injected = _snapshot((EPOCH_ROOT,))
+    barrier.release()
+    issuer.wait(timeout=120)
+    assert issuer.returncode == 2 and _snapshot((EPOCH_ROOT,)) == injected
+    _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "retargeted reservation ends current custody")
+    _no_target_child(target.generation, running=False)
+    assert "Recovery custody acknowledged" not in consumer_log.read_text() and "One consumed recovery epoch grant send completed" not in issuer_log.read_text()
+    replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
+    assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == injected
+    return {"phase": "reserved", "consumer_grant_acknowledged": False, "inventory_sha256": original_digest, "retargeted_inventory_sha256": _digest(inventory), "retained_publications": ["reserved.json", "reserved-head.json"]}
 
 
 def run_fixture(*, authorization_id: str, source_repository: Path, source_token_file: Path, source_sha: str, uv: Path, uv_version: str, output: Path, scenario: str = "grant") -> dict[str, object]:
@@ -549,6 +694,8 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     for directory in (FIXTURE_ROOT, EPOCH_ROOT, PEER_ROOT, AUTHORIZATION_ROOT):
         if directory.exists() or directory.is_symlink():
             raise FileExistsError("recovery fixture refuses a previous/partial root: " + str(directory))
+    for parent in (Path("/var/lib/auto-coder"), Path("/etc/auto-coder")):
+        _private_directory(parent)
     _private_directory(FIXTURE_ROOT)
     root = FIXTURE_ROOT / uuid.uuid4().hex
     root.mkdir(mode=0o700)
@@ -567,6 +714,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     issuer = None
     log_stream = None
     target = None
+    barrier = None
     try:
         stock = InhibitedStockRoutes.install()
         worker_root = root / "unrelated"
@@ -618,13 +766,26 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         routes.assert_inhibited()
         stock.assert_inhibited()
         selected_target = target_from_container(target.generation.container, bootstrap_config=target.generation.path("bootstrap") / "config.json", management_config=target.generation.path("bootstrap") / "management.yaml", published_port=target.published_port)
-        enroll_recovery_scope(tuple(captures), selected_target, tuple(watchers), deployment_id=chain.history_binding.deployment, enrollment_id=target.enrollment_id, authorization=authorization)
+        enrollment = enroll_recovery_scope(tuple(captures), selected_target, tuple(watchers), deployment_id=chain.history_binding.deployment, enrollment_id=target.enrollment_id, authorization=authorization)
         _install_authorization(chain, target, authorization_id, source_repository, source_token_file, source_sha, uv, uv_version)
         retained_roots = (Path(chain.history_binding.root), chain.oauth, *(path for generation in chain.generations for path in (generation.path("state"), generation.path("journal"), generation.path("bootstrap"))))
         Chain.checkpoint(chain.oauth / "oauth.sqlite3")
         preserved = _snapshot(retained_roots)
         worker_before = (worker_baseline, worker_posts, worker_claims)
         workers.preserved(*worker_before)
+        native_context = NativeNegativeContext(enrollment.enrollment, root, EPOCH_ROOT)
+        if scenario == "grant":
+
+            def preservation() -> object:
+                workers.preserved(*worker_before)
+                return _snapshot(retained_roots, semantic=True), worker_claims, workers.effect_posts()
+
+            cases.extend(LINEAGE_REPORT_CASES)
+            cases.extend(run_native_negatives(native_context, lambda label: _issuer_refusal(native_context, target, label), preservation))
+            cases.extend(_original_negatives(native_context, target, chain, preservation))
+            # Only the intentional reversible fixture injections changed path
+            # metadata. This fresh strict baseline precedes actual issuance.
+            preserved = _snapshot(retained_roots)
         issuer_log = root / "issuer.log"
         log_stream = issuer_log.open("xb")
         issuer = subprocess.Popen([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], stdout=log_stream, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
@@ -634,17 +795,47 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         cases.append("independent-issuer-contender-refused")
         # A real SIGSTOP barrier lets the exact target execute its installed
         # interpreter probe before T takes its current process observations.
-        issuer.send_signal(signal.SIGSTOP)
-        _wait(lambda: Path(f"/proc/{issuer.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T", "issuer kernel stop barrier", process=issuer)
+        if scenario in BOUNDARY_SCENARIOS or scenario in ("grant", "retarget-after-reservation"):
+            publication, when = parse_boundary(scenario) if scenario in BOUNDARY_SCENARIOS else ("reserved-head.json", "after")
+            barrier = KernelPublicationBarrier(issuer, root=EPOCH_ROOT, name=publication, when=when)
+            barrier.start()
+        else:
+            issuer.send_signal(signal.SIGSTOP)
+            _wait(lambda: Path(f"/proc/{issuer.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T", "issuer kernel stop barrier", process=issuer)
         chain.docker("start", target.generation.container)
         probe = json.loads(chain.docker("exec", target.generation.container, target.receipt.interpreter_path, "-I", "-B", "-m", "auto_coder.build_provenance", timeout=60).splitlines()[-1])
         assert probe["source_revision"]["available"] is True and probe["source_revision"]["value"] == source_sha
         assert probe["distribution_version"]["available"] is True and probe["distribution_version"]["value"] == target.receipt.distribution_version
+        _wait(lambda: chain.docker("inspect", "--format", "{{json .ExecIDs}}", target.generation.container) in ("null", "[]"), "exact target probe has left no active Docker exec")
         _no_target_child(target.generation, running=True)
         cases.append("genuine-installed-ready-in-target")
-        issuer.send_signal(signal.SIGCONT)
+        if scenario == "grant":
+            cases.extend(verify_native_containment_reports(native_context, issuer.pid))
+            assert _snapshot(retained_roots) == preserved
+            workers.preserved(*worker_before)
         consumer_log = target.generation.path("state") / "logs" / "recovery-epoch-bootstrap.log"
         result["source_proof"] = {name: getattr(target.receipt, name) for name in ("source_sha", "tested_source_ref", "tested_source_object", "test_run_id", "test_run_attempt", "lock_sha256", "distribution_version", "receipt_identity")}
+        if barrier is not None:
+            barrier.resume_initial()
+            observed_boundary = barrier.wait(timeout=1800)
+            if scenario == "grant":
+                _reserved_contender()
+                cases.append("reservation-barrier-contender-refused")
+                result["reservation_barrier"] = asdict(observed_boundary)
+                barrier.release()
+            else:
+                if scenario == "retarget-after-reservation":
+                    result["durable"] = _retarget_reserved(barrier, issuer, issuer_log, consumer_log, target)
+                else:
+                    barrier.kill()
+                    result["durable"] = _publication_interruption(scenario, observed_boundary, issuer_log, consumer_log, target)
+                cases.extend(("native-" + scenario, "interrupted-epoch-replay-refused"))
+                assert _snapshot(retained_roots) == preserved
+                workers.preserved(*worker_before)
+                _passed(result, cases, preserved, worker_claims, worker_baseline, worker_posts)
+                return result
+        else:
+            issuer.send_signal(signal.SIGCONT)
         if scenario != "grant":
             result["durable"] = _interrupted_issuer(scenario, issuer, issuer_log, consumer_log, target)
             cases.extend(("native-" + scenario, "interrupted-epoch-replay-refused"))
@@ -652,7 +843,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
             workers.preserved(*worker_before)
             _passed(result, cases, preserved, worker_claims, worker_baseline, worker_posts)
             return result
-        _wait(lambda: (EPOCH_ROOT / "receipt-head.json").is_file() and consumer_log.is_file() and "Recovery custody acknowledged" in consumer_log.read_text(), "native grant and consumer custody", timeout=600, process=issuer)
+        _wait(lambda: (EPOCH_ROOT / "receipt-head.json").is_file() and consumer_log.is_file() and "Recovery custody acknowledged" in consumer_log.read_text(), "native grant and consumer custody", timeout=1800, process=issuer)
         result["durable"] = inspect_durable_result(EPOCH_ROOT, issuer_log=issuer_log.read_text(), consumer_log=consumer_log.read_text())
         cases.append("complete-native-epoch-granted")
         for captured in captures:
@@ -706,6 +897,8 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         result["diagnostics"] = diagnostics[-120:]
         output.parent.mkdir(parents=True, exist_ok=True)
         _write_private(output, canonical(result))
+        if barrier is not None:
+            barrier.close()
         if issuer is not None and issuer.poll() is None:
             issuer.send_signal(signal.SIGCONT)
             issuer.terminate()

@@ -12,11 +12,17 @@ if [[ -e /disk/guest.qcow2 ]]; then
     echo 'A used guest disk cannot be reused as fresh recovery evidence.' >&2
     exit 2
 fi
+accelerator=$(python3 -c 'import json; print(json.load(open("/input/manifest.json"))["accelerator"])')
+case "$accelerator" in
+    kvm) acceleration=(-accel kvm -cpu host) ;;
+    tcg) acceleration=(-accel tcg,thread=multi -cpu max) ;;
+    *) echo 'The prepared guest accelerator is unsupported.' >&2; exit 2 ;;
+esac
 cloud-localds /disk/seed.img /input/user-data /input/meta-data
 qemu-img create -f qcow2 -F qcow2 -b /opt/base.img /disk/guest.qcow2 32G
 set +e
 timeout --signal=TERM --kill-after=30s 120m qemu-system-x86_64 \
-    -accel kvm -cpu host -smp 2 -m 4608 -nodefaults -no-reboot \
+    "${acceleration[@]}" -smp 2 -m 4608 -nodefaults -no-reboot \
     -display none -serial stdio -monitor none \
     -drive file=/disk/guest.qcow2,if=virtio,format=qcow2 \
     -drive file=/disk/seed.img,if=virtio,format=raw,readonly=on \

@@ -179,7 +179,7 @@ def _result() -> dict[str, object]:
     return {
         "schema": fixture.RESULT_SCHEMA,
         "status": "passed",
-        "cases": sorted(fixture.REQUIRED_CASES),
+        "cases": sorted(fixture.required_cases("grant")),
         "no_child_started": True,
         "preserved_originals": True,
         "preserved_workers": True,
@@ -188,7 +188,7 @@ def _result() -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("case", sorted(fixture.REQUIRED_CASES))
+@pytest.mark.parametrize("case", sorted(fixture.required_cases("grant")))
 def test_native_result_cannot_omit_any_required_case(case: str) -> None:
     result = _result()
     fixture.validate_result(result)
@@ -221,3 +221,38 @@ def test_interruption_result_requires_the_actual_boundary_and_no_grant(scenario:
 def test_unknown_native_scenario_is_not_a_success_alias() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         fixture.required_cases("unreviewed-boundary")
+
+
+@pytest.mark.parametrize("scenario", fixture.BOUNDARY_SCENARIOS)
+def test_publication_result_requires_exact_kernel_observation(scenario: str) -> None:
+    publication, when = fixture.parse_boundary(scenario)
+    result = _result()
+    result.update(scenario=scenario, cases=sorted(fixture.required_cases(scenario)), durable={"publication": publication, "when": when, "consumer_grant_acknowledged": False, "file_fsync_observed": when == "after", "directory_fsync_observed": when == "after"})
+    fixture.validate_result(result)
+    result["durable"]["directory_fsync_observed"] = when != "after"
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+def test_retarget_result_cannot_hide_unchanged_inventory() -> None:
+    result = _result()
+    result.update(scenario="retarget-after-reservation", cases=sorted(fixture.required_cases("retarget-after-reservation")), durable={"phase": "reserved", "consumer_grant_acknowledged": False, "inventory_sha256": "a" * 64, "retargeted_inventory_sha256": "a" * 64})
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+    result["durable"]["retargeted_inventory_sha256"] = "b" * 64
+    fixture.validate_result(result)
+
+
+def test_semantic_preservation_excludes_only_deliberate_rename_metadata(tmp_path: Path) -> None:
+    original = tmp_path / "original"
+    original.mkdir()
+    database = original / "database"
+    database.write_bytes(b"retained bytes")
+    baseline = fixture._snapshot((original,), semantic=True)
+    held = tmp_path / "held-original"
+    database.rename(held)
+    assert fixture._snapshot((original,), semantic=True) != baseline
+    held.rename(database)
+    assert fixture._snapshot((original,), semantic=True) == baseline
+    database.write_bytes(b"changed bytes")
+    assert fixture._snapshot((original,), semantic=True) != baseline

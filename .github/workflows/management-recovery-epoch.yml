@@ -42,12 +42,14 @@ jobs:
           version: "0.13.6"
       - name: Install locked test dependencies
         run: uv sync --locked --dev --extra test
-      - name: Require actual hardware virtualization
+      - name: Inspect the actual guest acceleration device
         run: |
           set -euo pipefail
-          test -c /dev/kvm
-          test -r /dev/kvm
-          test -w /dev/kvm
+          if test -c /dev/kvm; then
+            stat --format='KVM device: %n mode=%a uid=%u gid=%g' /dev/kvm
+          else
+            echo 'No KVM device: the fresh QEMU guest will use bounded software CPU emulation.'
+          fi
       - name: Build and verify exact installed management image
         run: uv run python scripts/prepare_management_test_image.py
       - name: Prepare the approved fresh recovery VM
@@ -64,12 +66,12 @@ jobs:
           caddy_id="$(docker image inspect --format '{{.Id}}' caddy:2)"
           bash scripts/recovery_vm/prepare.sh "$RECOVERY_FIXTURE" "$APPROVED_AUTHORIZATION_ID" "$manager_id" "$caddy_id" "$token_file" "$RECOVERY_SCENARIO"
       - name: Build bounded QEMU runner
-        run: docker compose --env-file "$RECOVERY_FIXTURE/compose.env" -f scripts/recovery_vm/compose.yaml build
+        run: docker compose --env-file "$RECOVERY_FIXTURE/compose.env" build
       - name: Run actual original producers, containment and one-shot issuer
         timeout-minutes: 125
         run: |
           set -euo pipefail
-          docker compose --env-file "$RECOVERY_FIXTURE/compose.env" -f scripts/recovery_vm/compose.yaml run --rm fixture
+          docker compose --env-file "$RECOVERY_FIXTURE/compose.env" run --rm fixture
       - name: Remove the ephemeral read credential
         if: always()
         run: |

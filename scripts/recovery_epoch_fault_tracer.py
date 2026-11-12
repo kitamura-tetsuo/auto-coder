@@ -14,10 +14,10 @@ import hashlib
 import os
 import platform
 import signal
-import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from auto_coder.logger_config import get_logger
 
@@ -82,6 +82,15 @@ class PublicationObservation:
     directory_fsync_observed: bool
 
 
+class TraceProcess(Protocol):
+    """Actual process identity with a caller-owned termination observer."""
+
+    pid: int
+    returncode: int | None
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+
 class KernelPublicationBarrier:
     """Attach to one actual child and retain its exact syscall stop.
 
@@ -92,7 +101,7 @@ class KernelPublicationBarrier:
     kill or release finishes tracing; close kills an unfinished tracee.
     """
 
-    def __init__(self, issuer: subprocess.Popen, *, root: Path, name: str, when: str):
+    def __init__(self, issuer: TraceProcess, *, root: Path, name: str, when: str):
         if platform.system() != "Linux" or platform.machine() != "x86_64":
             raise ValueError("the native publication fixture requires Linux x86_64")
         if name not in PUBLICATIONS or when not in {"before", "after"}:
@@ -114,7 +123,7 @@ class KernelPublicationBarrier:
         self._done = threading.Event()
         self._decision = "kill"
         self._error: BaseException | None = None
-        self._observation: PublicationObservation | None = None
+        self._observation: object | None = None
         self._thread: threading.Thread | None = None
         self._file_identity: tuple[int, int] | None = None
         self._file_synced = False
@@ -284,7 +293,7 @@ class KernelPublicationBarrier:
             raise ValueError("no active initial publication barrier")
         self._resume.set()
 
-    def wait(self, timeout: float = 900) -> PublicationObservation:
+    def wait_observation(self, timeout: float = 900) -> object:
         if not self._hit.wait(timeout):
             self.close()
             raise TimeoutError("the actual issuer never reached the selected publication")
@@ -292,6 +301,12 @@ class KernelPublicationBarrier:
         if self._observation is None:
             raise AssertionError("the native publication observation is missing")
         return self._observation
+
+    def wait(self, timeout: float = 900) -> PublicationObservation:
+        observation = self.wait_observation(timeout)
+        if not isinstance(observation, PublicationObservation):
+            raise AssertionError("the native stop is not a publication observation")
+        return observation
 
     def _finish(self, action: str) -> None:
         self._raise_error()

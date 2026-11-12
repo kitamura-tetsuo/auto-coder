@@ -5,8 +5,6 @@ services:
     environment:
       APPROVED_AUTHORIZATION_ID: ${APPROVED_AUTHORIZATION_ID:?Set the matching disposable fixture authorization}
     user: "${RECOVERY_VM_UID:?Set the preparation UID}:${RECOVERY_VM_GID:?Set the preparation GID}"
-    group_add:
-      - "${RECOVERY_KVM_GID:?Set the KVM device group}"
     init: true
     cpus: 2.0
     mem_limit: 6g
@@ -16,8 +14,6 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    devices:
-      - /dev/kvm:/dev/kvm:rwm
     tmpfs:
       - /tmp:size=128m
     volumes:

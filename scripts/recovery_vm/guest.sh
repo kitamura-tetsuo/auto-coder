@@ -34,7 +34,7 @@ for name, digest in manifest["inputs_sha256"].items():
 PY
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates cron curl docker.io git python3-venv
+apt-get install -y --no-install-recommends ca-certificates cron curl docker.io docker-compose-v2 git python3-venv
 systemctl start docker
 python3 -m venv /opt/fixture-tools
 /opt/fixture-tools/bin/pip install uv==0.13.6
@@ -42,6 +42,13 @@ mkdir -m 700 /opt/recovery-fixture /opt/reviewed-source
 tar --extract --gzip --file "$input/source.tar.gz" --directory /opt/recovery-fixture
 cd /opt/recovery-fixture
 /opt/fixture-tools/bin/uv sync --locked --no-editable --no-dev --extra test
+.venv/bin/python - <<'PY'
+from pathlib import Path
+import auto_coder.management.proxy_watch_cli as watcher
+
+Path(watcher.__file__).chmod(0o600)
+PY
+docker compose version
 install -m 600 "$input/source-token" /run/recovery-fixture-source-token
 mapfile -t selected < <(python3 - "$input" <<'PY'
 import json
