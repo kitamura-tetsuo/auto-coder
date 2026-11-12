@@ -14,6 +14,8 @@ finish() {
     {
         systemctl cat cloud-final.service cloud-config.service cloud-init.service cloud-init-local.service
         systemctl show cloud-final.service cloud-config.service cloud-init.service cloud-init-local.service -p ExecStart -p ActiveState -p UnitFileState
+        systemctl cat docker.service docker.socket containerd.service
+        systemctl show docker.service containerd.service -p ExecStart -p PrivateMounts -p MainPID -p ActiveState -p LoadState -p UnitFileState -p FragmentPath -p DropInPaths
         docker version
         docker compose version
     } > "$output/guest-platform.txt" 2>&1
@@ -45,9 +47,88 @@ mkdir -p /etc/docker
 test ! -e /etc/docker/daemon.json
 test ! -L /etc/docker/daemon.json
 install -m 600 "$input/docker-daemon.json" /etc/docker/daemon.json
+# This fresh VM has no previous engine. Prevent package auto-start before the
+# selected ordinary service profile exists; no original history exists yet.
+test ! -e /usr/bin/dockerd
+test ! -e /run/docker.pid
+test ! -e /var/lib/docker
+for fixture_unit in docker.service docker.socket containerd.service; do
+    test ! -e "/etc/systemd/system/$fixture_unit"
+    test ! -L "/etc/systemd/system/$fixture_unit"
+    ln -s /dev/null "/etc/systemd/system/$fixture_unit"
+done
+systemctl daemon-reload
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates cron curl docker.io docker-compose-v2 git python3-venv
+mkdir -p /etc/systemd/system/docker.service.d
+test ! -e /etc/systemd/system/docker.service.d/recovery-fixture.conf
+tee /etc/systemd/system/docker.service.d/recovery-fixture.conf > /dev/null <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H fd://
+PrivateMounts=yes
+UNIT
+# Docker starts its normal managed containerd process in this same namespace.
+# A standalone containerd in a different mount namespace could not see its
+# overlay/netns objects. Keep that unused packaged service masked throughout.
+for fixture_unit in docker.service docker.socket; do
+    test "$(readlink "/etc/systemd/system/$fixture_unit")" = /dev/null
+    rm "/etc/systemd/system/$fixture_unit"
+done
+systemctl daemon-reload
 systemctl start docker
+python3 - "$output/docker-profile.json" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def properties(unit):
+    names = ("MainPID", "ActiveState", "LoadState", "PrivateMounts")
+    raw = subprocess.check_output(["systemctl", "show", unit, "--property=" + ",".join(names)], text=True)
+    result = dict(line.split("=", 1) for line in raw.splitlines())
+    assert set(result) == set(names)
+    return result
+
+
+def process(pid):
+    proc = Path("/proc") / str(pid)
+    fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+    assert fields[0] not in ("Z", "X", "x") and int(fields[19]) > 0
+    return {
+        "pid": pid,
+        "parent": int(fields[1]),
+        "start": fields[19],
+        "namespaces": {name: os.readlink(proc / "ns" / name) for name in ("pid", "user", "net", "mnt")},
+    }
+
+
+service, standalone = properties("docker.service"), properties("containerd.service")
+assert service["ActiveState"] == "active" and service["PrivateMounts"] == "yes"
+assert standalone["LoadState"] == "masked" and standalone["ActiveState"] == "inactive" and standalone["MainPID"] == "0"
+pid = int(service["MainPID"])
+assert pid > 1 and Path("/run/docker.pid").read_text().strip() == str(pid)
+assert os.path.samefile(f"/proc/{pid}/exe", "/usr/bin/dockerd")
+assert Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") == [b"/usr/bin/dockerd", b"-H", b"fd://", b""]
+daemon = process(pid)
+host = process(1)
+assert all(daemon["namespaces"][name] == host["namespaces"][name] for name in ("pid", "user", "net"))
+assert daemon["namespaces"]["mnt"] != host["namespaces"]["mnt"]
+children = {int(value) for task in Path(f"/proc/{pid}/task").iterdir() for value in (task / "children").read_text().split()}
+managed = [child for child in children if os.path.samefile(f"/proc/{child}/exe", "/usr/bin/containerd")]
+assert len(managed) == 1
+containerd = process(managed[0])
+assert containerd["parent"] == pid and containerd["namespaces"] == daemon["namespaces"]
+assert subprocess.check_output(["docker", "info", "--format", "{{.CgroupDriver}}"], text=True).strip() == "systemd"
+assert subprocess.check_output(["docker", "ps", "--all", "--quiet"], text=True).strip() == ""
+assert process(pid) == daemon and process(managed[0]) == containerd
+result = {"schema": "auto-coder-recovery-vm-docker-profile-v1", "profile": "ordinary-system-docker-managed-containerd-private-mounts", "daemon": daemon, "managed_containerd": containerd, "standalone_service": standalone}
+with Path(sys.argv[1]).open("x") as stream:
+    json.dump(result, stream, sort_keys=True)
+print("Verified ordinary Docker with its managed containerd in one private mount namespace before original fixture creation.", flush=True)
+PY
 docker info --format 'Actual guest image store: {{.Driver}} {{json .DriverStatus}}'
 python3 -m venv /opt/fixture-tools
 /opt/fixture-tools/bin/pip install uv==0.13.6

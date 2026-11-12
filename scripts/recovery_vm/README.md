@@ -30,6 +30,27 @@ another image or weaken the production source checks.
 Docker documents the [fresh-install storage default](https://docs.docker.com/engine/storage/containerd/)
 and the [cross-store image-ID behavior](https://github.com/docker/cli/issues/6670).
 
+The selected guest service profile is ordinary system Docker with its standard
+daemon-managed, separate-process containerd and `PrivateMounts=yes`. Before package
+installation can start an engine, preparation masks Docker and the standalone
+containerd service. It then installs the reviewed Docker override, unmasks Docker
+only, and checks the actual daemon command, PID/start identity, systemd cgroup
+driver, empty engine and managed containerd child. Both daemons must share one
+mount namespace distinct from PID 1 while retaining the host PID, user and network
+namespaces. These observations are retained in `docker-profile.json`, and the
+effective service configuration is included in `guest-platform.txt`.
+
+This mount profile keeps transient container mounts out of the host systemd unit
+catalog throughout target starts and restarts; production still requires exact
+equality with the approved catalog and refuses unknown routes. Docker documents
+[automatic containerd startup](https://docs.docker.com/reference/cli/dockerd/#run-containerd-standalone),
+and systemd 255 documents
+[PrivateMounts propagation](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#PrivateMounts=).
+This is provisioning of the fresh synthetic VM before any original history or
+recovery approval exists. It does not change an operational host, configure the
+production issuer, or establish acceptance for every stock Docker service profile
+or an incident with missing originals.
+
 The guest installs the exact `uv==0.13.6` release and validates its reported release
 number. The complete observed `--version` banner, including its bounded build
 descriptor, is retained in `uv-version.txt` and supplied to staging and recovery

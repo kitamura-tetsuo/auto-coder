@@ -222,6 +222,42 @@ def test_unavailable_sidecar_diagnostics_preserve_the_original_failure(tmp_path:
     assert "private" not in json.dumps(result)
 
 
+def test_failure_catalog_delta_names_exact_units_without_exporting_manifest_contents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixture, "RECOVERY_ENROLLMENT_ROOT", tmp_path)
+    path = tmp_path / "component.routes.json"
+    path.write_bytes(canonical({"enrollment_id": "component", "systemd_routes": [{"unit": name, "sha256": "a" * 64, "role": "unrelated"} for name in ("kept.service", "removed.mount")], "private_other_data": "private-source-credential"}))
+    path.chmod(0o600)
+    before = path.read_bytes(), path.stat()
+    monkeypatch.setattr(fixture, "_systemd_catalog", lambda: ("added.mount", "kept.service"))
+    result = {"status": "failed", "failure_type": "AssertionError"}
+    fixture._record_failure_catalog(result, "component")
+    assert result["systemd_catalog_after_failure"] == {"status": "observed-after-failure", "approved_count": 2, "observed_count": 2, "added_count": 1, "removed_count": 1, "added": ["added.mount"], "removed": ["removed.mount"], "truncated": False}
+    assert "private" not in json.dumps(result) and str(tmp_path) not in json.dumps(result)
+    after = path.stat()
+    assert path.read_bytes() == before[0] and all(getattr(after, field) == getattr(before[1], field) for field in ("st_dev", "st_ino", "st_ctime_ns", "st_mtime_ns", "st_size", "st_mode")) and result["status"] == "failed"
+    monkeypatch.setattr(fixture, "_systemd_catalog", lambda: tuple(f"new-{index:02d}.mount" for index in range(50)))
+    fixture._record_failure_catalog(result, "component")
+    observed = result["systemd_catalog_after_failure"]
+    assert observed["added_count"] == 50 and len(observed["added"]) == 32 and observed["truncated"] is True
+
+
+def test_failure_catalog_diagnostic_errors_never_replace_original_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixture, "RECOVERY_ENROLLMENT_ROOT", tmp_path)
+    result = {"status": "failed", "failure_type": "AssertionError"}
+    original = AssertionError("original native refusal")
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise original
+        except AssertionError:
+            fixture._record_failure_catalog(result, "../private")
+            raise
+    assert caught.value is original
+    assert result["systemd_catalog_after_failure"] == {"status": "unavailable", "error_type": "ValueError"}
+    assert "private" not in json.dumps(result)
+    fixture._record_failure_catalog(result, "missing")
+    assert result["systemd_catalog_after_failure"] == {"status": "unavailable", "error_type": "FileNotFoundError"}
+
+
 def test_no_child_or_admission_oracle_rejects_any_native_store(tmp_path: Path) -> None:
     state, journal = tmp_path / "state", tmp_path / "journal"
     state.mkdir()

@@ -39,12 +39,13 @@ from scripts.test_management_containment_enrollment_host import DisposableSystem
 from auto_coder.logger_config import get_logger, setup_logger
 from auto_coder.management.bootstrap_supervisor import BootstrapConfig
 from auto_coder.management.bootstrap_upgrade import _source_authority
+from auto_coder.management.containment_route_manifest import SystemdRoute, _systemd_catalog
 from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization, read_fresh_status
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.original_attempt_evidence import derive_lineage, observe, verify_lineage
 from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, canonical, read_original, source_identity
-from auto_coder.management.recovery_containment_model import RecoveryWatcher
+from auto_coder.management.recovery_containment_model import RECOVERY_ENROLLMENT_ROOT, RecoveryWatcher
 from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, AUTHORIZATION_ROOT, AUTHORIZATION_SCHEMA, PEER_ROOT, PEER_SOCKET, EpochAuthorization, validate_uv_version
 from auto_coder.management.recovery_epoch_consumer import GRANT_SCHEMA, ConsumerConfiguration, OriginalFence, TargetOwner, TransferredResource
 from auto_coder.management.recovery_epoch_state import EPOCH_ROOT, EpochInventory
@@ -285,6 +286,34 @@ def _record_failure_sidecars(result: dict[str, object], chain: Chain | None) -> 
                 logger.error("Native {} metadata: {}", key, canonical(row).decode())
         except Exception as error:
             result[key] = [{"status": "unavailable", "error_type": type(error).__name__}]
+
+
+def _record_failure_catalog(result: dict[str, object], enrollment_id: str | None) -> None:
+    """Record a bounded post-failure catalog delta without changing approval."""
+    if enrollment_id is None:
+        return
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", enrollment_id):
+            raise ValueError("invalid diagnostic enrollment selector")
+        encoded, _ = read_original(RECOVERY_ENROLLMENT_ROOT / (enrollment_id + ".routes.json"))
+        if len(encoded) > 1024 * 1024:
+            raise ValueError("oversized diagnostic route manifest")
+        manifest = json.loads(encoded)
+        routes = manifest.get("systemd_routes")
+        if manifest.get("enrollment_id") != enrollment_id or not isinstance(routes, list) or not 1 <= len(routes) <= 1024:
+            raise ValueError("diagnostic route selection differs")
+        expected = {SystemdRoute.parse(row).unit for row in routes}
+        if len(expected) != len(routes):
+            raise ValueError("duplicate diagnostic route selection")
+        current = set(_systemd_catalog())
+        if any(len(unit) > 256 for unit in expected | current):
+            raise ValueError("oversized diagnostic unit name")
+        added, removed = sorted(current - expected), sorted(expected - current)
+        observed = {"status": "observed-after-failure", "approved_count": len(expected), "observed_count": len(current), "added_count": len(added), "removed_count": len(removed), "added": added[:32], "removed": removed[:32], "truncated": len(added) > 32 or len(removed) > 32}
+        result["systemd_catalog_after_failure"] = observed
+        logger.error("Native systemd catalog after failure: {}", canonical(observed).decode())
+    except Exception as error:
+        result["systemd_catalog_after_failure"] = {"status": "unavailable", "error_type": type(error).__name__}
 
 
 def _checkpoint_stopped(generation: Generation) -> None:
@@ -1301,6 +1330,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         result["status"] = "failed"
         result["failure_type"] = type(error).__name__
         _record_failure_sidecars(result, chain)
+        _record_failure_catalog(result, target.enrollment_id if target is not None else None)
         command_failure = _command_failure(error)
         if command_failure is not None:
             result["command_failure"] = command_failure
