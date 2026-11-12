@@ -431,7 +431,11 @@ def test_production_acceptance_covers_real_ready_and_offline_production_cli() ->
     assert '"process-issues"' in offline
     assert "activate_scoped_fixture_token(" in offline
     assert 'os.environ["GITHUB_TOKEN"] = token' in offline
-    assert '"--github-token"' not in offline
+    # Fixed inert offline placeholders may bypass a live GitHub startup probe.
+    # The separate executable-path test verifies that real PATs never enter argv.
+    argv_guard = (ROOT / "tests/test_dot_disposable_fixture.py").read_text()
+    assert "test_scoped_fixture_pat_never_enters_child_process_argv" in argv_guard
+    assert 'monkeypatch.setattr(offline_worker.os, "execv"' in argv_guard
     assert '"--skip-codex-auth-secret-sync"' in offline
     assert "os.execv(sys.executable, command)" in offline
     assert "WorkerVersionPreparer(" in preparer
