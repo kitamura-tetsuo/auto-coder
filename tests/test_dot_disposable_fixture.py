@@ -39,6 +39,8 @@ def test_provision_is_dockerless_private_and_observe_only(tmp_path):
     assert all("privileged" not in service and "network_mode" not in service for service in compose["services"].values())
     assert all(not any("docker.sock" in volume or "/var/lib/auto-coder" in volume for volume in service["volumes"]) for service in compose["services"].values())
     assert all(any(volume.endswith(":/fixtures:ro") for volume in compose["services"][name]["volumes"]) for name in ("beta", "release"))
+    assert all(f"{root}/routing:/fixture/routing:rw" in compose["services"][name]["volumes"] for name in ("beta", "release"))
+    assert f"{root}/routing:/fixture/routing:rw" not in compose["services"]["management"]["volumes"]
     assert all(len(service["networks"]) == 1 and "fixture" in service["networks"] for service in compose["services"].values())
     assert not any("ports" in service for service in compose["services"].values())
     assert any(volume.endswith(":/fixture/fixture.json:ro") for volume in compose["services"]["management"]["volumes"])

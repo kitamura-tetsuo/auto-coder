@@ -220,7 +220,9 @@ def provision(
             "volumes": [
                 *fixture_mounts,
                 f"{root}/secrets/{role}-bridge:/fixture/secrets/{role}-bridge:ro",
-                f"{root}/routing:/fixture/routing:ro",
+                # The real worker acquires an ownership.json.lock in this
+                # fixture-private directory; keep only this test mount writable.
+                f"{root}/routing:/fixture/routing:rw",
                 f"{root}/{role}/runtime:/runtime",
                 f"{root}/{role}/workspace:/workspace",
             ],
