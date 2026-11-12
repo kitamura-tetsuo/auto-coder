@@ -280,6 +280,22 @@ def test_quarantined_original_refuses_security_or_individual_file_mount_substitu
         profile._validated_quarantined_profile(record, manager, proxy, shadow_prior, prior_proxy)
 
 
+def test_quarantined_original_refuses_support_source_execution_env_and_healthcheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    record, manager, proxy, prior_manager, prior_proxy, config, support = _quarantined_fixture()
+    _quarantined_reviewed_files(monkeypatch, record, config, support)
+    manager["Config"]["Env"] = ["PYTHONPATH=/management-source"]
+    with pytest.raises(ValueError, match="support mount execution configuration"):
+        profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
+    manager["Config"]["Env"] = []
+    manager["Config"]["WorkingDir"] = "/management-source"
+    with pytest.raises(ValueError, match="support mount execution configuration"):
+        profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
+    manager["Config"]["WorkingDir"] = "/workspace"
+    manager["Config"]["Healthcheck"] = {"Test": ["CMD", "/bin/sh", "-c", "true"]}
+    with pytest.raises(ValueError, match="support mount execution configuration"):
+        profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
+
+
 def test_quarantined_original_refuses_executing_from_support_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     record, manager, proxy, prior_manager, prior_proxy, config, support = _quarantined_fixture()
     edited = json.loads(config)

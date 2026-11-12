@@ -196,6 +196,8 @@ def _validated_quarantined_profile(
     entrypoint, command = config.get("Entrypoint"), config.get("Cmd")
     if not _supported_prior_command(entrypoint, command, initialized_fresh=True) or not isinstance(command, list) or command[-1:] != ["--fresh-initialization"]:
         raise ValueError("quarantined original bootstrap command differs from reviewed fresh entrypoint")
+    if config.get("Healthcheck") not in (None, {}) or "/management-source" in json.dumps(config, sort_keys=True):
+        raise ValueError("quarantined original support mount execution configuration is unsupported")
     if host.get("SecurityOpt") != ["no-new-privileges"] or host.get("ReadonlyRootfs") is not True or host.get("Privileged") is not False or host.get("PidMode") not in ("", None) or host.get("CapAdd") not in ([], None) or host.get("Devices") not in ([], None):
         raise ValueError("quarantined original no-new-privileges or rootfs security profile differs")
     if proxy_host.get("Privileged") is not False or proxy_host.get("PidMode") not in ("", None) or proxy_host.get("CapAdd") not in ([], None) or proxy_host.get("Devices") not in ([], None) or proxy_host.get("SecurityOpt") not in ([], None):

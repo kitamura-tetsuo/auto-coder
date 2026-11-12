@@ -277,7 +277,9 @@ shadowing beneath those protected destinations. The two bootstrap file sources
 and their hashes must match re-read protected enrollment and prior evidence.
 The exact runtime's isolated Python executable/source must be under
 `/management-versions/` and its arguments must reference the mounted management
-config, not `/management-source`.
+config, not `/management-source`. The selected manager must not configure a
+healthcheck or refer to `/management-source` from its effective Docker config,
+including environment and working directory.
 
 Because the support mount is a directory, its `support-source` original-file
 entry points to a separately installed, root-protected **regular JSON file**,
