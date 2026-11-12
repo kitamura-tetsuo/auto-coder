@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v9` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v10` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -245,6 +245,34 @@ Any checked image file is current-byte evidence only, not proof it was
 historically executed; the full installed route, mount, owner-lock, kernel,
 and positive test requirements remain unresolved.
 
+### Reviewed ordinary bootstrap effective mount/config component (v10)
+
+If the protected enrollment, original prior-container evidence and matching
+reviewed ordinary image source are available, the optional
+`installed_mount_profile` independently re-reads the selected manager/proxy
+Docker inspections twice and binds them to the whole-engine inventory. The
+manager's exact bootstrap entrypoint, security options, original whole-container
+bind-mount digest, proxy network mode and original proxy mount digest must match
+the supported ordinary capture. This also rejects added, omitted or shadowing
+mounts, including a submount obscuring `/bootstrap`, the owner state directory
+or the OAuth directory. It verifies the `/bootstrap` source is read-only, the
+state/OAuth sources are writable as originally captured, and `/bootstrap/config.json`
+is the same current protected original file that the live original producer
+identified. That file's instance/state/OAuth references and every configured
+management runtime's `--config` path are independently compared with the
+protected original `management-config` under the same bootstrap mount.
+
+The separate consumer repeats the entire current inspection and protected
+config readback, compares the new component, and refuses modified mounts,
+commands or config. Unsupported configurations or uninspectable files add
+`installed-bootstrap-mount-profile`. The component is a narrow *ordinary*
+command/mount/config validation, not a historical source provenance claim, a
+proxy effective-config validation, a quarantine original profile, an immutable
+mount reservation, or complete controller/kernel closure. The quarantined
+profile deliberately has no positive mount/config component until its exact
+source/destination/effect and no-new-privileges profile can be independently
+reviewed. Both full entrypoints still return status 2 and unavailable.
+
 ### Original-kernel sub-observation (introduced in v7, external pin in v8)
 
 When the protected approval and complete Docker inventory are available, the
@@ -308,9 +336,10 @@ original installed source, prove complete controller closure or enable a
 positive containment verdict.
 For a reviewed ordinary bootstrap image, additionally select
 `--require-reviewed-ordinary-source` to require both independent CLI processes
-to return the successful installed-image source/lock-before-launch
-sub-observation. That flag fails if the original source bytes are unreviewed,
-unavailable or substituted; it still does not claim full deployment closure.
+to return both the successful installed-image source/lock-before-launch
+sub-observation and the separately re-read original command/mount/config
+component. That flag fails on altered original source, mount, effective command
+or protected config; it still does not claim full deployment closure.
 
 An additional manual integration check is available with
 `--exercise-test-route-manifest`. It temporarily simulates a **test-only**
@@ -444,7 +473,8 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v9` report extends v8 with protected
+The `current-containment-prerequisites-v10` report extends v9 with ordinary original
+mount/configuration readback; v9 introduced protected
 ordinary-route observations. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes

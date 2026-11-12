@@ -222,6 +222,22 @@ def _assert_reviewed_ordinary_source(report: dict[str, object]) -> None:
         raise AssertionError("reviewed installed source produced contradictory refusal")
 
 
+def _assert_reviewed_ordinary_mounts(report: dict[str, object]) -> None:
+    """Require original mount and config binding from the production CLI."""
+    component = report.get("installed_mount_profile")
+    if (
+        not isinstance(component, dict)
+        or component.get("profile") != "ordinary-v1"
+        or component.get("bootstrap_config_in_container") != "/bootstrap/config.json"
+        or component.get("management_config_in_container") != "/bootstrap/management.yaml"
+        or not all(isinstance(component.get(field), str) and len(component[field]) == 64 for field in ("management_original_mounts_sha256", "proxy_original_mounts_sha256", "bootstrap_config_sha256", "management_config_sha256"))
+    ):
+        reasons = [item for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") == "installed-bootstrap-mount-profile"]
+        raise AssertionError("reviewed original ordinary mount/config readback is unavailable: " + repr(reasons))
+    if "installed-bootstrap-mount-profile" in _authorities(report):
+        raise AssertionError("original ordinary mount/config readback produced contradictory refusal")
+
+
 def _systemctl(*arguments: str) -> None:
     """Perform only explicitly named disposable-fixture systemd operations."""
     try:
@@ -514,6 +530,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
             _assert_route_component(first)
         if require_reviewed_ordinary_source:
             _assert_reviewed_ordinary_source(first)
+            _assert_reviewed_ordinary_mounts(first)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
         verified = _verify_after_transient_docker_inventory(scope, previous) if exercise_test_route_manifest else _call_cli("verify", scope, previous)
@@ -521,6 +538,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
         _assert_kernel_subcomponent(verified, present=True, pinned=True)
         if require_reviewed_ordinary_source:
             _assert_reviewed_ordinary_source(verified)
+            _assert_reviewed_ordinary_mounts(verified)
         if exercise_test_route_manifest:
             _assert_route_component(verified)
             logger.info("Test-only root route manifest was independently re-read by the real observe and verify CLI; full containment remained unavailable")

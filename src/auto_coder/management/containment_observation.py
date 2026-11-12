@@ -26,6 +26,7 @@ from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable
 from .containment_kernel_subobservation import KernelSubObservation, observe_kernel_subcomponent
 from .containment_route_manifest import RouteManifestObservation, RouteManifestUnavailable, observe_approved_route_manifest
 from .fresh_host_observation import _validate_host_proc_profile
+from .installed_bootstrap_mount_profile import InstalledBootstrapMountProfile, inspect_installed_bootstrap_mount_profile
 from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
 from .proc_observation import ProcessObservation, observe_process
 from .systemd_watcher_observation import WatcherSystemdObservation, observe_watcher_unit
@@ -123,6 +124,7 @@ class PrerequisiteReport:
     approved_enrollment: EnrollmentObservation | None = None
     watcher_systemd: WatcherSystemdObservation | None = None
     installed_bootstrap_source: InstalledBootstrapSource | None = None
+    installed_mount_profile: InstalledBootstrapMountProfile | None = None
     kernel_subobservation: KernelSubObservation | None = None
     route_manifest: RouteManifestObservation | None = None
 
@@ -306,6 +308,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
             ),
         )
     installed_bootstrap_source = None
+    installed_mount_profile = None
     if scope.profile == "quarantined-original-v1":
         unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
     watcher_systemd = None
@@ -361,6 +364,11 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
                     installed_bootstrap_source = inspect_installed_bootstrap_source(approved_enrollment)
                 except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
                     unavailable.append(Unavailable("installed-bootstrap-source", "Current approved " + scope.profile + " source cannot be matched to the reviewed Docker image-file bytes (" + type(exc).__name__ + ")."))
+                if installed_bootstrap_source is not None:
+                    try:
+                        installed_mount_profile = inspect_installed_bootstrap_mount_profile(approved_enrollment, {item.container_id: item.inspection_sha256 for item in docker})
+                    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                        unavailable.append(Unavailable("installed-bootstrap-mount-profile", "Original effective bootstrap command, protected configuration and bind-mount readback is unavailable (" + type(exc).__name__ + ")."))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Do not print raw Docker stderr, environment or configuration bytes.
         reason = "Docker read-only inspection unavailable (" + type(exc).__name__ + ")"
@@ -423,7 +431,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v9",
+        "current-containment-prerequisites-v10",
         "unavailable",
         scope,
         _digest(asdict(scope)),
@@ -440,6 +448,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         approved_enrollment=approved_enrollment,
         watcher_systemd=watcher_systemd,
         installed_bootstrap_source=installed_bootstrap_source,
+        installed_mount_profile=installed_mount_profile,
         kernel_subobservation=kernel_subobservation,
         route_manifest=route_manifest,
     )
@@ -453,7 +462,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "kernel_subobservation", "route_manifest", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "installed_mount_profile", "kernel_subobservation", "route_manifest", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))
