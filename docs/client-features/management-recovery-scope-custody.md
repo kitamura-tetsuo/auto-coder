@@ -154,6 +154,10 @@ unlock during sampling, inherited descriptors, stale/foreign reports and
 producer/holder death. Positive reads preserve fixture file bytes and locks;
 a missing lock remains absent after refusal. Host-root protection and Docker
 inspection inputs are explicitly substituted in these component fixtures.
+Bounded protected enrollment JSON and serialized previous observations with
+excessive nesting now produce typed non-authorizing refusal, rather than an
+uncaught recursive decoder/encoder exception. These are component-boundary
+regressions, not evidence of native recovery containment.
 They are not end-to-end or native OS/Docker acceptance results.
 
 Validation on this isolated worktree used Python 3.12.16 and locked dependencies.

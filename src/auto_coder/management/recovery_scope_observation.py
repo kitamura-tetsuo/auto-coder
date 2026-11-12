@@ -378,7 +378,7 @@ def observe_recovery_custody(deployment_id: str) -> RecoveryCustodyObservation:
         )
         logger.debug("Observed recovery scope/custody component; full containment remains unavailable")
         return report
-    except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, UnicodeError, subprocess.SubprocessError) as exc:
         logger.debug("Recovery scope/custody unavailable: {}", exc)
         raise RecoveryScopeUnavailable(str(exc)) from exc
 
@@ -422,7 +422,7 @@ def verify_recovery_custody(deployment_id: str, previous: object) -> RecoveryCus
     # missing predicates. No caller can promote the component into full closure.
     try:
         matches = _digest({key: value for key, value in raw.items() if key not in changing}) == _digest({key: value for key, value in actual.items() if key not in changing})
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
         raise RecoveryScopeUnavailable("saved component serialization is malformed") from exc
     if not matches:
         raise RecoveryScopeUnavailable("independently repeated recovery component differs")

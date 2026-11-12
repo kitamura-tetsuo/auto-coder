@@ -535,6 +535,23 @@ def test_target_root_inode_change_after_producer_refuses(scope: ScopeFixture):
         recovery.verify_recovery_custody("fixture", previous)
 
 
+def test_deeply_nested_enrollment_is_typed_refusal(scope: ScopeFixture):
+    # A protected input can be small yet exceed the JSON decoder depth limit.
+    scope.enrollment_path.write_text("[" * 12000 + "0" + "]" * 12000)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unavailable|recursion|depth|maximum"):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_deeply_nested_saved_evidence_is_typed_refusal(scope: ScopeFixture):
+    previous = _produce_from_separate_process(scope)
+    nested = None
+    for _ in range(12000):
+        nested = [nested]
+    previous["enrollment"] = nested
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="malformed|serialization"):
+        recovery.verify_recovery_custody("fixture", previous)
+
+
 def test_duplicate_engine_inventory_is_not_exact_membership(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
     # Repeating an enrolled ID must not turn an ambiguous inventory into closure.
     selected = tuple(sorted(scope.inspections))
