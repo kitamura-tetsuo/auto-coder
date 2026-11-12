@@ -30,7 +30,9 @@ saved = asdict(report)  # Serialize to JSON through the caller's protected chann
 The verifier takes the JSON-decoded report, repeats all component observations,
 and compares every stable field, including the missing predicates. The producer
 must still have its original live PID/start token. The consumer must have a
-different PID. Producer exit, holder exit, a different boot, future or malformed
+different PID. The verifier retains the producer pidfd through evidence comparison
+and checks its original start token and exit state again immediately before
+returning. Producer exit, holder exit, a different boot, future or malformed
 interval, and a report older than 30 seconds from sampling start refuse.
 All intervals use the same boot's monotonic clock. An observation UUID is a
 correlation identity, not a signature or an authorization credential; independent

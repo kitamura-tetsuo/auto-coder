@@ -558,3 +558,25 @@ def test_duplicate_engine_inventory_is_not_exact_membership(scope: ScopeFixture,
     monkeypatch.setattr(recovery, "_docker_ids", lambda: selected + (selected[0],))
     with pytest.raises(recovery.RecoveryScopeUnavailable, match="membership"):
         recovery.observe_recovery_custody("fixture")
+
+
+def test_saved_producer_exiting_during_evidence_comparison_refuses(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
+    # The original producer must remain alive through the last comparison,
+    # not just at the beginning of consumer verification.
+    previous = _produce_from_separate_process(scope)
+    original_digest = recovery._digest
+    exited = False
+
+    def digest_after_exit(value: object) -> str:
+        nonlocal exited
+        if not exited and isinstance(value, dict) and value.get("status") == "observed-component-only" and "enrollment" in value:
+            pid, release_fd = scope.producers.pop()
+            os.close(release_fd)
+            assert os.waitpid(pid, 0)[1] == 0
+            exited = True
+        return original_digest(value)
+
+    monkeypatch.setattr(recovery, "_digest", digest_after_exit)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="producer lifetime"):
+        recovery.verify_recovery_custody("fixture", previous)
+    assert exited

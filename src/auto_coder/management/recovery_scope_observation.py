@@ -407,23 +407,32 @@ def verify_recovery_custody(deployment_id: str, previous: object) -> RecoveryCus
         raise RecoveryScopeUnavailable("separate consumer observation is required")
     try:
         descriptor = os.pidfd_open(pid, 0)
-        try:
-            poller = select.poll()
-            poller.register(descriptor, select.POLLIN)
-            if poller.poll(0) or _holder_start_token(pid) != raw["observer_start_token"]:
-                raise RecoveryScopeUnavailable("saved component producer lifetime differs or exited")
-        finally:
-            os.close(descriptor)
     except (OSError, ValueError) as exc:
         raise RecoveryScopeUnavailable("saved component producer lifetime unavailable") from exc
-    changing = {"observer_pid", "observer_start_token", "observation_id", "started_monotonic_ns", "finished_monotonic_ns"}
-    actual = json.loads(json.dumps(asdict(current)))
-    # Serialized evidence is strictly compared, including status and the fixed
-    # missing predicates. No caller can promote the component into full closure.
     try:
-        matches = _digest({key: value for key, value in raw.items() if key not in changing}) == _digest({key: value for key, value in actual.items() if key not in changing})
-    except (ValueError, TypeError, RecursionError) as exc:
-        raise RecoveryScopeUnavailable("saved component serialization is malformed") from exc
-    if not matches:
-        raise RecoveryScopeUnavailable("independently repeated recovery component differs")
-    return current
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+
+        def require_live_producer() -> None:
+            try:
+                exited_or_changed = bool(poller.poll(0)) or _holder_start_token(pid) != raw["observer_start_token"]
+            except (OSError, ValueError) as exc:
+                raise RecoveryScopeUnavailable("saved component producer lifetime unavailable") from exc
+            if exited_or_changed:
+                raise RecoveryScopeUnavailable("saved component producer lifetime differs or exited")
+
+        require_live_producer()
+        changing = {"observer_pid", "observer_start_token", "observation_id", "started_monotonic_ns", "finished_monotonic_ns"}
+        actual = json.loads(json.dumps(asdict(current)))
+        # Compare the complete non-lifetime evidence while retaining the
+        # original producer's pidfd, then check its lifetime once more.
+        try:
+            matches = _digest({key: value for key, value in raw.items() if key not in changing}) == _digest({key: value for key, value in actual.items() if key not in changing})
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise RecoveryScopeUnavailable("saved component serialization is malformed") from exc
+        if not matches:
+            raise RecoveryScopeUnavailable("independently repeated recovery component differs")
+        require_live_producer()
+        return current
+    finally:
+        os.close(descriptor)
