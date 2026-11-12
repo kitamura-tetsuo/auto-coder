@@ -56,9 +56,14 @@ disable_root: true
 ssh_pwauth: false
 runcmd:
   - [mkdir, -p, /mnt/fixture-input, /mnt/fixture-output]
-  - [mount, -t, 9p, -o, trans=virtio,version=9p2000.L,ro, fixture-input, /mnt/fixture-input]
-  - [mount, -t, 9p, -o, trans=virtio,version=9p2000.L, fixture-output, /mnt/fixture-output]
+  - [mount, -t, 9p, -o, "trans=virtio,version=9p2000.L,ro", fixture-input, /mnt/fixture-input]
+  - [mount, -t, 9p, -o, "trans=virtio,version=9p2000.L", fixture-output, /mnt/fixture-output]
   - [bash, /mnt/fixture-input/guest.sh]
+power_state:
+  mode: poweroff
+  delay: now
+  timeout: 30
+  condition: true
 YAML
 tee "$fixture_root/compose.env" >/dev/null <<ENV
 CONTAINMENT_VM_TOOLING=$tooling_root

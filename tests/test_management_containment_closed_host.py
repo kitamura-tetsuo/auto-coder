@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from scripts import containment_quarantine_fixture as quarantine
 from scripts import test_management_containment_closed_host as fixture
 
 
@@ -162,3 +163,45 @@ def test_cli_rejects_incomplete_quarantine_selection_without_host_probe() -> Non
     assert result.returncode == 2
     assert "required together" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_quarantine_negative_command_is_one_bounded_real_interpreter_change() -> None:
+    ordinary = quarantine.quarantine_command()
+    assert ordinary == ("-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization")
+    assert quarantine.quarantine_command("effective-command") == ("-B", *ordinary)
+    assert quarantine.quarantine_command("shadow-support-mount") == ordinary
+    assert quarantine.quarantine_command("writable-support-mount") == ordinary
+    with pytest.raises(ValueError, match="unknown quarantined-original fixture variant"):
+        quarantine.quarantine_command("arbitrary-command")
+
+
+def test_independent_consumer_oracle_requires_another_real_process_identity() -> None:
+    first: dict[str, object] = {"observer_pid": 20, "observer_start_token": "100", "observation_id": "first", "finished_monotonic_ns": 200}
+    second: dict[str, object] = {"observer_pid": 21, "observer_start_token": "101", "observation_id": "second", "started_monotonic_ns": 201}
+    fixture._assert_independent(first, second)
+    second.update(observer_pid=20, observer_start_token="100")
+    with pytest.raises(AssertionError, match="did not independently inspect"):
+        fixture._assert_independent(first, second)
+    second.update(observer_pid=21, observer_start_token="101", started_monotonic_ns=199)
+    with pytest.raises(AssertionError, match="intervals or identities overlap"):
+        fixture._assert_independent(first, second)
+
+
+@pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+def test_preservation_oracle_detects_original_record_mutation_and_worker_death(tmp_path: Path) -> None:
+    record = tmp_path / "original-record.json"
+    record.write_bytes(b'{"unchanged":true}')
+    worker = subprocess.Popen((sys.executable, "-I", "-B", "-c", "import signal; signal.pause()"), text=True)
+    try:
+        before = fixture._footprint((record,), worker)
+        assert fixture._footprint((record,), worker) == before
+        record.write_bytes(b'{"unchanged":false}')
+        assert fixture._footprint((record,), worker) != before
+        worker.terminate()
+        worker.wait(timeout=5)
+        with pytest.raises(AssertionError, match="preserved worker exited"):
+            fixture._footprint((record,), worker)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=5)

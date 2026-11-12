@@ -21,25 +21,37 @@ import subprocess
 import time
 import uuid
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 from loguru import logger
 from scripts.test_management_containment_enrollment_host import _private_directory, _write_private
 
-from auto_coder.management.containment_kernel_subobservation import _holder_start_token, capture_quarantined_original_container
+from auto_coder.management.containment_kernel_subobservation import _holder_start_token, _require_capture_host, capture_quarantined_original_container
 from auto_coder.management.fresh_host import _evidence
-from auto_coder.management.fresh_host_observation import PriorContainer
+from auto_coder.management.fresh_host_observation import PriorContainer, _capture_prior_kernel, _capture_supervisor_identity, _engine_id, _inspect
 from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization
 from auto_coder.management.fresh_oauth import validate_retained_oauth
-from auto_coder.management.installed_bootstrap_source import _REVIEWED_QUARANTINED_SOURCE_SHA256
+from auto_coder.management.installed_bootstrap_mount_profile import _inspect as _profile_inspect
+from auto_coder.management.installed_bootstrap_mount_profile import _mounts as _profile_mounts
+from auto_coder.management.installed_bootstrap_source import _REVIEWED_QUARANTINED_SOURCE_SHA256, _copy_source
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings, load_management_settings
 from auto_coder.management.oauth_store import OAuthStore
 
 QUARANTINE_REVISION = "1b23f3be30ca47926462e7d261ef98e79bb82728"
 QUARANTINE_IMAGE = "sha256:bf88d2ea40f894d4bbc308be1694d8a1ed5dcf2d890a8606c4a6f6376ab5c750"
 _BOOTSTRAP_SOURCE = "src/auto_coder/management/bootstrap_supervisor.py"
+NEGATIVE_VARIANTS = ("effective-command", "shadow-support-mount", "writable-support-mount")
+
+
+def quarantine_command(variant: str = "supported") -> tuple[str, ...]:
+    """Allow only the maintained profile and its one exact command control."""
+    if variant not in ("supported", *NEGATIVE_VARIANTS):
+        raise ValueError("unknown quarantined-original fixture variant")
+    command = ("-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization")
+    return ("-B", *command) if variant == "effective-command" else command
+
 
 _IMAGE_PROBE = """import hashlib,json,subprocess,sys
 from pathlib import Path
@@ -174,6 +186,72 @@ class PreparedQuarantine:
     docker: DockerRunner = field(repr=False)
     prior: PriorContainer | None = None
     stopped: bool = False
+    variant: str = "supported"
+
+    def _capture_negative_variant(self) -> PriorContainer:
+        """Record actual unsupported input, without granting a supported profile.
+
+        Strict production capture correctly rejects these configurations. This
+        fixture-only reader uses the same actual kernel and supervisor readers
+        without declaring that their command/mount combination is supported.
+        Production observe and verify must subsequently refuse that combination.
+        """
+        if self.variant not in NEGATIVE_VARIANTS or self.guard.request is None:
+            raise ValueError("negative capture requires a genuine held fixture request")
+        _require_capture_host()
+        engine = _engine_id()
+        current = _profile_inspect(self.manager_id)
+        state, host, config = current.get("State"), current.get("HostConfig"), current.get("Config")
+        if not isinstance(state, dict) or not isinstance(host, dict) or not isinstance(config, dict):
+            raise ValueError("negative fixture Docker metadata is unavailable")
+        if (
+            current.get("Image") != self.image_id
+            or state.get("Running") is not True
+            or type(state.get("Pid")) is not int
+            or state["Pid"] <= 0
+            or state.get("Status") != "running"
+            or config.get("Entrypoint") != ["python"]
+            or config.get("Cmd") != list(quarantine_command(self.variant))
+            or config.get("WorkingDir") != "/workspace"
+            or host.get("ReadonlyRootfs") is not True
+            or host.get("SecurityOpt") != ["no-new-privileges"]
+            or host.get("Privileged") is not False
+            or host.get("PidMode") not in (None, "")
+            or host.get("CapAdd") not in (None, [])
+            or host.get("Devices") not in (None, [])
+        ):
+            raise ValueError("negative fixture did not run its exact selected command/security profile")
+        mounts = _profile_mounts(current)
+        if mounts != self.mounts:
+            raise ValueError("negative fixture actual bind mounts differ from construction")
+        source = _copy_source(self.manager_id)
+        if hashlib.sha256(source).hexdigest() != _REVIEWED_QUARANTINED_SOURCE_SHA256:
+            raise ValueError("negative fixture replaced the actual original bootstrap source")
+        values = _inspect(self.manager_id)
+        if values[1:5] != [self.image_id, True, state["Pid"], "running"]:
+            raise ValueError("negative fixture live Docker identity changed")
+        prior = _capture_prior_kernel(self.manager_id, self.image_id, engine, values, mounts, require_owner_lock=True)
+        prior = _capture_supervisor_identity(prior, values, mounts, self.bootstrap_config)
+        prior.validate()
+        if _profile_inspect(self.manager_id) != current or _inspect(self.manager_id) != values or _engine_id() != engine or _copy_source(self.manager_id) != source:
+            raise ValueError("negative fixture changed during its actual live capture")
+        _write_private(
+            self.root / "variant-live-capture.json",
+            json.dumps(
+                {
+                    "schema": "actual-quarantined-original-negative-v1",
+                    "variant": self.variant,
+                    "command": config["Cmd"],
+                    "entrypoint": config["Entrypoint"],
+                    "mounts": mounts,
+                    "bootstrap_source_sha256": hashlib.sha256(source).hexdigest(),
+                    "prior": asdict(prior),
+                    "held_request": asdict(self.guard.request),
+                },
+                sort_keys=True,
+            ).encode(),
+        )
+        return prior
 
     def start_and_capture(self) -> PriorContainer:
         """Capture only after the pinned bootstrap reaches its actual grant RPC."""
@@ -185,7 +263,7 @@ class PreparedQuarantine:
         if current.get("Id") != self.manager_id or current.get("Image") != self.image_id or state.get("Running") is not True or type(state.get("Pid")) is not int:
             raise RuntimeError("the exact quarantined manager did not start")
         request = self.guard.receive_and_pause(state["Pid"], expected_start_token=_holder_start_token(state["Pid"]))
-        prior = capture_quarantined_original_container(self.manager_id, self.image_id, expected_mounts=self.mounts, bootstrap_config=self.bootstrap_config)
+        prior = capture_quarantined_original_container(self.manager_id, self.image_id, expected_mounts=self.mounts, bootstrap_config=self.bootstrap_config) if self.variant == "supported" else self._capture_negative_variant()
         with closing(sqlite3.connect((self.state_root / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
             owners = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
         if owners != [(prior.instance_id, request.owner_incarnation, 1, prior.start_token)]:
@@ -240,6 +318,8 @@ def prepare_quarantine(
     prior_lock: Path,
     host_listener_port: int,
     docker: DockerRunner,
+    variant: str = "supported",
+    runtime_template: PreparedQuarantine | None = None,
 ) -> PreparedQuarantine:
     """Prepare a genuine public tested runtime and a never-granted fresh owner.
 
@@ -252,6 +332,9 @@ def prepare_quarantine(
     """
     if os.geteuid() != 0 or not name.startswith("ac-test-pr2829-") or not 0 < host_listener_port <= 65535:
         raise ValueError("quarantine setup requires the dedicated root fixture")
+    command = quarantine_command(variant)
+    if runtime_template is not None and (runtime_template.variant != "supported" or not runtime_template.stopped or runtime_template.prior is None or runtime_template.image_id != image_id or runtime_template.prior.published_port != host_listener_port):
+        raise ValueError("runtime reuse requires the actual stopped supported original and unchanged public endpoint")
     predecessor.validate()
     prior, _, evidence_digest = _evidence(prior_evidence_path)
     if prior != predecessor or not predecessor.instance_id:
@@ -275,6 +358,14 @@ def prepare_quarantine(
     if not _private_directory(root) or any(root.iterdir()):
         raise ValueError("quarantine setup requires a fresh private fixture directory")
     bootstrap, state, journal, oauth, guard_root, versions = (root / value for value in ("bootstrap", "state", "journal", "oauth", "guard", "versions"))
+    if runtime_template is not None:
+        template_mounts = {destination: (source, writable) for source, destination, writable in runtime_template.mounts}
+        if template_mounts.get("/management-source") != (str(source_repository), False):
+            raise ValueError("runtime reuse changed the genuine source repository")
+        version_source, writable = template_mounts["/management-versions"]
+        if writable:
+            raise ValueError("runtime reuse requires the original sealed versions directory")
+        versions = Path(version_source)
     for directory in (bootstrap, state, journal, oauth, guard_root, versions):
         _private_directory(directory)
     management_path = bootstrap / "management.yml"
@@ -303,7 +394,10 @@ def prepare_quarantine(
         "self_update_uv_executable": "/usr/local/bin/uv",
         "self_update_uv_version": "0.7.22",
     }
-    _write_private(management_path, json.dumps(management, sort_keys=True).encode())
+    management_bytes = json.dumps(management, sort_keys=True).encode()
+    if runtime_template is not None and runtime_template.management_config.read_bytes() != management_bytes:
+        raise ValueError("runtime reuse changed the exact tested management configuration")
+    _write_private(management_path, management_bytes)
     load_management_settings(management_path)
     configuration: dict[str, object] = {
         "instance_id": name,
@@ -328,34 +422,50 @@ def prepare_quarantine(
         "graceful_timeout": 1,
         "crash_budget": 0,
     }
-    staging_config = bootstrap / "staging-config.json"
-    _write_private(staging_config, json.dumps(configuration, sort_keys=True).encode())
-    logger.info("Preparing genuine tested-source runtime {} with unauthenticated public readback", QUARANTINE_REVISION)
-    staged = docker(
-        "run",
-        "--rm",
-        "--network",
-        "bridge",
-        "--env",
-        "GITHUB_TOKEN=",
-        "--env",
-        "PYTHONDONTWRITEBYTECODE=1",
-        "--env",
-        "UV_NO_CACHE=1",
-        *_mount_arguments(((str(staging_config), "/bootstrap/config.json", False), (str(management_path), "/bootstrap/management.yml", False), (str(source_repository), "/management-source", False), (str(versions), "/management-versions", True))),
-        "--entrypoint",
-        "python",
-        image_id,
-        "-c",
-        _PREPARE_RUNTIME,
-        QUARANTINE_REVISION,
-        timeout=1800,
-    )
-    prepared = json.loads(staged.splitlines()[-1])
+    if runtime_template is None:
+        staging_config = bootstrap / "staging-config.json"
+        _write_private(staging_config, json.dumps(configuration, sort_keys=True).encode())
+        logger.info("Preparing genuine tested-source runtime {} with unauthenticated public readback", QUARANTINE_REVISION)
+        staged = docker(
+            "run",
+            "--rm",
+            "--network",
+            "bridge",
+            "--env",
+            "GITHUB_TOKEN=",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "UV_NO_CACHE=1",
+            *_mount_arguments(((str(staging_config), "/bootstrap/config.json", False), (str(management_path), "/bootstrap/management.yml", False), (str(source_repository), "/management-source", False), (str(versions), "/management-versions", True))),
+            "--entrypoint",
+            "python",
+            image_id,
+            "-c",
+            _PREPARE_RUNTIME,
+            QUARANTINE_REVISION,
+            timeout=1800,
+        )
+        prepared = json.loads(staged.splitlines()[-1])
+    else:
+        # Reuse the actual immutable runtime and producer receipt. No READY is
+        # rewritten. The exact original bootstrap must independently validate
+        # them again before its genuine guard request can be captured.
+        configuration = json.loads(runtime_template.bootstrap_config.read_bytes())
+        prepared = json.loads((runtime_template.root / "prepared-runtime.json").read_bytes())
+        if runtime_template.prior is None or configuration.get("instance_id") != runtime_template.prior.instance_id:
+            raise ValueError("runtime reuse changed the actual bootstrap instance")
+        logger.info("Reusing genuine sealed runtime for {}, with original bootstrap validation required", variant)
     ready, runtime = prepared["receipt"], prepared["runtime"]
-    if ready.get("source_sha") != QUARANTINE_REVISION or ready.get("instance_id") != name or runtime.get("execution_kind") != "management-installed":
+    instance_id = configuration.get("instance_id")
+    if not isinstance(instance_id, str) or ready.get("source_sha") != QUARANTINE_REVISION or ready.get("instance_id") != instance_id or ready.get("configuration_sha256") != hashlib.sha256(management_bytes).hexdigest() or runtime.get("execution_kind") != "management-installed":
         raise AssertionError("the genuine stager returned a different fixture runtime")
-    configuration.update(initial_runtime=ready["management_runtime_id"], runtimes=[runtime], fresh_runtime_binding={"version": 2, "bootstrap_application_root": probe["application_root"], "initial_ready_path": runtime["ready_receipt"], "initial_ready_identity": ready["receipt_identity"]})
+    if runtime_template is not None and (configuration.get("initial_runtime") != ready["management_runtime_id"] or configuration.get("runtimes") != [runtime]):
+        raise ValueError("runtime reuse changed its actual initial runtime or receipt")
+    binding = {"version": 2, "bootstrap_application_root": probe["application_root"], "initial_ready_path": runtime["ready_receipt"], "initial_ready_identity": ready["receipt_identity"]}
+    if runtime_template is not None and configuration.get("fresh_runtime_binding") != binding:
+        raise ValueError("runtime reuse changed its genuine ready/runtime binding")
+    configuration.update(initial_runtime=ready["management_runtime_id"], runtimes=[runtime], fresh_runtime_binding=binding)
     config_path = bootstrap / "config.json"
     _write_private(config_path, json.dumps(configuration, sort_keys=True).encode())
     _write_private(root / "prepared-runtime.json", json.dumps(prepared, sort_keys=True).encode())
@@ -380,6 +490,12 @@ def prepare_quarantine(
             )
         )
     )
+    if variant == "shadow-support-mount":
+        shadow = root / "shadow-pyproject.toml"
+        _write_private(shadow, (source_repository / "pyproject.toml").read_bytes())
+        mounts = tuple(sorted((*mounts, (str(shadow), "/management-source/pyproject.toml", False))))
+    elif variant == "writable-support-mount":
+        mounts = tuple((source, destination, True if destination == "/management-source" else writable) for source, destination, writable in mounts)
     container_id = docker(
         "create",
         "--name",
@@ -401,11 +517,7 @@ def prepare_quarantine(
         "--entrypoint",
         "python",
         image_id,
-        "-m",
-        "auto_coder.management.bootstrap_supervisor",
-        "--config",
-        "/bootstrap/config.json",
-        "--fresh-initialization",
+        *command,
     )
     try:
         s, j, o, g = (directory.stat() for directory in (state, journal, oauth, guard_root))
@@ -413,7 +525,7 @@ def prepare_quarantine(
             str(uuid.uuid4()),
             predecessor.instance_id,
             predecessor.container_id,
-            name,
+            instance_id,
             container_id,
             evidence_digest,
             lock_info.st_dev,
@@ -442,7 +554,7 @@ def prepare_quarantine(
         )
         digest = claim_fresh_initialization(state, intent)
         guard = HeldFreshGuard(guard_root / "fresh-guard.sock", request_id=intent.request_id, intent_sha256=digest, container_id=container_id)
-        return PreparedQuarantine(root, container_id, image_id, config_path, management_path, state, journal, oauth, mounts, support, guard, docker)
+        return PreparedQuarantine(root, container_id, image_id, config_path, management_path, state, journal, oauth, mounts, support, guard, docker, variant=variant)
     except BaseException:
         docker("rm", "--force", container_id)
         raise

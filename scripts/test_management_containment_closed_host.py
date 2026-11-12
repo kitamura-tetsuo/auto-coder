@@ -30,7 +30,7 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from loguru import logger
 from scripts.test_management_containment_enrollment_host import APPROVAL_ROOT, FIXTURE_ROOT, INSTALLED_BOOTSTRAP, DisposableSystemdRoutes, _capture_manager, _docker, _original, _port, _private_directory, _systemctl, _write_private
@@ -47,6 +47,9 @@ from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import PriorContainer, _assert_pid_flock
 from auto_coder.management.installed_bootstrap_source import _REVIEWED_ORDINARY_SOURCE_SHA256, _REVIEWED_QUARANTINED_SOURCE_SHA256
 from auto_coder.management.systemd_watcher_observation import WATCHER_UNIT, observe_watcher_unit
+
+if TYPE_CHECKING:
+    from scripts.containment_quarantine_fixture import PreparedQuarantine
 
 MARKER = Path("/etc/auto-coder-disposable-containment-host.json")
 RESULT_ROOT = Path("/var/lib/auto-coder/containment-closed-host-results")
@@ -141,6 +144,14 @@ def assert_report(report: object, returncode: int, *, accepted: bool, authority:
     elif not reasons or authority is not None and authority not in {item["authority"] for item in reasons}:
         raise AssertionError("the independently required refusal was absent: " + repr({"expected": authority, "unavailable": reasons}))
     return report
+
+
+def _assert_independent(first: dict[str, object], second: dict[str, object]) -> None:
+    if (first["observer_pid"], first["observer_start_token"]) == (second["observer_pid"], second["observer_start_token"]):
+        raise AssertionError("producer and consumer did not independently inspect the fixture")
+    finish, start = first["finished_monotonic_ns"], second["started_monotonic_ns"]
+    if type(finish) is not int or type(start) is not int or first["observation_id"] == second["observation_id"] or finish > start:
+        raise AssertionError("independent observation intervals or identities overlap")
 
 
 def _footprint(paths: tuple[Path, ...], worker: subprocess.Popen[str]) -> tuple[object, ...]:
@@ -275,11 +286,16 @@ class Case:
         first = self.command("observe", accepted=True, verify=False)
         self.previous = self.root / "evidence" / "observe.json"
         second = self.command("verify", accepted=True)
-        if (first["observer_pid"], first["observer_start_token"], first["observation_id"]) == (second["observer_pid"], second["observer_start_token"], second["observation_id"]):
-            raise AssertionError("producer and consumer did not independently inspect the fixture")
-        finish, start = first["finished_monotonic_ns"], second["started_monotonic_ns"]
-        if type(finish) is not int or type(start) is not int or first["observation_id"] == second["observation_id"] or finish > start:
-            raise AssertionError("independent observation intervals or identities overlap")
+        _assert_independent(first, second)
+
+    def refusal_pair(self, label: str, *, authority: str) -> tuple[dict[str, object], dict[str, object]]:
+        """Require both real entrypoints to reobserve the same extant fault."""
+        first = self.command(label + "-observe", accepted=False, authority=authority, verify=False)
+        if self.previous is None:
+            self.previous = self.root / "evidence" / (label + "-observe.json")
+        second = self.command(label + "-verify", accepted=False, authority=authority)
+        _assert_independent(first, second)
+        return first, second
 
     def baseline(self, label: str) -> None:
         """Require full current success immediately before one fault is added."""
@@ -315,6 +331,38 @@ def _namespace_pin(prior: PriorContainer) -> tuple[int, OriginalNetworkPin]:
         if os.readlink(f"/proc/self/fd/{descriptor}") != prior.net_namespace:
             raise AssertionError("the real original namespace changed before pinning")
         return descriptor, OriginalNetworkPin(os.getpid(), _start_token(os.getpid()), Path("/proc/sys/kernel/random/boot_id").read_text().strip(), descriptor, prior.net_namespace, info.st_dev, info.st_ino)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _quarantine_case(prepared: PreparedQuarantine, worker: subprocess.Popen[str], worker_config: Path) -> Case:
+    prior = prepared.start_and_capture()
+    descriptor, pin = _namespace_pin(prior)
+    try:
+        (prepared.root / "evidence").mkdir(mode=0o700)
+        case = Case(
+            prepared.root,
+            "ac-test-pr2829-" + uuid.uuid4().hex,
+            "quarantined-original-v1",
+            prepared.manager_id,
+            prepared.image_id,
+            prepared.bootstrap_config,
+            prepared.management_config,
+            prepared.state_root,
+            prepared.oauth_root,
+            prior,
+            descriptor,
+            pin,
+            worker,
+            worker_config,
+            support_source=prepared.support_source_descriptor,
+            owns_manager=False,
+            extra_protected=(prepared.journal_root,),
+        )
+        if prepared.variant != "supported":
+            case.artifacts.append(prepared.root / "variant-live-capture.json")
+        return case
     except BaseException:
         os.close(descriptor)
         raise
@@ -506,7 +554,19 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
     # construction; the producer only reads this preexisting root authority.
     draft["complete_ordinary_routes_attested"] = True
     _write_private(APPROVAL_ROOT / (case.fixture_id + ".routes.json"), _json(draft))
-    case.protected = (case.state, case.oauth, case.config.parent, caddyfile, case.watcher.config, case.watcher.state, case.worker_config, *case.extra_protected)
+    case.protected = (
+        case.state,
+        case.oauth,
+        case.config.parent,
+        case.watcher.state,
+        case.worker_config,
+        case.prior_evidence,
+        case.scope,
+        APPROVAL_ROOT / (case.fixture_id + ".json"),
+        APPROVAL_ROOT / (case.fixture_id + ".routes.json"),
+        *(Path(item.path) for item in originals),
+        *case.extra_protected,
+    )
     for name, value in (("approved-enrollment.json", asdict(enrollment)), ("approved-routes.json", draft)):
         path = case.root / "evidence" / name
         _write_private(path, _json(value))
@@ -537,7 +597,7 @@ def _escaped_nonleader(case: Case) -> None:
         value = json.loads(process.stdout.readline())
         if value.get("pid") != process.pid or value.get("tid") == process.pid or os.readlink(f"/proc/{process.pid}/ns/net") == case.prior_manager.net_namespace or os.readlink(f"/proc/{process.pid}/task/{value['tid']}/ns/net") != case.prior_manager.net_namespace:
             raise AssertionError("escaped nonleader control lacks the required real namespace split")
-        case.command("escaped-nonleader", accepted=False, authority="kernel-subcomponent")
+        case.refusal_pair("escaped-nonleader", authority="kernel-subcomponent")
     finally:
         process.terminate()
         process.communicate(timeout=15)
@@ -590,6 +650,8 @@ def _race_and_producer_death(case: Case, *, kill: bool) -> None:
             path = case.root / "evidence" / "configuration-race.json"
             _write_private(path, output.encode())
             case.artifacts.append(path)
+            verified = case.command("configuration-race-verify", accepted=False, authority="approved-enrollment-component")
+            _assert_independent(report, verified)
     finally:
         if process is not None and process.poll() is None:
             process.kill()
@@ -638,11 +700,11 @@ def _negative_cases(case: Case) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", case.prior_manager.published_port))
         listener.listen(1)
-        case.command("conflicting-host-listener", accepted=False, authority="kernel-subcomponent")
+        case.refusal_pair("conflicting-host-listener", authority="kernel-subcomponent")
     case.baseline("enabled-docker-restart")
     _docker("update", "--restart=unless-stopped", case.proxy)
     try:
-        case.command("enabled-docker-restart", accepted=False, authority="docker-restart:" + case.proxy)
+        case.refusal_pair("enabled-docker-restart", authority="docker-restart:" + case.proxy)
     finally:
         _docker("update", "--restart=no", case.proxy)
     case.baseline("unselected-alternate-bootstrap-root")
@@ -652,7 +714,7 @@ def _negative_cases(case: Case) -> None:
         "create", "--name", case.fixture_id + "-alternative-root", "--network", "none", "--mount", f"type=bind,src={alternate_root},dst=/management-child-state", "--entrypoint", "python", case.manager_image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"
     )
     try:
-        case.command("unselected-alternate-bootstrap-root", accepted=False, authority="docker-alternative-management:" + alternative)
+        case.refusal_pair("unselected-alternate-bootstrap-root", authority="docker-alternative-management:" + alternative)
     finally:
         _docker("rm", alternative)
     case.baseline("source-substitution")
@@ -662,14 +724,14 @@ def _negative_cases(case: Case) -> None:
     if case.profile == "ordinary-v1":
         _docker("cp", str(substituted), case.manager + ":" + INSTALLED_BOOTSTRAP)
         try:
-            case.command("installed-source-substitution", accepted=False, authority="installed-bootstrap-source")
+            case.refusal_pair("installed-source-substitution", authority="installed-bootstrap-source")
         finally:
             _docker("cp", str(source), case.manager + ":" + INSTALLED_BOOTSTRAP)
     else:
         original_source = source.read_bytes()
         source.write_bytes(substituted.read_bytes())
         try:
-            case.command("enrolled-source-substitution", accepted=False, authority="approved-enrollment-component")
+            case.refusal_pair("enrolled-source-substitution", authority="approved-enrollment-component")
         finally:
             source.write_bytes(original_source)
     case.baseline("original-bind-source-path-replacement")
@@ -678,7 +740,7 @@ def _negative_cases(case: Case) -> None:
     original_directory.rename(detached)
     try:
         shutil.copytree(detached, original_directory)
-        case.command("original-bind-source-path-replacement", accepted=False, authority="approved-enrollment-component")
+        case.refusal_pair("original-bind-source-path-replacement", authority="approved-enrollment-component")
     finally:
         if original_directory.exists():
             shutil.rmtree(original_directory)
@@ -694,7 +756,7 @@ def _negative_cases(case: Case) -> None:
     cross_scope["management_id"], cross_scope["proxy_id"] = cross_scope["proxy_id"], cross_scope["management_id"]
     case.scope.write_bytes(_json(cross_scope))
     try:
-        case.command("cross-scope-original-identities", accepted=False, authority="approved-enrollment-component")
+        case.refusal_pair("cross-scope-original-identities", authority="approved-enrollment-component")
     finally:
         case.scope.write_bytes(scope_content)
     case.baseline("omitted-installed-timer")
@@ -704,26 +766,44 @@ def _negative_cases(case: Case) -> None:
     omitted["systemd_routes"] = [route for route in omitted["systemd_routes"] if route["unit"] != case.routes.names[1]]
     manifest.write_bytes(_json(omitted))
     try:
-        case.command("omitted-installed-timer", accepted=False, authority="approved-route-manifest")
+        case.refusal_pair("omitted-installed-timer", authority="approved-route-manifest")
     finally:
         manifest.write_bytes(content)
+    case.baseline("omitted-installed-watcher")
+    omitted = json.loads(content)
+    omitted["systemd_routes"] = [route for route in omitted["systemd_routes"] if route["unit"] != WATCHER_UNIT]
+    manifest.write_bytes(_json(omitted))
+    try:
+        case.refusal_pair("omitted-installed-watcher", authority="approved-route-manifest")
+    finally:
+        manifest.write_bytes(content)
+    if case.support_source is not None:
+        case.baseline("support-directory-permissions")
+        support = json.loads(case.support_source.read_bytes())
+        directory = Path(support["source"])
+        mode = stat.S_IMODE(directory.stat().st_mode)
+        directory.chmod(mode | stat.S_IWGRP)
+        try:
+            case.refusal_pair("support-directory-permissions", authority="installed-bootstrap-mount-profile")
+        finally:
+            directory.chmod(mode)
     case.baseline("released-original-owner-fence")
     fcntl.flock(case.owner_fd, fcntl.LOCK_UN)
     try:
-        case.command("released-original-owner-fence", accepted=False, authority="kernel-subcomponent")
+        case.refusal_pair("released-original-owner-fence", authority="kernel-subcomponent")
     finally:
         fcntl.flock(case.owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     case.baseline("enabled-installed-service")
     _systemctl("unmask", case.routes.names[0])
     try:
-        case.command("enabled-installed-service", accepted=False, authority="approved-route-manifest")
+        case.refusal_pair("enabled-installed-service", authority="approved-route-manifest")
     finally:
         _systemctl("mask", case.routes.names[0])
     _reapprove_restored_mask(case, manifest)
     case.baseline("released-original-namespace-pin")
     os.close(case.namespace_fd)
     case.namespace_fd = -1
-    case.command("released-original-namespace-pin", accepted=False, authority="kernel-subcomponent")
+    case.refusal_pair("released-original-namespace-pin", authority="kernel-subcomponent")
 
 
 def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str, quarantine_image: str | None = None, source_repository: Path | None = None) -> Path:
@@ -751,7 +831,8 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     worker = subprocess.Popen((sys.executable, "-I", "-B", "-c", "import signal; signal.pause()"), text=True)
     cases: list[Case] = []
     completed_profiles: list[str] = []
-    result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "artifact_paths": []}
+    refused_variants: list[str] = []
+    result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "quarantine_refused_variants": refused_variants, "artifact_paths": []}
     try:
         ordinary = _prepare_ordinary(root / "ordinary", ordinary_image, worker, worker_config)
         cases.append(ordinary)
@@ -761,7 +842,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
         ordinary.cleanup()
         completed_profiles.append("ordinary-v1")
         if quarantine_image is not None and source_repository is not None:
-            from scripts.containment_quarantine_fixture import prepare_quarantine
+            from scripts.containment_quarantine_fixture import NEGATIVE_VARIANTS, prepare_quarantine
 
             assert ordinary.prior_evidence is not None
             # The genuine next bootstrap takes a shared fence on the old
@@ -782,29 +863,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 ) as prepared,
                 ExitStack() as cleanup,
             ):
-                prior = prepared.start_and_capture()
-                descriptor, pin = _namespace_pin(prior)
-                fixture_id = "ac-test-pr2829-" + uuid.uuid4().hex
-                (quarantine_root / "evidence").mkdir(mode=0o700)
-                case = Case(
-                    quarantine_root,
-                    fixture_id,
-                    "quarantined-original-v1",
-                    prepared.manager_id,
-                    quarantine_image,
-                    prepared.bootstrap_config,
-                    prepared.management_config,
-                    prepared.state_root,
-                    prepared.oauth_root,
-                    prior,
-                    descriptor,
-                    pin,
-                    worker,
-                    worker_config,
-                    support_source=prepared.support_source_descriptor,
-                    owns_manager=False,
-                    extra_protected=(prepared.journal_root,),
-                )
+                case = _quarantine_case(prepared, worker, worker_config)
                 cases.append(case)
                 # Remove the proxy before the helper removes the manager that
                 # supplies its network namespace, including assertion failures.
@@ -814,6 +873,35 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 _negative_cases(case)
                 case.cleanup()
                 completed_profiles.append("quarantined-original-v1")
+            template = prepared
+            assert template.prior is not None
+            for variant in NEGATIVE_VARIANTS:
+                with (
+                    prepare_quarantine(
+                        root=root / ("quarantine-" + variant),
+                        name="ac-test-pr2829-" + uuid.uuid4().hex,
+                        image_id=quarantine_image,
+                        source_repository=source_repository,
+                        predecessor=ordinary.prior_manager,
+                        prior_evidence_path=ordinary.prior_evidence,
+                        prior_lock=ordinary.state / ".supervisor-owner.lock",
+                        host_listener_port=template.prior.published_port,
+                        docker=_docker,
+                        variant=variant,
+                        runtime_template=template,
+                    ) as altered,
+                    ExitStack() as cleanup,
+                ):
+                    variant_case = _quarantine_case(altered, worker, worker_config)
+                    cases.append(variant_case)
+                    cleanup.callback(variant_case.cleanup)
+                    _close_and_approve(variant_case, caddy_image, authorization_id, stop_manager=altered.stop)
+                    reports = variant_case.refusal_pair(variant, authority="installed-bootstrap-mount-profile")
+                    for report in reports:
+                        source = report.get("installed_bootstrap_source")
+                        if not isinstance(report.get("approved_enrollment"), dict) or not isinstance(source, dict) or source.get("source_sha256") != _REVIEWED_QUARANTINED_SOURCE_SHA256 or source.get("reviewed_lock_before_launch") is not True:
+                            raise AssertionError("unsupported quarantine variant did not reach the actual enrolled original-source profile")
+                    refused_variants.append(variant)
         result["status"] = "passed"
     except BaseException as exc:
         result["failure"] = type(exc).__name__ + ": " + str(exc)
