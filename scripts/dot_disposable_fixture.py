@@ -22,6 +22,7 @@ import yaml
 from loguru import logger
 
 TEST_REPOSITORY = "kitamura-tetsuo/auto-coder-test"
+BETA_WORK_REPOSITORY = "kitamura-tetsuo/auto-coder-test-beta"
 MANAGER_IMAGE = "auto-coder:management-fixture-17a312445be4"
 WORKER_IMAGE = "auto-coder:release-acceptance-065555a6"
 SAFE_FIXTURE = re.compile(r"pr[0-9]{3,6}-[a-z0-9-]{6,28}\Z")
@@ -84,8 +85,10 @@ def provision(
     owner_uid: int,
     owner_gid: int,
     test_source: Path | None = None,
+    source_release_workflow_id: int | None = None,
+    accepted_profile_revision: str | None = None,
 ) -> Path:
-    """Write a fresh topology constrained to the test repository and private volumes."""
+    """Write a fresh topology constrained to the fixed test repositories and private volumes."""
     source = source.resolve(strict=True)
     if not (source / "pyproject.toml").is_file() or not (source / "tests/fixtures/supervisor_offline_pid1.py").is_file():
         raise ValueError("source root must be the checked-out Auto-Coder test fixture source")
@@ -97,6 +100,14 @@ def provision(
         raise ValueError("fixture worker cannot run as root")
     test_source = test_source.resolve(strict=True) if test_source is not None else None
     test_sha = _source_fixture_revision(test_source)
+    release_configuration = source_release_workflow_id is not None or accepted_profile_revision is not None
+    if release_configuration:
+        if type(source_release_workflow_id) is not int or source_release_workflow_id <= 0:
+            raise ValueError("source release requires the exact positive test-repository workflow ID")
+        if not isinstance(accepted_profile_revision, str) or re.fullmatch(r"[0-9a-f]{64}", accepted_profile_revision) is None:
+            raise ValueError("source release requires the exact accepted runtime profile revision")
+        if not test_sha:
+            raise ValueError("source release requires a clean test-repository source checkout")
     scratch = source / ".agent-tmp"
     if scratch.exists() and (scratch.is_symlink() or not scratch.is_dir()):
         raise ValueError("fixture scratch root must be an ordinary directory")
@@ -111,10 +122,11 @@ def provision(
         "beta/runtime/home",
         "beta/runtime/logs",
         "beta/workspace",
+        "beta/routing",
         "release/runtime/home",
         "release/runtime/logs",
         "release/workspace",
-        "routing",
+        "release/routing",
     ):
         (root / directory).mkdir(parents=True, mode=0o700)
     nonce = secrets.token_hex(16)
@@ -122,15 +134,23 @@ def provision(
     subnet = f"10.249.{octet}.0/24"
     addresses = {"beta": f"10.249.{octet}.11", "release": f"10.249.{octet}.12"}
     beta_id, release_id = "dot-" + fixture_id + "-beta", "dot-" + fixture_id + "-release"
-    release_repo = "fixture/" + fixture_id + "-release"
     project = "dot-" + fixture_id
 
     for role in ("beta", "release"):
         _private_file(root / "secrets" / f"{role}-bridge", base64.b64encode(os.urandom(48)) + b"\n")
     _private_file(root / "secrets/source-public-read", "")
-    _private_file(root / "routing/ownership.json", json.dumps({TEST_REPOSITORY: "beta", release_repo: "release"}))
+    _private_file(root / "secrets/beta-work-read", "")
     for role in ("beta", "release"):
-        _private_file(root / role / "runtime/llm_config.toml", '[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = false\n')
+        # Both disposable roles install the same test source, but neither can
+        # dispatch Issue/PR work: the real author allowlists below are empty.
+        # Workload ownership remains globally unique and private to each role;
+        # source provenance is independent of that monitored repository.
+        repository = BETA_WORK_REPOSITORY if role == "beta" else TEST_REPOSITORY
+        _private_file(root / role / "routing/ownership.json", json.dumps({repository: role}))
+        # The production CLI rejects an empty ordinary candidate pool before
+        # starting its heartbeat. A task-only candidate avoids eager model
+        # clients; no provider key or synchronous fallback is configured.
+        _private_file(root / role / "runtime/llm_config.toml", '[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\n')
     _private_file(root / "management/oauth/allowed_uids.json", json.dumps({"project_id": firebase_project, "allowed_uids": []}))
     _private_file(
         root / "policy/operating-policy.yaml",
@@ -138,12 +158,45 @@ def provision(
             {
                 "profile": "observe",
                 "targets": {
-                    beta_id: {"channel": "beta", "repositories": [TEST_REPOSITORY]},
-                    release_id: {"channel": "release", "repositories": [release_repo]},
+                    beta_id: {"channel": "beta", "repositories": [BETA_WORK_REPOSITORY]},
+                    release_id: {"channel": "release", "repositories": [TEST_REPOSITORY]},
                 },
             }
         ),
     )
+    release_settings: dict[str, object] = {}
+    if release_configuration:
+        # These empty, separately mounted files are populated only by the
+        # operator with test-repository-scoped credentials. Generation grants
+        # no authority and never contacts GitHub or starts a container.
+        _private_file(root / "secrets/source-acceptance-publish", "")
+        _private_file(root / "secrets/source-release-dispatch", "")
+        _private_file(
+            root / "policy/source-release-policy.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_repository": TEST_REPOSITORY,
+                    "release_target": "release",
+                    "release_ref": "refs/tags/auto-coder-release-source-current",
+                    "accepted_beta_instance_ids": [beta_id],
+                    "accepted_profiles": [{"profile_id": "beta-runtime-smoke-v1", "content_revision": accepted_profile_revision}],
+                    "maximum_evidence_age_seconds": 86400,
+                    "source_test_workflow_path": ".github/workflows/test-source-for-runtime.yml",
+                    "promotion_workflow_path": ".github/workflows/promote-accepted-source-release.yml",
+                    "release_branch": "main",
+                },
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n",
+        )
+        release_settings = {
+            "source_release_policy_path": "/fixture/policy/source-release-policy.json",
+            "source_release_token_file": "/fixture/secrets/source-release-dispatch",
+            "source_release_target_id": release_id,
+            "source_release_workflow_id": source_release_workflow_id,
+        }
     _private_file(
         root / "management/config.yaml",
         _yaml(
@@ -157,7 +210,8 @@ def provision(
                 "local_development": True,
                 "firebase_project_id": firebase_project,
                 "source_repository": TEST_REPOSITORY,
-                "source_evidence_token_file": "/fixture/secrets/source-public-read",
+                "source_evidence_token_file": "/fixture/secrets/source-acceptance-publish" if release_configuration else "/fixture/secrets/source-public-read",
+                **release_settings,
                 "enabled_scopes": SCOPES,
                 "clients": [{"client_id": "dot-disposable-operator", "redirect_uris": ["http://127.0.0.1:49152/callback"], "allowed_scopes": SCOPES}],
             }
@@ -170,7 +224,7 @@ def provision(
                 "target_id": beta_id if role == "beta" else release_id,
                 "supervisor_instance_id": beta_id if role == "beta" else release_id,
                 "channel": role,
-                "repository": TEST_REPOSITORY if role == "beta" else release_repo,
+                "repository": BETA_WORK_REPOSITORY if role == "beta" else TEST_REPOSITORY,
                 "bridge_address": addresses[role],
                 "bridge_port": 8843,
                 "bridge_secret_file": f"/fixture/secrets/{role}-bridge",
@@ -181,6 +235,7 @@ def provision(
     services: dict[str, object] = {}
     for role in ("beta", "release"):
         role_id = beta_id if role == "beta" else release_id
+        read_token = "beta-work-read" if role == "beta" else "source-public-read"
         fixture_mounts = [
             f"{source}:/source:ro",
             f"{source}/tests/fixtures:/fixtures:ro",
@@ -200,7 +255,9 @@ def provision(
                 "HOME": "/runtime/home",
                 "AUTO_CODER_SUPERVISOR_INSTANCE_ID": role_id,
                 "AUTO_CODER_CHANNEL": role,
-                "AUTO_CODER_REPOSITORY": TEST_REPOSITORY if role == "beta" else release_repo,
+                "AUTO_CODER_REPOSITORY": BETA_WORK_REPOSITORY if role == "beta" else TEST_REPOSITORY,
+                "AUTO_CODER_ISSUE_ALLOWLIST": "[]",
+                "AUTO_CODER_PR_ALLOWLIST": "[]",
                 "AUTO_CODER_RUNTIME_ROOT": "/runtime",
                 "AUTO_CODER_WORKSPACE_ROOT": "/workspace",
                 "AUTO_CODER_OWNERSHIP_FILE": "/fixture/routing/ownership.json",
@@ -220,11 +277,12 @@ def provision(
             "volumes": [
                 *fixture_mounts,
                 f"{root}/secrets/{role}-bridge:/fixture/secrets/{role}-bridge:ro",
-                # The real worker acquires an ownership.json.lock in this
-                # fixture-private directory; keep only this test mount writable.
-                f"{root}/routing:/fixture/routing:rw",
+                # The real worker acquires an ownership.json.lock in its
+                # fixture-private directory; no peer ownership is writable.
+                f"{root}/{role}/routing:/fixture/routing:rw",
                 f"{root}/{role}/runtime:/runtime",
                 f"{root}/{role}/workspace:/workspace",
+                *([f"{root}/secrets/{read_token}:/fixture/secrets/github-test-scoped:ro"] if test_source is not None else []),
             ],
             "restart": "no",
         }
@@ -249,6 +307,14 @@ def provision(
             f"{root}/secrets/beta-bridge:/fixture/secrets/beta-bridge:ro",
             f"{root}/secrets/release-bridge:/fixture/secrets/release-bridge:ro",
             f"{root}/secrets/source-public-read:/fixture/secrets/source-public-read:ro",
+            *(
+                [
+                    f"{root}/secrets/source-acceptance-publish:/fixture/secrets/source-acceptance-publish:ro",
+                    f"{root}/secrets/source-release-dispatch:/fixture/secrets/source-release-dispatch:ro",
+                ]
+                if release_configuration
+                else []
+            ),
             f"{root}/fixture.json:/fixture/fixture.json:ro",
         ],
         "restart": "no",
@@ -297,6 +363,8 @@ def main() -> int:
     parser.add_argument("--fixture-id", required=True)
     parser.add_argument("--firebase-project-id", required=True)
     parser.add_argument("--test-source", type=Path, help="Clean main of the explicitly approved test-only Git repository")
+    parser.add_argument("--source-release-workflow-id", type=int, help="Exact test-repository promotion workflow ID; requires --accepted-profile-revision and --test-source")
+    parser.add_argument("--accepted-profile-revision", help="Exact beta-runtime-smoke-v1 revision allowed by the test repository's main promotion policy")
     parser.add_argument("--uid", type=int, default=os.getuid())
     parser.add_argument("--gid", type=int, default=os.getgid())
     args = parser.parse_args()
@@ -313,6 +381,8 @@ def main() -> int:
             owner_uid=args.uid,
             owner_gid=args.gid,
             test_source=args.test_source,
+            source_release_workflow_id=args.source_release_workflow_id,
+            accepted_profile_revision=args.accepted_profile_revision,
         )
     except (OSError, ValueError) as error:
         logger.error("No fixture created: {}", type(error).__name__)

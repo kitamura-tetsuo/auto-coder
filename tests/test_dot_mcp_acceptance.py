@@ -5,12 +5,18 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
+import mcp
+import mcp.client.streamable_http
 import pytest
 from scripts import dot_mcp_acceptance as accept
 from scripts import management_mcp_rollout_smoke as smoke
+
+from auto_coder.management.mcp_runtime_tools import ManagementRuntime
 
 
 def fixture():
@@ -60,7 +66,7 @@ def registry(fixture):
                 "target_id": fixture.target_ids[role],
                 "supervisor_instance_id": fixture.target_ids[role],
                 "channel": role,
-                "repository": fixture.repository if role == "beta" else "fixture/" + fixture.fixture_id + "-release",
+                "repository": accept.BETA_WORK_REPOSITORY if role == "beta" else fixture.repository,
                 "bridge_address": "10.249.99." + ("11" if role == "beta" else "12"),
                 "bridge_port": 8843,
                 "bridge_secret_file": f"/fixture/secrets/{role}-bridge",
@@ -182,7 +188,7 @@ def test_container_running_and_heartbeat_not_available_never_pass():
         "process_state": "RUNNING",
         "installed_binding_status": "UNAVAILABLE",
         "installed_runtime": None,
-        "worker_observation": {"lifecycle": {"startup_reconciled": True}, "heartbeat": {"available": False, "sequence": None}},
+        "worker_observation": {"lifecycle": {"state": "running", "startup_reconciled": True, "startup_reconciliation_error": None, "daemon_serving": True}, "invocations": {"state": "running"}, "heartbeat": {"available": False, "sequence": None}},
     }
     with pytest.raises(accept.Blocked, match="unstaged"):
         accept.positive_heartbeat(snapshot)
@@ -209,8 +215,9 @@ def _real_worker_sample(sequence, *, process_run_id="process-1", generation="dep
         "installed_binding_status": "VERIFIED",
         "installed_runtime": {"source_sha": source_sha},
         "worker_observation": {
-            "lifecycle": {"startup_reconciled": True},
-            "heartbeat": {"available": True, "sequence": sequence},
+            "lifecycle": {"state": "running", "startup_reconciled": True, "startup_reconciliation_error": None, "daemon_serving": True},
+            "invocations": {"state": "running"},
+            "heartbeat": {"available": True, "sequence": sequence, "stage": "producer:maintenance-sleep"},
         },
     }
 
@@ -359,8 +366,8 @@ def test_authenticated_identity_is_bound_to_fixture_resource_client_and_current_
 
 def test_current_fixture_policy_requires_exactly_two_distinct_complete_target_bindings():
     selected = fixture()
-    beta = {"target_id": selected.target_ids["beta"], "channel": "beta", "repository": selected.repository}
-    release = {"target_id": selected.target_ids["release"], "channel": "release", "repository": "fixture/" + selected.fixture_id + "-release"}
+    beta = {"target_id": selected.target_ids["beta"], "channel": "beta", "repository": accept.BETA_WORK_REPOSITORY}
+    release = {"target_id": selected.target_ids["release"], "channel": "release", "repository": selected.repository}
     accept.verify_current_targets({"status": "OK", "targets": [beta, release]}, selected)
     accept.verify_current_targets({"status": "OK", "targets": [release, beta]}, selected)
     for invalid in (
@@ -525,3 +532,318 @@ def test_mcp_task_group_wrapper_preserves_single_trusted_blocker() -> None:
     assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [failed])) is failed
     assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [ValueError("unexpected transport failure")])) is None
     assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [blocked, RuntimeError("other failure")])) is None
+
+
+@pytest.mark.parametrize("scenario", ["promote-source", "release-source"])
+def test_full_actions_require_current_full_stage_without_fabricated_prior_promotion(scenario):
+    original = checkpoint(release_target=fixture().target_ids["release"])
+    with pytest.raises(accept.Blocked, match="full operator stage"):
+        accept.original_stage(original, scenario, "beta", "operator-v1", mutation=True)
+    full = replace(original, stage="full")
+    # The first promotion has no promotion operation/catalog yet. Its real
+    # prerequisite is beta acceptance, checked at the producer boundary.
+    accept.original_stage(full, scenario, "full", "operator-v1", mutation=True)
+    with pytest.raises(accept.Blocked, match="revision"):
+        accept.original_stage(full, scenario, "full", "other-revision", mutation=True)
+
+
+def test_unknown_ticket_blocks_a_new_key_on_the_same_target(tmp_path):
+    first = tmp_path / "dot-fixture-reevaluate-original-send.json"
+    original = checkpoint()
+    args = {"target_id": fixture().target_ids["beta"], "idempotency_key": original.idempotency_key}
+    accept.persist_original_ticket(first, fixture(), original, accept.MUTATIONS["reevaluate"], args)
+    next_checkpoint = replace(original, idempotency_key="different-key")
+    later = tmp_path / "dot-fixture-beta-source-original-send.json"
+    with pytest.raises(accept.Blocked, match="changing the idempotency key"):
+        accept.persist_original_ticket(later, fixture(), next_checkpoint, accept.MUTATIONS["beta-source"], {**args, "idempotency_key": "different-key"})
+    assert not later.exists()
+    accept.record_refused_ticket(first, fixture(), reason="profile_denies_mutation", journal_sha256="d" * 64)
+    accept.persist_original_ticket(later, fixture(), next_checkpoint, accept.MUTATIONS["beta-source"], {**args, "idempotency_key": "different-key"})
+    accept.update_original_ticket(later, fixture(), "admitted-original", "ADMITTED")
+    with pytest.raises(accept.Blocked, match="admitted"):
+        accept.record_refused_ticket(later, fixture(), reason="profile_denies_mutation", journal_sha256="d" * 64)
+
+
+def _install_offline_mcp_session(monkeypatch, handler):
+    """Controlled SDK boundary for unit regressions, never live E2E evidence."""
+    calls = []
+    tools = {"auto_coder_whoami", "auto_coder_targets", "auto_coder_deployment_status", "auto_coder_operation_inspect", "auto_coder_operation_get", "auto_coder_beta_acceptance_get", *accept.MUTATIONS.values()}
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in tools])
+
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if name == "auto_coder_whoami":
+                value = {"project_id": fixture().firebase_project_id, "uid": "fixture-owner", "client_id": "dot-disposable-operator", "resource": fixture().endpoint, "scopes": ["auto-coder.read", "auto-coder.operate", "auto-coder.deploy"]}
+            elif name == "auto_coder_targets":
+                value = {"status": "OK", "targets": [{"target_id": target, "channel": role, "repository": accept.BETA_WORK_REPOSITORY if role == "beta" else accept.TEST_REPOSITORY} for role, target in fixture().target_ids.items()]}
+            else:
+                value = handler(name, arguments)
+            return SimpleNamespace(isError=False, structuredContent=value)
+
+    @asynccontextmanager
+    async def transport(*_args, **_kwargs):
+        yield None, None, None
+
+    monkeypatch.setenv("AUTO_CODER_MCP_ACCESS_TOKEN", "offline-regression-placeholder")
+    monkeypatch.setattr(mcp, "ClientSession", lambda *_args: Session())
+    monkeypatch.setattr(mcp.client.streamable_http, "streamablehttp_client", transport)
+    return calls
+
+
+def test_original_release_journal_is_inspected_before_unavailable_beta(monkeypatch):
+    original = checkpoint(stage="observe", release_target=fixture().target_ids["release"], release_operation_id="release-original", pending_operation_id="release-original", pending_effect_state="SENT_UNKNOWN")
+
+    def handler(name, arguments):
+        assert name == "auto_coder_operation_inspect"
+        assert arguments == {"target_id": fixture().target_ids["release"], "operation_id": "release-original"}
+        return {"operation_id": "release-original", "status": "NEEDS_ATTENTION"}
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    report = asyncio.run(accept.run_authenticated(fixture(), original, "inspect-original", mutate=False, item_number=0))
+    assert report.verdict == "BLOCKED"
+    assert report.operation_id == "release-original"
+    assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_operation_inspect"]
+    assert report.effect_dispatched is False
+
+
+def test_explicit_original_resumption_never_repeats_admission(monkeypatch, tmp_path):
+    original = checkpoint(idempotency_key="original-deploy-key")
+    ticket = tmp_path / "dot-fixture-beta-source-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+    arguments = {"target_id": fixture().target_ids["beta"], "idempotency_key": original.idempotency_key, "selected_git_sha": original.source_sha}
+    accept.persist_original_ticket(ticket, fixture(), original, accept.MUTATIONS["beta-source"], arguments)
+    accept.update_original_ticket(ticket, fixture(), "deployment-original", "ADMITTED")
+    sequence = 10
+
+    def handler(name, args):
+        nonlocal sequence
+        assert name in {"auto_coder_operation_inspect", "auto_coder_deployment_status"}
+        if name == "auto_coder_operation_inspect":
+            return {"operation_id": "deployment-original", "target_id": fixture().target_ids["beta"], "action": "deploy_beta_source", "source_sha": original.source_sha, "status": "SUCCEEDED", "phase": "succeeded", "effect_state": "confirmed", "new_worker": _real_worker_sample(10)["worker"]}
+        sequence += 1
+        return {**_real_worker_sample(sequence), "target_id": fixture().target_ids["beta"], "instance_id": fixture().target_ids["beta"], "channel": "beta", "repository": accept.BETA_WORK_REPOSITORY}
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    report = asyncio.run(accept.run_authenticated(fixture(), original, "beta-source", mutate=True, item_number=0, resume_original=True))
+    assert report.verdict == "PASS" and report.positive_deployment_proven is True
+    assert report.operation_id == "deployment-original"
+    assert all(name not in accept.MUTATIONS.values() and name != "auto_coder_operation_get" for name, _ in calls)
+    assert calls[2] == ("auto_coder_operation_inspect", {"target_id": fixture().target_ids["beta"], "operation_id": "deployment-original"})
+    persisted = json.loads(ticket.read_text())
+    assert persisted["idempotency_key"] == original.idempotency_key
+    assert persisted["effect_state"] == "SUCCEEDED"
+    assert persisted["terminal_evidence"]["source_sha"] == original.source_sha
+
+
+def test_unknown_admission_cannot_resume_or_change_intent(monkeypatch, tmp_path):
+    original = checkpoint()
+    ticket = tmp_path / "dot-fixture-beta-source-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+    arguments = {"target_id": fixture().target_ids["beta"], "idempotency_key": original.idempotency_key, "selected_git_sha": original.source_sha}
+    accept.persist_original_ticket(ticket, fixture(), original, accept.MUTATIONS["beta-source"], arguments)
+    with pytest.raises(accept.Blocked, match="lacks its operation ID"):
+        accept.load_original_ticket(fixture(), original, "beta-source", resume=True)
+    accept.update_original_ticket(ticket, fixture(), "original-source", "ADMITTED")
+    for changed in (replace(original, idempotency_key="another-key"), replace(original, stage_revision="another-revision"), replace(original, source_sha="d" * 40), replace(original, pending_operation_id="another-operation")):
+        with pytest.raises(accept.Blocked):
+            accept.load_original_ticket(fixture(), changed, "beta-source", resume=True)
+    assert accept.load_original_ticket(fixture(), original, "beta-source", resume=True)["operation_id"] == "original-source"
+
+
+def _producer_record(action, operation_id, target_id, receipt_source, result):
+    from auto_coder.management.operations import AcceptedAuthority, ActionParameter, EffectAttempt, EffectReceipt, EffectState, ManagedTarget, OperationIntent, OperationPhase, OperationRecord
+
+    intent = OperationIntent(ManagedTarget(target_id, "beta" if action == "run_beta_acceptance" else "release", accept.BETA_WORK_REPOSITORY if action == "run_beta_acceptance" else accept.TEST_REPOSITORY), action, (ActionParameter("target_id", target_id),), "original-key", expected_artifact="b" * 40)
+    authority = AcceptedAuthority("http://127.0.0.1:8081", fixture().endpoint, fixture().firebase_project_id, "fixture-owner", "dot-disposable-operator", "original-grant", ("auto-coder.read", "auto-coder.deploy"), 1, 2)
+    receipt = EffectReceipt(operation_id, receipt_source, 3, json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return OperationRecord(operation_id, intent, intent.fingerprint(), authority, OperationPhase.SUCCEEDED, 3, effect=EffectAttempt(state=EffectState.CONFIRMED, correlation_identity=operation_id, receipt=receipt))
+
+
+def test_beta_acceptance_consumes_actual_producer_projection_and_rejects_unpublished_local_pass():
+    original = "beta-acceptance-original"
+    record = _producer_record("run_beta_acceptance", original, fixture().target_ids["beta"], "github-source-acceptance-readback", {"status": "PASS_PUBLISHED", "tag_ref": "refs/tags/auto-coder-beta-acceptance-" + original, "tag_object_oid": "c" * 40, "direct_commit_sha": "b" * 40})
+    runtime = object.__new__(ManagementRuntime)
+    runtime.beta_acceptance = None
+    projected = runtime._project_beta_acceptance(record)
+    result = accept.verified_acceptance_receipt(projected, operation_id=original, target_id=fixture().target_ids["beta"], source_sha="b" * 40)
+    assert result["acceptance_oid"] == "c" * 40
+    for change in ({"status": "PASS"}, {"effect_state": "sent_unknown"}, {"receipt": None}, {"operation_id": "different-original"}, {"target_id": fixture().target_ids["release"]}):
+        with pytest.raises((accept.Blocked, accept.Failed)):
+            accept.verified_acceptance_receipt({**projected, **change}, operation_id=original, target_id=fixture().target_ids["beta"], source_sha="b" * 40)
+
+
+def _producer_promotion_projection():
+    from auto_coder.management.source_release_dispatch import SourceReleaseDispatch
+
+    original = "promotion-original"
+    run = {"id": 42, "run_attempt": 1, "workflow_id": 100}
+    record = _producer_record("promote_accepted_source_release", original, fixture().target_ids["release"], "github-source-release-readback", {"outcome": "SOURCE_PROMOTION_CONFIRMED", "run_id": 42, "run_attempt": 1, "catalog_oid": "d" * 40, "source_sha": "b" * 40, "worker_deployed": False})
+    runtime = SimpleNamespace(_project_operation=ManagementRuntime._project_operation, settings=None, journal=SimpleNamespace(source_release_run=lambda _original: run))
+    return SourceReleaseDispatch(runtime).project(record)
+
+
+def test_promotion_producer_receipt_never_proves_worker_deployment():
+    projected = _producer_promotion_projection()
+    result = accept.verified_promotion_receipt(projected, operation_id="promotion-original", target_id=fixture().target_ids["release"], source_sha="b" * 40)
+    assert result["release_worker_deployed"] is False
+    assert result["promotion_run_id"] == 42
+    for change in ({"source_promotion": "COMPLETED_BUT_SUPERSEDED"}, {"worker_deployed": True}, {"workflow_run": {"id": 43, "run_attempt": 1}}, {"effect_state": "sent_unknown"}):
+        with pytest.raises((accept.Blocked, accept.Failed)):
+            accept.verified_promotion_receipt({**projected, **change}, operation_id="promotion-original", target_id=fixture().target_ids["release"], source_sha="b" * 40)
+
+
+def test_effectful_original_query_is_denied_by_default_and_bound_to_one_operation():
+    calls = []
+
+    class Session:
+        async def call_tool(self, name, args):
+            calls.append((name, args))
+            return SimpleNamespace(isError=False, structuredContent={"status": "NEEDS_ATTENTION"})
+
+    live = accept.Live(Session(), {"auto_coder_operation_get"})
+    args = {"target_id": fixture().target_ids["release"], "operation_id": "promotion-original"}
+    with pytest.raises((accept.Blocked, ValueError)):
+        asyncio.run(live.call("auto_coder_operation_get", args))
+    with pytest.raises(accept.Blocked):
+        asyncio.run(live.call("auto_coder_operation_get", args, mutation=True))
+    live.authorize_original_reconciliation(args["target_id"], args["operation_id"])
+    with pytest.raises(accept.Blocked):
+        asyncio.run(live.call("auto_coder_operation_get", {**args, "operation_id": "another-operation"}, mutation=True))
+    asyncio.run(live.call("auto_coder_operation_get", args, mutation=True))
+    assert calls == [("auto_coder_operation_get", args)]
+
+
+@pytest.mark.parametrize("status", ["CONFLICT", "BUSY", "DENIED", "INVALID_REQUEST", "UNAVAILABLE"])
+def test_admission_refusal_cannot_adopt_an_occupying_operation(monkeypatch, tmp_path, status):
+    original = checkpoint()
+    ticket = tmp_path / "dot-fixture-reevaluate-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+
+    async def prepare(*_args):
+        return {"target_id": fixture().target_ids["beta"], "idempotency_key": original.idempotency_key, "target_type": "issue", "number": 14, "expected_process_run_id": "original-worker", "expected_deployment_generation": "original-generation"}
+
+    monkeypatch.setattr(accept, "prepare_arguments", prepare)
+
+    def handler(name, _arguments):
+        assert name == "auto_coder_reevaluate_target"
+        # The production admission handlers use this actual response helper
+        # for both conflict and occupied-lane replies, sometimes with an ID.
+        return ManagementRuntime._response(status, "journal_" + status.lower(), operation_id="occupying-operation")
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    with pytest.raises(accept.Blocked, match="Admission was refused"):
+        asyncio.run(accept.run_authenticated(fixture(), original, "reevaluate", mutate=True, item_number=14))
+    record = json.loads(ticket.read_text())
+    assert record["effect_state"] == "ADMISSION_UNKNOWN"
+    assert record["operation_id"] == ""
+    assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_targets", "auto_coder_reevaluate_target"]
+
+
+@pytest.mark.parametrize("observed_source", ["a" * 40, "b" * 40])
+def test_release_activation_needs_current_installed_source_after_promotion(monkeypatch, tmp_path, observed_source):
+    from auto_coder.management.worker_lifecycle import WorkerLifecycle
+
+    original = checkpoint(stage="full", release_target=fixture().target_ids["release"], idempotency_key="original-release-key")
+    ticket = tmp_path / "dot-fixture-release-source-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+    arguments = {
+        "target_id": fixture().target_ids["release"],
+        "idempotency_key": original.idempotency_key,
+        "selected_git_sha": original.source_sha,
+        "promotion_operation_id": "promotion-original",
+        "catalog_ref": "refs/tags/auto-coder-source-release-promotion-original",
+        "catalog_oid": "d" * 40,
+        "acceptance_ref": "refs/tags/auto-coder-beta-acceptance-beta-original",
+        "acceptance_oid": "e" * 40,
+    }
+    accept.persist_original_ticket(ticket, fixture(), original, accept.MUTATIONS["release-source"], arguments)
+    accept.update_original_ticket(ticket, fixture(), "release-original", "ADMITTED")
+    record = _producer_record("deploy_release_source", "release-original", fixture().target_ids["release"], "supervisor-and-worker-lifecycle-journal", "source_deployed")
+    runtime = SimpleNamespace(_params=ManagementRuntime._params)
+    lifecycle = WorkerLifecycle(runtime)
+    identity = {key: arguments[key] for key in ("promotion_operation_id", "catalog_ref", "catalog_oid", "acceptance_ref", "acceptance_oid")}
+    projected = lifecycle.project_snapshot(record, {"stage": "SUCCEEDED", "source_sha": original.source_sha, "new_worker": _real_worker_sample(1)["worker"], "release_identity": {**identity, "source_sha": original.source_sha}})
+    sequence = 10
+
+    async def promoted(*_args, **_kwargs):
+        return {**identity, "release_worker_deployed": False}
+
+    monkeypatch.setattr(accept, "promotion_evidence", promoted)
+
+    def handler(name, args):
+        nonlocal sequence
+        if name == "auto_coder_operation_inspect":
+            return projected
+        assert name == "auto_coder_deployment_status"
+        sequence += 1
+        target = fixture().target_ids["release"]
+        return {**_real_worker_sample(sequence, source_sha=observed_source), "target_id": target, "instance_id": target, "channel": "release", "repository": accept.TEST_REPOSITORY}
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    if observed_source != original.source_sha:
+        with pytest.raises(accept.Failed, match="Installed source binding"):
+            asyncio.run(accept.run_authenticated(fixture(), original, "release-source", mutate=True, item_number=0, resume_original=True))
+        assert json.loads(ticket.read_text())["effect_state"] == "ADMITTED"
+    else:
+        report = asyncio.run(accept.run_authenticated(fixture(), original, "release-source", mutate=True, item_number=0, resume_original=True))
+        assert report.verdict == "PASS"
+        assert report.positive_deployment_proven is True
+        assert report.details["release_worker_deployed"] is True
+        assert json.loads(ticket.read_text())["effect_state"] == "SUCCEEDED"
+    assert all(name not in accept.MUTATIONS.values() for name, _ in calls)
+
+
+def test_lifecycle_success_without_confirmed_effect_remains_blocked():
+    original = checkpoint()
+    value = {"operation_id": "original-beta", "target_id": fixture().target_ids["beta"], "action": "deploy_beta_source", "source_sha": original.source_sha, "status": "SUCCEEDED", "phase": "succeeded"}
+    for state in (None, "not_sent", "sent_unknown"):
+        with pytest.raises(accept.Blocked, match="confirmed terminal"):
+            accept.verified_deployment({**value, "effect_state": state}, fixture(), original, "beta-source", "original-beta")
+    accept.verified_deployment({**value, "effect_state": "confirmed"}, fixture(), original, "beta-source", "original-beta")
+
+
+def test_pending_effect_cannot_be_ignored_by_worker_only_observe():
+    original = checkpoint(beta_operation_id="original-deploy", pending_operation_id="original-deploy", pending_effect_state="SENT_UNKNOWN")
+    with pytest.raises(accept.Blocked, match="Inspect the original unresolved"):
+        accept.original_stage(original, "observe", "", "", mutation=False)
+    accept.original_stage(original, "inspect-original", "", "", mutation=False)
+
+
+@pytest.mark.parametrize(
+    "section,changed",
+    [
+        ("lifecycle", {"state": "draining"}),
+        ("lifecycle", {"daemon_serving": False}),
+        ("lifecycle", {"startup_reconciliation_error": "reconciliation_failed"}),
+        ("lifecycle", {"startup_failure": {"event_id": "original-failure"}}),
+        ("invocations", {"state": "closing"}),
+        ("heartbeat", {"stage": "bootstrap-ready"}),
+        ("heartbeat", {"sequence": 0}),
+    ],
+)
+def test_advancing_counter_cannot_mask_nonserving_or_nonproducer_worker(section, changed):
+    before, after = _real_worker_sample(10), _real_worker_sample(11)
+    after["worker_observation"][section].update(changed)
+    with pytest.raises(accept.Blocked):
+        accept.require_advancing_worker_heartbeat(before, after, source_sha="b" * 40)
+
+
+def test_original_promotion_run_and_catalog_cannot_be_replaced_by_readback():
+    evidence = accept.verified_promotion_receipt(_producer_promotion_projection(), operation_id="promotion-original", target_id=fixture().target_ids["release"], source_sha="b" * 40)
+    original = checkpoint(stage="full", release_target=fixture().target_ids["release"], promotion_operation_id="promotion-original", promotion_run_id="42", promotion_catalog_ref=str(evidence["catalog_ref"]), promotion_catalog_oid=str(evidence["catalog_oid"]))
+    accept.confirm_saved_promotion(original, evidence)
+    for changed in (replace(original, promotion_run_id="43"), replace(original, promotion_operation_id="other-promotion"), replace(original, promotion_catalog_oid="e" * 40), replace(original, promotion_catalog_ref="")):
+        with pytest.raises(accept.Failed):
+            accept.confirm_saved_promotion(changed, evidence)

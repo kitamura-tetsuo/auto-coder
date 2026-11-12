@@ -319,6 +319,7 @@ class WorkerLifecycle:
             reason,
             operation_id=record.operation_id,
             phase=record.phase.value,
+            effect_state=record.effect.state.value,
             action=record.intent.action,
             target_id=self.runtime._params(record).get("target_id"),
             channel=record.intent.target.channel,

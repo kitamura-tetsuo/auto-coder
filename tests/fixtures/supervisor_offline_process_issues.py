@@ -15,13 +15,15 @@ import sys
 import time
 from pathlib import Path
 
+FIXTURE_WORK_REPOSITORIES = frozenset({"kitamura-tetsuo/auto-coder-test", "kitamura-tetsuo/auto-coder-test-beta"})
+
 
 def activate_scoped_fixture_token(token_path: Path, repository: str) -> bool:
     """Load only an explicitly mounted test-repository token into the child environment."""
     if not token_path.exists() and not token_path.is_symlink():
         return False
-    if repository != "kitamura-tetsuo/auto-coder-test":
-        raise ValueError("Scoped fixture token is restricted to the test repository")
+    if repository not in FIXTURE_WORK_REPOSITORIES:
+        raise ValueError("Scoped fixture token is restricted to the fixed test repositories")
     token_stat = token_path.lstat()
     if not token_path.is_file() or token_path.is_symlink() or token_stat.st_mode & 0o077:
         raise ValueError("Scoped fixture token file is not a private regular file")
@@ -70,6 +72,11 @@ def main() -> None:
         "--log-file",
         os.path.join(os.environ["AUTO_CODER_RUNTIME_ROOT"], "logs", "auto-coder.log"),
     ]
+    if os.environ["AUTO_CODER_REPOSITORY"] in FIXTURE_WORK_REPOSITORIES and os.environ.get("AUTO_CODER_ISSUE_ALLOWLIST") == os.environ.get("AUTO_CODER_PR_ALLOWLIST") == "[]":
+        # The disposable rollout fixture exercises the real idle daemon and
+        # receipt/heartbeat producers without admitting repository tasks.
+        # Use production CLI switches as an additional publication guard.
+        command.extend(["--no-auto-merge", "--no-auto-merge-dependabot-prs", "--disable-labels"])
     if os.environ.get("GITHUB_TOKEN") in {
         "nonfunctional-ci-placeholder",
         "nonfunctional-disposable-no-github-write",

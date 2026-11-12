@@ -287,6 +287,15 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
             bridge.supervisor_generation = "supervisor-restarted"
         _drive(app, operation_id)
         completed = _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})
+        # Consumers must retain the durable effect's uncertainty even when a
+        # lifecycle snapshot has advanced or a terminal reply was interrupted.
+        original_record = runtime.journal.get(operation_id).record
+        assert original_record is not None
+        assert completed["effect_state"] == original_record.effect.state.value
+        if completed["status"] == "SUCCEEDED":
+            assert completed["effect_state"] == "confirmed"
+        if intervention == "supervisor_changed_after_unknown":
+            assert completed["effect_state"] == "sent_unknown"
         if intervention == "selection_changed":
             assert completed["status"] == "SUPERSEDED"
             assert [name for name, _id in bridge.actions] == ["PREPARE"]

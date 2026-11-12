@@ -6,8 +6,9 @@ owns stage selection and current scopes. Dot never upgrades itself from
 `observe` to `beta` or `full`, never grants itself consent, and never
 substitutes a workflow run, a publication tag or a running container for an
 actual installed source and advancing producer heartbeat. The non-interactive
-read-only observer below is **a partial implementation**, not the required
-live end-to-end acceptance harness.
+read-only observer and the separate disposable acceptance client have distinct
+roles. The client implements the positive beta-to-release sequence described
+below; live producer evidence for the entire #2608 contract is still required.
 
 ## Bootstrap and authority inventory
 
@@ -61,7 +62,9 @@ supersede an earlier selection.
 
 ## Resumable checkpoint and finite recovery
 
-The [schema-1 example checkpoint](../examples/management-mcp/dot-rollout-checkpoint.example.json) lists every required field. Copy it only into an operator-owned private location, populate original identifiers from verified sources, and never include bearer/refresh credentials.\nThe `schema=1` operator checkpoint contains only nonsecret identifiers:
+The [schema-1 example checkpoint](../examples/management-mcp/dot-rollout-checkpoint.example.json) lists every required field. Copy it only into an operator-owned private location, populate original identifiers from verified sources, and never include bearer/refresh credentials.
+
+The `schema=1` operator checkpoint contains only nonsecret identifiers:
 operator `stage`, original task ID, repository and Issue/PR numbers, immutable
 operator-selected stage revision, exact source SHA and selected CI run/attempt/tested
 ref and OID, configured beta/release targets, original management operation IDs,
@@ -195,16 +198,18 @@ are 0 only for independently established `PASS`, 1 for `FAIL`, 2 for
 unexecuted acceptance for success. Any future `PASS` requires an independent original producer oracle,
 not just an MCP JSON response or a checkpoint.
 
-**Current acceptance gap:** This read-only observer has no mutation mode; the
-separate opt-in disposable harness below implements only limited fixture-only
-mutation. The real authenticated beta/release producer flow, original GitHub
-Actions publication, staging/unknown/recovery/policy downgrade acceptance and
-dot scheduler execution remain **NOT_RUN/BLOCKED**, never simulated `PASS`.
+**Current acceptance gap:** This read-only observer has no mutation mode. The
+separate opt-in disposable harness implements beta source installation, beta
+acceptance, exact Git source promotion and independent release activation.
+Implementation and deterministic regression success do not establish live
+OAuth, GitHub Actions publication, worker heartbeat, fault/recovery or scheduler
+acceptance. Record each missing real scenario as **NOT_RUN/BLOCKED**, never
+simulated `PASS`.
 Production beta/release changes are prohibited. Keep this implementation PR
 DRAFT until genuine end-to-end verification, exact-head CI and all review
 threads have passed.
 
-### Disposable-only acceptance harness (partial)
+### Disposable-only acceptance harness
 
 `scripts/dot_disposable_fixture.py` creates an owner-private, per-fixture Docker
 Compose configuration using the fixed `kitamura-tetsuo/auto-coder-test`
@@ -218,6 +223,35 @@ project ID. The test-source checkout must be a fully clean `main` of the fixed
 test repository, including no untracked files. The fixture starts with an empty
 UID allowlist and intentionally held worker bootstrap; both require separate
 operator authorization and real test-only setup to proceed.
+
+Both workers install source from `kitamura-tetsuo/auto-coder-test`. Workload
+ownership stays distinct: beta processes only the fixed
+`kitamura-tetsuo/auto-coder-test-beta` canary repository, while release processes
+`kitamura-tetsuo/auto-coder-test`. Their instance IDs, runtime/workspace
+directories and ownership records remain independent. Creating the canary
+repository and providing its scoped read credential are explicit operator
+bootstrap prerequisites. Published acceptance records bind the common source
+repository and separately retain the actual beta workload repository. The idle
+fixture enables its sole task-only Jules backend so the real CLI can initialize;
+empty production Issue/PR author allowlists, disabled label changes and disabled
+automatic/dependabot merge keep it from starting repository work. No LLM
+credential is mounted. The held bootstrap must still be explicitly released by
+the external fixture operator; no application acceptance is inferred from it.
+
+For source promotion, additionally provide both
+`--source-release-workflow-id` and `--accepted-profile-revision` to the generator.
+These must identify the actual test repository workflow and acceptance profile.
+They generate `/fixture/policy/source-release-policy.json`, bounded to the exact
+fixture beta instance, and the corresponding management configuration. The
+matching policy used by the real test repository Actions workflow must also be
+reviewed. The default operating policy remains observe-only. The generated
+credential files are empty and owner-private: `source-public-read` is the
+independent Git/Actions reader and the release workload reader;
+`beta-work-read` is mounted only in beta and reads only the fixed canary
+workload repository. `source-acceptance-publish` authorizes only test
+acceptance publication, and `source-release-dispatch` authorizes the test-only
+promotion workflow. Current owner authorization and correctly scoped credentials
+are required before these operations can run. Never copy production credentials.
 
 ```sh
 python scripts/dot_disposable_fixture.py \
@@ -245,14 +279,74 @@ read-only heartbeat sampler polls every 5 seconds for up to 150 seconds because
 the idle producer's maintenance heartbeat may advance only once per 60 seconds.
 Every sampled worker is rechecked until all have advanced, so an earlier worker
 cannot disappear during a later worker's wait. The same two-sample rule gates
-`beta-source` completion. Mere container liveness,
+`beta-source` and `release-source` completion. Mere container liveness,
 accepted MCP receipts or a copied Git SHA are insufficient.
 
 `scripts/dot_mcp_acceptance.py` is opt-in and returns `NOT_RUN` without a fixture.
 Its default path only reads current authenticated MCP observations. The explicit
-`--enable-fixture-mutation` mode confines available actions to test-only beta
-reevaluation or beta-source selection and requires current selected stage,
-revision, original Git/Actions proof and an immutable fsynced pre-send ticket.
+`--enable-fixture-mutation` mode requires the current selected stage/revision,
+original Git/Actions proof and an immutable fsynced pre-send ticket. It exposes
+only the following fixed actions against the exact disposable targets:
+
+| Scenario | Required operator stage | Independent completion evidence |
+| --- | --- | --- |
+| `reevaluate` | beta or full | Original worker invalidation receipt; never Issue completion |
+| `beta-source` | beta or full | Confirmed original deployment, exact installed source and advancing same-child heartbeat |
+| `beta-acceptance` | beta or full | Original deployed beta child, real `PASS_PUBLISHED` receipt and independently read immutable acceptance Git ref/OID |
+| `promote-source` | full | Original tested-source/acceptance chain, successful exact Actions attempt, immutable release catalog and current source/operation selection; release worker deployment remains separate |
+| `release-source` | full | Original promotion/catalog/acceptance linkage, independent release deployment receipt and exact installed release child with advancing heartbeat |
+
+The first full-stage promotion does not require a fabricated preexisting
+promotion catalog. It requires the original confirmed beta acceptance and
+current full authority; its successful result supplies the promotion evidence
+needed by the separate release activation. A green promotion cannot report
+`positive_deployment_proven=true` or `release_worker_deployed=true`.
+
+Each scenario has one private original-send ticket. The next permitted action
+uses its own immutable idempotency key; it cannot reuse a key from another action
+on the same target. Any unresolved same-target ticket blocks a new action even
+with a different key. A negative probe can release that local fence only after
+the actual refusal plus independent real-journal absence has been recorded as
+`REFUSED`; a refusal response by itself is insufficient. BUSY/CONFLICT responses
+can include an occupying operation ID, which is never adopted as this send's ID.
+
+The initial checkpoint supplies the original task/repository/Issue/PR, source,
+CI and operator selection. Subsequent scenarios can take deployment/acceptance/
+promotion IDs from that checkpoint or the same fixture's completed original
+tickets. The client re-queries the actual producer and Git objects before using
+them. Successful JSON `details` records the exact derived refs/OIDs and worker
+identities; the same evidence is durably appended to the original ticket.
+
+Use `--resume-original` with the same scenario, checkpoint authority and key to
+continue a known original operation after interruption. The client loads its
+saved arguments and ID before transport and never repeats admission. An unknown
+admission without a saved original ID remains blocked. `--wait-seconds` defaults
+to 300 and is limited to 900; a timeout preserves the original instead of
+creating another operation. For example, inside the fixture management container:
+
+```sh
+python -m scripts.dot_mcp_acceptance \
+  --fixture-manifest /fixture/fixture.json \
+  --checkpoint /fixture/management/original-beta-source.json \
+  --scenario beta-source --enable-fixture-mutation \
+  --operator-stage beta --operator-stage-revision ORIGINAL_OPERATOR_REVISION
+
+python -m scripts.dot_mcp_acceptance \
+  --fixture-manifest /fixture/fixture.json \
+  --checkpoint /fixture/management/original-beta-source.json \
+  --scenario beta-source --enable-fixture-mutation --resume-original \
+  --operator-stage beta --operator-stage-revision ORIGINAL_OPERATOR_REVISION
+```
+
+The source promotion producer currently needs an explicit original-operation
+reconciliation to observe its dispatched Actions run. Only the authorized
+`promote-source` mutation scenario can call `auto_coder_operation_get`, bound to
+its already-persisted exact target and operation ID, and only after the producer
+reports `effect_state=sent_unknown`. It never resubmits the promotion or changes
+its key. Default observation and `inspect-original` exclusively use the
+non-dispatching reader. Original journal inspection runs before worker
+diagnostics, so a failed beta worker cannot hide an original release operation.
+
 Unknown, interrupted or conflicting sends remain `BLOCKED`; the original
 idempotency key is never reissued. A transport exception after a durable
 original send ticket cannot report `effect_dispatched=false`: the report
@@ -274,3 +368,10 @@ GitHub Actions evidence, staged unknown-effect/recovery regressions, and dot
 scheduler recurrence still require independent end-to-end verification. Never
 use this harness against production or existing beta/release services or treat
 its local unit tests as deployment, authorization or merge proof.
+
+The separate [negative acceptance procedure](dot-negative-acceptance.md) covers
+actual observe/policy refusals and original-ticket/held-drain/recovery evidence.
+Its real-journal checks can establish a refused admission without removing an
+unresolved effect or inventing an operation ID. Keep these negative results
+separate from the positive beta-to-release records and scheduler capability
+evidence; none substitutes for another.

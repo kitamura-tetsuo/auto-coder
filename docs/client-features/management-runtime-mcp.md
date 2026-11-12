@@ -115,6 +115,14 @@ dead child is never a healthy worker observation. Diagnostics always come from
 the worker's existing source-projected, redacted and bounded UDS routes; the
 manager does not read worker files or synthesize missing history.
 
+Source-worker lifecycle operation readback includes the durable journal's
+`effect_state` independently of the lifecycle `status` and operation `phase`.
+An advanced snapshot does not change `sent_unknown` into `confirmed`.
+Consumers require a succeeded phase, confirmed effect, and independent current
+installed-source and advancing-heartbeat evidence before accepting deployment.
+This adds no dispatch, execution trace, or dashboard event; it exposes an
+existing journal fact through the authenticated MCP projection only.
+
 Log pages have one complete private-response budget. The Supervisor reserves
 the compact authenticated-envelope bytes from the existing 256 KiB limit and
 asks the UDS producer to fit its source page into the remainder. Recent-tail
