@@ -57,9 +57,7 @@ def main() -> None:
             # before the fixture process exits unexpectedly.
             time.sleep(0.75)
             raise SystemExit("fixture intentional staged-worker activation failure")
-    activate_scoped_fixture_token(
-        Path("/fixture/secrets/github-test-scoped"), os.environ["AUTO_CODER_REPOSITORY"]
-    )
+    activate_scoped_fixture_token(Path("/fixture/secrets/github-test-scoped"), os.environ["AUTO_CODER_REPOSITORY"])
     command = [
         sys.executable,
         "-m",
