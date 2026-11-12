@@ -50,6 +50,36 @@ def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
+def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -> None:
+    """Prevent an unguarded outer-Docker positive test from replacing the gate."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/new-instance-private-engine.yml").read_text())
+    job = workflow["jobs"]["private-engine"]
+    assert job["runs-on"] == "ubuntu-latest"
+    step = _step(job, "Prove private Engine parent, excluded API starts, and retained first child")
+    assert step["env"]["AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE"] == "1"
+    assert step["env"]["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+    assert "docker:29-dind" in step["run"]
+    assert "tests/test_management_new_private_engine_docker.py" in step["run"]
+    assert "tests/test_management_new_private_engine_gate.py" in step["run"]
+    assert "test_management_new_instance_first_launch_docker.py" not in step["run"]
+    assert "chmod 0666" not in (ROOT / ".github/workflows/new-instance-private-engine.yml").read_text()
+    assert not (ROOT / "tests/test_management_new_instance_first_launch_docker.py").exists()
+    regression = (ROOT / "tests/test_management_new_private_engine_docker.py").read_text()
+    assert "def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused" in regression
+    for scenario in (
+        "changed-executable",
+        "changed-application",
+        "different-os-uid",
+        "pre-gate-live-sibling",
+        "preconnected-private-client",
+        "pre-seal-start-stop-selected",
+        "restart-policy-after-claim",
+        "sealed-gate-outside-client",
+        "wrong-pid1-command",
+    ):
+        assert f'"{scenario}"' in regression
+
+
 def test_supervisor_planners_bootstrap_without_historical_native_durations() -> None:
     workflow = _workflow()
     steps = {
@@ -304,13 +334,32 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert all(fresh_selectors.count(node) + fresh_selectors.count(node.split("::")[0]) == 1 for node in FRESH_REQUIRED)
 
     containers = _step(workflow["jobs"]["isolated-containers"], "Verify isolated Supervisor containers")
-    for path in ("test_supervisor_container_integration.py", "test_worker_network_integration.py", "test_management_beta_deploy_container.py", "test_beta_runtime_smoke_container.py"):
+    for path in (
+        "test_supervisor_container_integration.py",
+        "test_worker_network_integration.py",
+        "test_management_beta_deploy_container.py",
+        "test_beta_runtime_smoke_container.py",
+        "test_management_new_instance_docker_created.py",
+        "test_management_new_docker_network_policy.py",
+        "test_management_new_instance_docker_created.py",
+        "test_management_new_instance_profile.py",
+    ):
         assert any(path in value for value in profile_args("isolated-containers"))
     assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    assert workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_FRESH_TEST_BASE_IMAGE"] == workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
     required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
+    assert all(node.split("::", 1)[0] in profile_args("isolated-containers") for node in required)
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
+    assert {
+        "tests/test_management_new_instance_docker_created.py::test_unisolated_docker_source_can_never_consume_a_new_first_start",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[config-only]",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[stale-owner]",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[mismatched-owner]",
+        "tests/test_management_new_docker_network_policy.py::test_loopback_publication_refuses_legacy_or_unverifiable_docker_engine[27.5.1-False]",
+        "tests/test_management_new_docker_network_policy.py::test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled[True]",
+    } <= set(required)
     assert all(nodeid.startswith("tests/") for nodeid in required)
 
 

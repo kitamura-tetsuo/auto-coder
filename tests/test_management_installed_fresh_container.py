@@ -371,9 +371,9 @@ class InstalledChain(Chain):
         shutil.copytree(Path(__file__).resolve().parents[1] / "src" / "auto_coder", package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         bootstrap = package / "management" / "bootstrap_supervisor.py"
         original = bootstrap.read_text()
-        needle = "    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())"
+        needle = "    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization, new_initialization_request=args.request_file).run())"
         assert original.count(needle) == 1
-        bootstrap.write_text(original.replace(needle, _BOOTSTRAP_AUTHORITY + needle.replace("fresh_initialization=args.fresh_initialization)", "fresh_initialization=args.fresh_initialization, source_authority=authority)")))
+        bootstrap.write_text(original.replace(needle, _BOOTSTRAP_AUTHORITY + needle.replace("new_initialization_request=args.request_file)", "new_initialization_request=args.request_file, source_authority=authority)")))
         _bind_disposable_source_reader(package)
         self.installed_tag = "auto-coder-installed-fresh:" + uuid.uuid4().hex
         _build_fixture_image(context, self.image, self.installed_tag, owner_token_gap=False)

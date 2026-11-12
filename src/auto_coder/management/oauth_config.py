@@ -3,11 +3,15 @@
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import yaml
 
 from .action_scopes import KNOWN_SCOPES, READ_SCOPE, validate_scope_set
+
+if TYPE_CHECKING:
+    from .bootstrap_supervisor import BootstrapConfig
 
 SUPPORTED_SCOPE = READ_SCOPE
 
@@ -100,7 +104,7 @@ class ManagementSettings:
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
         is_http = urlsplit(self.oauth.canonical_issuer).scheme.lower() == "http"
-        if is_http and not (self.local_development and loopback):
+        if is_http and not (self.local_development and (loopback or _isolated_new_docker_http_binding(self))):
             raise ValueError("HTTP public origins require the loopback development profile")
         if not is_http and self.local_development:
             raise ValueError("the development profile requires a loopback HTTP origin")
@@ -128,6 +132,49 @@ class ManagementSettings:
                 raise ValueError("source release configuration must be complete with absolute operator-owned paths")
             if not isinstance(self.source_release_target_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.source_release_target_id) is None or type(self.source_release_workflow_id) is not int or self.source_release_workflow_id <= 0:
                 raise ValueError("source release target/workflow identity is invalid")
+
+
+def _isolated_new_docker_http_binding(settings: ManagementSettings, config: "BootstrapConfig | None" = None) -> bool:
+    """Permit a container-wide listener only behind a selected host-loopback port.
+
+    The host's independent Docker CREATED and running checks must still prove
+    the dedicated network, non-masquerading bridge and exact published port.
+    """
+    if settings.bind_host != "0.0.0.0" or settings.bootstrap_config_path is None or settings.config_path is None:
+        return False
+    if config is None:
+        from .bootstrap_supervisor import BootstrapConfig
+
+        config = BootstrapConfig.read(settings.bootstrap_config_path)
+    endpoint = urlsplit(config.listener_url)
+    issuer = urlsplit(settings.oauth.canonical_issuer)
+    return (
+        config.new_instance_initialization is True
+        and config.new_docker_network is not None
+        and config.new_docker_host_port is not None
+        and config.oauth_root == settings.state_root
+        and config.journal_root == settings.operation_state_root
+        and (config.management_config is None or config.management_config == settings.config_path)
+        and endpoint.scheme == "http"
+        and endpoint.hostname == "127.0.0.1"
+        and endpoint.port == settings.port
+        and endpoint.path == "/mcp"
+        and not endpoint.query
+        and not endpoint.fragment
+        and issuer.scheme == "http"
+        and issuer.hostname == "127.0.0.1"
+        and issuer.port == config.new_docker_host_port
+    )
+
+
+def management_listener_binding_matches(config: "BootstrapConfig", settings: ManagementSettings) -> bool:
+    """Compare a protected internal listener and its explicitly chosen bind."""
+    endpoint = urlsplit(config.listener_url)
+    if endpoint.hostname is None or endpoint.port != settings.port or endpoint.path != "/mcp" or endpoint.query or endpoint.fragment:
+        return False
+    if config.new_docker_network is None:
+        return endpoint.hostname == settings.bind_host
+    return _isolated_new_docker_http_binding(settings, config)
 
 
 def load_management_settings(path: Path) -> ManagementSettings:

@@ -69,6 +69,12 @@ CONTAINER_REQUIRED = (
     + (
         "tests/test_worker_network_integration.py::test_three_target_manager_restart_peer_isolation_and_lost_response",
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
+        "tests/test_management_new_instance_docker_created.py::test_unisolated_docker_source_can_never_consume_a_new_first_start",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[config-only]",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[stale-owner]",
+        "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[mismatched-owner]",
+        "tests/test_management_new_docker_network_policy.py::test_loopback_publication_refuses_legacy_or_unverifiable_docker_engine[27.5.1-False]",
+        "tests/test_management_new_docker_network_policy.py::test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled[True]",
         "tests/test_release_worker_acceptance_container.py::test_authenticated_release_joins_published_acceptance_and_independent_installed_workers",
         "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_recovers_original_prior_runtime_once",
         "tests/test_release_worker_acceptance_container.py::test_unready_live_release_candidate_recovers_by_docker_pid1_restart",
@@ -131,6 +137,9 @@ SELECTORS = {
         "tests/test_worker_network_integration.py",
         "tests/test_management_beta_deploy_container.py",
         "tests/test_beta_runtime_smoke_container.py",
+        "tests/test_management_new_instance_docker_created.py",
+        "tests/test_management_new_docker_network_policy.py",
+        "tests/test_management_new_instance_profile.py",
         "tests/test_release_worker_acceptance_container.py",
     ),
 }
