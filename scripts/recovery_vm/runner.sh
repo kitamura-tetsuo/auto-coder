@@ -42,11 +42,34 @@ if [[ "$result" != 0 ]]; then
     exit 1
 fi
 python3 - <<'PY'
+import hashlib
 import json
 from pathlib import Path
 
 result = json.loads(Path("/output/recovery-epoch-result.json").read_text())
 manifest = json.loads(Path("/input/manifest.json").read_text())
-if result.get("status") != "passed" or result.get("scenario") != manifest["scenario"]:
-    raise SystemExit("The native recovery result does not record complete acceptance")
+if result.get("scenario") != manifest["scenario"]:
+    raise SystemExit("The recovery result does not match the prepared scenario")
+control = manifest["mutation_control"]
+if control == "none":
+    if result.get("schema") != "auto-coder-native-recovery-epoch-result-v1" or result.get("status") != "passed":
+        raise SystemExit("The native recovery result does not record complete acceptance")
+elif control == "omit-post-consumption-verifier":
+    evidence = Path("/output/mutation-source.json").read_bytes()
+    if result.get("schema") != "auto-coder-native-recovery-mutation-control-result-v1" or result.get("status") != "mutation-detected" or result.get("control") != control or result.get("source_evidence_sha256") != hashlib.sha256(evidence).hexdigest():
+        raise SystemExit("The separate mutation-control result lacks its exact source evidence")
+    oracle = result.get("oracle")
+    if not isinstance(oracle, dict) or oracle.get("name") != "post-receipt-grant-forbidden" or oracle.get("detected") is not True:
+        raise SystemExit("The mutation control did not detect the specified native regression")
+    queued = oracle.get("queued_grant")
+    if not isinstance(queued, dict) or queued.get("schema") != "actual-recovery-queued-grant-v1" or not isinstance(queued.get("grant"), dict):
+        raise SystemExit("The mutation control did not independently observe a real queued grant")
+    frame = json.dumps(queued["grant"], sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    if queued.get("message_sha256") != hashlib.sha256(frame).hexdigest() or queued.get("bytes_observed") != len(frame) or queued.get("socket_flags_before") != queued.get("socket_flags_after"):
+        raise SystemExit("The mutation-control queued grant is incomplete or changed the socket")
+    for fact in ("peek_only", "socket_flags_unchanged", "bytes_still_queued", "receiver_stopped", "issuer_alive"):
+        if queued.get(fact) is not True:
+            raise SystemExit("The mutation-control observation omitted " + fact)
+else:
+    raise SystemExit("The prepared recovery control is unsupported")
 PY

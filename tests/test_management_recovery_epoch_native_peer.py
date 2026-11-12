@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 from scripts.recovery_epoch_native_peer import (
     LATE_MUTATION_SCENARIOS,
+    MUTATION_SCENARIOS,
+    POST_RECEIPT_MUTATION_SCENARIOS,
     REQUIRED_PEER_CASES,
     KernelPeerMessageBarrier,
     _container_ids,
@@ -28,10 +30,11 @@ from scripts.recovery_epoch_native_peer import (
     _Iovec,
     _local_socket_peer,
     _MessageHeader,
+    _peek_pending_frame,
     _peek_queued_packet,
     _stopped_receiver,
     _verify_target_loss,
-    mutate_after_intent,
+    mutate_after_publication,
 )
 
 from auto_coder.management.original_attempt_evidence import OriginalFile, OriginalGeneration, OriginalLineageEvidence
@@ -117,13 +120,15 @@ def test_actual_message_reader_refuses_a_return_larger_than_receiver_capacity(tm
 @pytest.mark.parametrize("scenario", ["", "late", "late-arbitrary-file", "late-../epoch", "after-intent-head"])
 def test_late_mutation_selector_refuses_unreviewed_actions_before_access(scenario: str) -> None:
     with pytest.raises(ValueError, match="reviewed late mutation"):
-        with mutate_after_intent(None, scenario, os.getpid()):
+        with mutate_after_publication(None, scenario, os.getpid()):
             pytest.fail("an unreviewed mutation was admitted")
 
 
 def test_native_case_sets_are_explicit_and_distinct() -> None:
     assert len(REQUIRED_PEER_CASES) == 4
     assert len(LATE_MUTATION_SCENARIOS) == 11 and len(set(LATE_MUTATION_SCENARIOS)) == 11
+    assert POST_RECEIPT_MUTATION_SCENARIOS == ("post-receipt-ready-mutation",)
+    assert len(MUTATION_SCENARIOS) == 12 and not set(LATE_MUTATION_SCENARIOS).intersection(POST_RECEIPT_MUTATION_SCENARIOS)
     assert not REQUIRED_PEER_CASES.intersection(LATE_MUTATION_SCENARIOS)
 
 
@@ -413,3 +418,23 @@ def test_actual_socket_peer_reader_does_not_accept_datagram_transport() -> None:
         held.enter_context(sender)
         held.enter_context(receiver)
         assert _local_socket_peer(receiver.fileno()) is None
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_empty_or_queued_post_receipt_observation_never_consumes_or_changes_flags(blocking: bool) -> None:
+    import fcntl
+
+    with ExitStack() as held:
+        sender, receiver = socket.socketpair()
+        held.enter_context(sender)
+        held.enter_context(receiver)
+        receiver.setblocking(blocking)
+        flags = fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL)
+        assert _peek_pending_frame(receiver.fileno()) == b""
+        sender.sendall(b"actual native grant bytes\n")
+        assert _peek_pending_frame(receiver.fileno()) == b"actual native grant bytes\n"
+        assert fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL) == flags
+        assert receiver.recv(1024, socket.MSG_DONTWAIT) == b"actual native grant bytes\n"
+        sender.close()
+        assert _peek_pending_frame(receiver.fileno()) == b""
+        assert fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL) == flags

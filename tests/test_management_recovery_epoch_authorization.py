@@ -13,7 +13,7 @@ import pytest
 
 from auto_coder.management.original_attempts import HistoryBinding, canonical
 from auto_coder.management.recovery_containment_model import RecoveryFile
-from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_SCHEMA, EpochAuthorization, _load_authorization, load_authorization, read_bound_file
+from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_SCHEMA, EpochAuthorization, _load_authorization, load_authorization, read_bound_file, validate_uv_version
 from auto_coder.management.recovery_epoch_state import EpochBinding, EpochInventory, EpochUnavailable, _hold_recovery_epoch, issuer_lifetime
 
 pytestmark = pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
@@ -120,6 +120,59 @@ def test_complete_authorization_is_bound_to_fixed_inventory(tmp_path):
     assert result.authorization == authorization
     assert result.original == _selected(path)
     assert tuple(inspect.signature(load_authorization).parameters) == ("inventory",)
+
+
+@pytest.mark.parametrize("version", ["0.7.22", "0.13.6 (329bf94 2026-10-26)", "0.13.6 (x86_64-unknown-linux-gnu)", "0.13.6 (x)", "0.13.6 (" + "x" * 119 + ")"])
+def test_authorization_preserves_the_complete_installer_pin(tmp_path, version):
+    _, path, authorization, inventory = _fixture(tmp_path)
+    selected = replace(authorization, uv_version=version)
+    encoded = canonical(asdict(selected))
+    path.write_bytes(encoded)
+    observed = _load_authorization(path, replace(inventory, authorization_sha256=hashlib.sha256(encoded).hexdigest()))
+    assert validate_uv_version(version) == version
+    assert observed.authorization == selected
+    assert observed.authorization.uv_version == version
+    assert observed.original.sha256 != inventory.authorization_sha256 or version == authorization.uv_version
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        True,
+        13,
+        "",
+        "0.13",
+        "uv 0.13.6",
+        "0.13.6\n",
+        "0.13.6\r",
+        "0.13.6 ",
+        "0.13.6 (x) extra",
+        "0.13.6 (x) (y)",
+        "0.13.6 ()",
+        "0.13.6 ( )",
+        "0.13.6 ( x)",
+        "0.13.6 (x )",
+        "0.13.6 (x\ny)",
+        "0.13.6 (x\ty)",
+        "0.13.6 (nested(x))",
+        "0.13.6 ($HOME)",
+        "0.13.6 (`id`)",
+        "0.13.6 (x;y)",
+        "0.13.6 (x/y)",
+        "0.13.6 (é)",
+        "０.１３.６",
+        "0.13.6 (" + "x" * 120 + ")",
+    ],
+)
+def test_authorization_rejects_ambiguous_or_unbounded_installer_pin(tmp_path, version):
+    _, _, authorization, _ = _fixture(tmp_path)
+    raw = asdict(authorization)
+    raw["uv_version"] = version
+    with pytest.raises(EpochUnavailable, match="exact configured installer version"):
+        EpochAuthorization.parse(raw)
+    with pytest.raises(EpochUnavailable, match="exact configured installer version"):
+        validate_uv_version(version)
 
 
 @pytest.mark.parametrize("field,value", [("authorization_id", "other-review"), ("request_id", "other-request"), ("preparation_id", "other-preparation"), ("target_id", "f" * 64), ("deployment_id", "other-deployment"), ("enrollment_ids", ("another-scope",)), ("authorization_sha256", "f" * 64)])

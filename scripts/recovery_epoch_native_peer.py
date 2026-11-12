@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import array
 import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -56,6 +57,8 @@ LATE_MUTATION_SCENARIOS = (
     "late-controller-fence",
     "late-target-loss",
 )
+POST_RECEIPT_MUTATION_SCENARIOS = ("post-receipt-ready-mutation",)
+MUTATION_SCENARIOS = (*LATE_MUTATION_SCENARIOS, *POST_RECEIPT_MUTATION_SCENARIOS)
 _SYS_SENDTO = 44
 _SYS_SENDMSG = 46
 _SYS_RECVMSG = 47
@@ -371,7 +374,7 @@ def _mutation_file(context: NativeNegativeContext, scenario: str) -> Path:
     authorization = EpochAuthorization.parse(json.loads(AUTHORIZATION_FILE.read_bytes()))
     if authorization.target_id != target.management_id:
         raise AssertionError("the actual fixed authorization selects a different target")
-    if scenario == "late-ready-receipt":
+    if scenario in {"late-ready-receipt", "post-receipt-ready-mutation"}:
         return Path(authorization.ready_receipt.path)
     if scenario == "late-installed-source":
         receipt = json.loads(Path(authorization.ready_receipt.path).read_bytes())
@@ -380,12 +383,13 @@ def _mutation_file(context: NativeNegativeContext, scenario: str) -> Path:
 
 
 @contextmanager
-def mutate_after_intent(context: NativeNegativeContext, scenario: str, issuer_pid: int) -> Iterator[dict[str, object]]:
+def mutate_after_publication(context: NativeNegativeContext, scenario: str, issuer_pid: int) -> Iterator[dict[str, object]]:
     """Retain the deliberate fault through refusal and replay; never repair it."""
-    if scenario not in LATE_MUTATION_SCENARIOS:
+    if scenario not in MUTATION_SCENARIOS:
         raise ValueError("a reviewed late mutation scenario is required")
-    _require_publication_prefix(context, issuer_pid, "intent")
-    observation: dict[str, object] = {"scenario": scenario, "issuer_pid": issuer_pid, "issuer_start_token": _token(issuer_pid), "boundary": "after-intent-head", "preservation_baseline": "after-deliberate-fixture-mutation"}
+    phase = "receipt" if scenario in POST_RECEIPT_MUTATION_SCENARIOS else "intent"
+    _require_publication_prefix(context, issuer_pid, phase)
+    observation: dict[str, object] = {"scenario": scenario, "issuer_pid": issuer_pid, "issuer_start_token": _token(issuer_pid), "boundary": "after-" + phase + "-head", "preservation_baseline": "after-deliberate-fixture-mutation"}
     with ExitStack() as held:
         if scenario == "late-target-loss":
             observation["target_fault"] = held.enter_context(_remove_target(context))
@@ -433,7 +437,7 @@ def mutate_after_intent(context: NativeNegativeContext, scenario: str, issuer_pi
             if before == after or before[:2] != after[:2]:
                 raise AssertionError("the selected native original bytes did not change in place")
             observation["file_fault"] = {"path": str(path), "before": before, "after": after}
-        logger.bind(native_peer_fault=scenario, issuer_pid=issuer_pid).info("Injected the explicit native fault after the original intent head")
+        logger.bind(native_peer_fault=scenario, issuer_pid=issuer_pid).info("Injected the explicit native fault after the original {} head", phase)
         yield observation
         if "file_fault" in observation and _projection(path) != after:
             raise AssertionError("production refusal or replay changed the deliberately injected file")
@@ -497,6 +501,46 @@ def _peek_queued_packet(descriptor: int, expected: bytes) -> tuple[bytes, int, i
     return encoded, before, after
 
 
+def _peek_pending_frame(descriptor: int) -> bytes:
+    """Observe even an empty real stream queue without changing its shared OFD."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.recv.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+    libc.recv.restype = ctypes.c_ssize_t
+    before = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    buffer = ctypes.create_string_buffer(MAX_MESSAGE_BYTES + 1)
+    result = libc.recv(descriptor, buffer, len(buffer), socket.MSG_PEEK | socket.MSG_DONTWAIT)
+    error = ctypes.get_errno()
+    if fcntl.fcntl(descriptor, fcntl.F_GETFL) != before:
+        raise AssertionError("pending grant observation changed the receiver's shared status flags")
+    if result < 0:
+        if error in {errno.EAGAIN, errno.EWOULDBLOCK}:
+            return b""
+        raise OSError(error, os.strerror(error))
+    if result > MAX_MESSAGE_BYTES:
+        raise AssertionError("the actual pending receiver frame exceeds the protocol bound")
+    return buffer.raw[:result]
+
+
+def _issuer_socket(target: DockerTraceProcess, issuer_pid: int, issuer_uid: int, held: ExitStack) -> tuple[int, int, int, int, dict[str, int]]:
+    before = _descriptor_snapshot(target.pid)
+    if len(before) > 4096:
+        raise AssertionError("the actual receiver descriptor inventory exceeds the fixture bound")
+    matches = []
+    for descriptor, device, inode, _ in before:
+        if not stat.S_ISSOCK(Path(f"/proc/{target.pid}/fd/{descriptor}").stat().st_mode):
+            continue
+        duplicate = _duplicate(target.pid, descriptor, device, inode)
+        held.callback(os.close, duplicate)
+        credentials = _local_socket_peer(duplicate)
+        if credentials is not None and credentials["pid"] == issuer_pid:
+            if credentials["uid"] != issuer_uid:
+                raise AssertionError("the actual queued-grant sender has the wrong Unix owner")
+            matches.append((descriptor, device, inode, duplicate, credentials))
+    if len(matches) != 1:
+        raise AssertionError("the stopped receiver does not retain one exact authenticated issuer socket")
+    return matches[0]
+
+
 def _expected_queued_grant(context: NativeNegativeContext, issuer_pid: int, issuer_start_token: str, target_pid: int, target_start_token: str) -> dict[str, object]:
     """Bind the expected packet to fixed consumer inputs and original durable custody."""
     configuration = _consumer_configuration(context)
@@ -557,24 +601,9 @@ def observe_queued_grant(context: NativeNegativeContext, issuer_pid: int, *, tar
         check_lifetimes()
         before = _descriptor_snapshot(target.pid)
         _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
-        if len(before) > 4096:
-            raise AssertionError("the actual receiver descriptor inventory exceeds the fixture bound")
         expected = _expected_queued_grant(context, issuer_pid, issuer_start_token, target.pid, target.start_token)
         configuration = _consumer_configuration(context)
-        matches = []
-        for descriptor, device, inode, _ in before:
-            if not stat.S_ISSOCK(Path(f"/proc/{target.pid}/fd/{descriptor}").stat().st_mode):
-                continue
-            duplicate = _duplicate(target.pid, descriptor, device, inode)
-            held.callback(os.close, duplicate)
-            credentials = _local_socket_peer(duplicate)
-            if credentials is not None and credentials["pid"] == issuer_pid:
-                if credentials["uid"] != configuration.issuer_uid:
-                    raise AssertionError("the actual queued-grant sender has the wrong Unix owner")
-                matches.append((descriptor, device, inode, duplicate, credentials))
-        if len(matches) != 1:
-            raise AssertionError("the stopped receiver does not retain one exact authenticated issuer socket")
-        descriptor, device, inode, duplicate, credentials = matches[0]
+        descriptor, device, inode, duplicate, credentials = _issuer_socket(target, issuer_pid, configuration.issuer_uid, held)
         encoded, flags_before, flags_after = _peek_queued_packet(duplicate, canonical(expected) + b"\n")
         check_lifetimes()
         _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
@@ -606,6 +635,83 @@ def observe_queued_grant(context: NativeNegativeContext, issuer_pid: int, *, tar
             "receiver_stopped": True,
             "issuer_alive": True,
         }
+
+
+@contextmanager
+def observe_post_receipt_dispatch(context: NativeNegativeContext, issuer: subprocess.Popen, release: Callable[[], None]) -> Iterator[dict[str, object]]:
+    """Measure refusal or a real queued grant while the same receiver is stopped."""
+    _require_publication_prefix(context, issuer.pid, "receipt")
+    with ExitStack() as held:
+        target = DockerTraceProcess(context)
+        held.callback(target.close)
+        issuer_start = _token(issuer.pid)
+        issuer_pidfd = os.pidfd_open(issuer.pid, 0)
+        held.callback(os.close, issuer_pidfd)
+        target.pause()
+        before = _descriptor_snapshot(target.pid)
+        _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
+        configuration = _consumer_configuration(context)
+        descriptor, device, inode, duplicate, credentials = _issuer_socket(target, issuer.pid, configuration.issuer_uid, held)
+        flags = fcntl.fcntl(duplicate, fcntl.F_GETFL)
+        if _peek_pending_frame(duplicate):
+            raise AssertionError("the receiver already had a grant before the post-receipt issuer resumed")
+        observation: dict[str, object] = {
+            "schema": "actual-recovery-post-receipt-dispatch-v1",
+            "issuer_pid": issuer.pid,
+            "issuer_start_token": issuer_start,
+            "target_pid": target.pid,
+            "target_start_token": target.start_token,
+            "socket_descriptor": descriptor,
+            "socket_device": device,
+            "socket_inode": inode,
+            "peer_credentials": credentials,
+            "receiver_stopped": True,
+            "queue_empty_before_resume": True,
+            "queue_bytes_observed": 0,
+            "queued_grant": None,
+            "issuer_returncode": None,
+            "issuer_death_before_receiver_resumed": False,
+        }
+        try:
+            release()
+            poll = select.poll()
+            poll.register(issuer_pidfd, select.POLLIN)
+            poll.register(duplicate, select.POLLIN | select.POLLHUP)
+            deadline = time.monotonic() + 1800
+            while True:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("the original issuer neither refused nor queued a complete post-receipt grant")
+                poll.poll(1000)
+                target.check()
+                _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
+                queued = _peek_pending_frame(duplicate)
+                returncode = issuer.poll()
+                if queued:
+                    observation["queued_grant"] = observe_queued_grant(context, issuer.pid, target_pid=target.pid, target_start_token=target.start_token, issuer_start_token=issuer_start)
+                    observation["queue_bytes_observed"] = len(queued)
+                    break
+                if returncode is not None:
+                    if _peek_pending_frame(duplicate):
+                        raise AssertionError("the original issuer left a grant before its observed exit")
+                    observation["issuer_returncode"] = returncode
+                    break
+            if fcntl.fcntl(duplicate, fcntl.F_GETFL) != flags or _local_socket_peer(duplicate) != credentials:
+                raise AssertionError("the exact receiver socket changed during the post-receipt observation")
+            observation["socket_flags_unchanged"] = True
+            _assert_no_target_admission(context, running_pid=target.pid)
+            yield observation
+        finally:
+            # A detected mutant's live issuer is terminated only after the
+            # actual unsafe dispatch evidence has been captured. No retry or
+            # original epoch repair is performed.
+            if issuer.poll() is None:
+                signal.pidfd_send_signal(issuer_pidfd, signal.SIGKILL)
+                issuer.wait(timeout=30)
+            dead = select.poll()
+            dead.register(issuer_pidfd, select.POLLIN)
+            if not dead.poll(0):
+                raise AssertionError("the original issuer remains alive before receiver resumption")
+            observation["issuer_death_before_receiver_resumed"] = True
 
 
 @contextmanager

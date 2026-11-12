@@ -348,8 +348,10 @@ def test_unknown_native_scenario_is_not_a_success_alias() -> None:
 
 def test_canonical_acceptance_contains_all_distinct_publication_and_late_faults() -> None:
     assert len(set(fixture.ACCEPTANCE_SCENARIOS)) == len(fixture.ACCEPTANCE_SCENARIOS)
-    assert set(fixture.ACCEPTANCE_SCENARIOS) == {"grant", "lost-reply", "retarget-after-reservation", *fixture.BOUNDARY_SCENARIOS, *fixture.LATE_MUTATION_SCENARIOS}
+    assert set(fixture.ACCEPTANCE_SCENARIOS) == {"grant", "lost-reply", "retarget-after-reservation", *fixture.BOUNDARY_SCENARIOS, *fixture.LATE_MUTATION_SCENARIOS, *fixture.POST_RECEIPT_MUTATION_SCENARIOS}
     assert set(fixture.SCENARIOS) - set(fixture.ACCEPTANCE_SCENARIOS) == {"kill-after-intent", "kill-after-consume"}
+    assert fixture._selected_boundary("post-receipt-ready-mutation") == ("receipt-head.json", "after")
+    assert all(fixture._selected_boundary(name) == ("intent-head.json", "after") for name in fixture.LATE_MUTATION_SCENARIOS)
     assert fixture._selected_boundary("kill-after-intent") == fixture._selected_boundary("after-intent-head") == ("intent-head.json", "after")
     assert fixture._selected_boundary("kill-after-consume") == fixture._selected_boundary("after-consumed-head") == ("consumed-head.json", "after")
     assert fixture._selected_boundary("lost-reply") == ("receipt-head.json", "after")
@@ -462,6 +464,77 @@ def test_late_mutation_result_names_its_deliberate_preservation_boundary(scenari
         fixture.validate_result(result)
     result["preservation_baseline"] = "after-deliberate-fixture-mutation"
     result["durable"]["originals_after_injection_sha256"] = "d" * 64
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+def _post_receipt_result() -> dict[str, object]:
+    result = _result()
+    scenario = "post-receipt-ready-mutation"
+    result.update(
+        scenario=scenario,
+        cases=sorted(fixture.required_cases(scenario)),
+        preservation_baseline="after-deliberate-fixture-mutation",
+        preserved_originals_sha256="c" * 64,
+        durable={
+            "phase": "receipt",
+            "consumer_grant_acknowledged": False,
+            "grant_send_completed": False,
+            "mutation": {"scenario": scenario, "boundary": "after-receipt-head", "preservation_baseline": "after-deliberate-fixture-mutation", "issuer_pid": 123, "issuer_start_token": "456", "file_fault": {"before": [1, 2, "a" * 64], "after": [1, 2, "b" * 64]}},
+            "originals_after_injection_sha256": "c" * 64,
+            "dispatch": {
+                "schema": "actual-recovery-post-receipt-dispatch-v1",
+                "issuer_pid": 123,
+                "issuer_start_token": "456",
+                "receiver_stopped": True,
+                "queue_empty_before_resume": True,
+                "socket_flags_unchanged": True,
+                "queue_bytes_observed": 0,
+                "queued_grant": None,
+                "issuer_returncode": 2,
+                "issuer_death_before_receiver_resumed": True,
+            },
+            "replay_returncode": 2,
+            "retained_publications": list(fixture.PUBLICATIONS),
+            "epoch_sha256_before_resume": "d" * 64,
+            "epoch_sha256_after_refusal": "d" * 64,
+            "epoch_sha256_after_replay": "d" * 64,
+            "publication_boundary": {"name": "receipt-head.json", "when": "after", "file_fsync_observed": True, "directory_fsync_observed": True},
+        },
+    )
+    return result
+
+
+def test_post_receipt_mutation_result_requires_current_refusal_and_consumed_history() -> None:
+    fixture.validate_result(_post_receipt_result())
+
+
+@pytest.mark.parametrize("mutation", ["intent-boundary", "no-fsync", "lost-receipt", "repaired-epoch", "replayed-epoch", "replay-accepted", "issuer-killed", "queued-data", "receiver-running", "unchanged-ready", "foreign-issuer"])
+def test_post_receipt_result_cannot_substitute_kill_only_or_earlier_boundary(mutation: str) -> None:
+    result = _post_receipt_result()
+    durable = result["durable"]
+    if mutation == "intent-boundary":
+        durable["publication_boundary"]["name"] = "intent-head.json"
+    elif mutation == "no-fsync":
+        durable["publication_boundary"]["directory_fsync_observed"] = False
+    elif mutation == "lost-receipt":
+        durable["retained_publications"].pop()
+    elif mutation == "repaired-epoch":
+        durable["epoch_sha256_after_refusal"] = "e" * 64
+    elif mutation == "replayed-epoch":
+        durable["epoch_sha256_after_replay"] = "e" * 64
+    elif mutation == "replay-accepted":
+        durable["replay_returncode"] = 0
+    elif mutation == "issuer-killed":
+        durable["dispatch"]["issuer_returncode"] = -9
+    elif mutation == "queued-data":
+        durable["dispatch"]["queue_bytes_observed"] = 1
+    elif mutation == "receiver-running":
+        durable["dispatch"]["receiver_stopped"] = False
+    elif mutation == "unchanged-ready":
+        durable["mutation"]["file_fault"]["after"] = durable["mutation"]["file_fault"]["before"]
+    else:
+        durable["dispatch"]["issuer_start_token"] = "999"
     with pytest.raises(AssertionError):
         fixture.validate_result(result)
 

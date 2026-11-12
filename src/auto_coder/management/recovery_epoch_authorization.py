@@ -32,6 +32,14 @@ PEER_SOCKET = PEER_ROOT / "issuer.sock"
 AUTHORIZATION_SCHEMA = "management-recovery-authorization-v1"
 _SHA = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z", re.ASCII)
+_UV_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?: \([A-Za-z0-9_.-](?:[A-Za-z0-9_. -]{0,126}[A-Za-z0-9_.-])?\))?\Z", re.ASCII)
+
+
+def validate_uv_version(value: object) -> str:
+    """Retain the exact installer pin, including its bounded build descriptor."""
+    if not isinstance(value, str) or len(value) > 128 or not _UV_VERSION.fullmatch(value):
+        raise EpochUnavailable("exact configured installer version required")
+    return value
 
 
 @dataclass(frozen=True)
@@ -79,8 +87,7 @@ class EpochAuthorization:
             raise EpochUnavailable("history names another recovery deployment")
         for path in (result.history.root, result.source_repository, result.source_token_file, result.python_executable, result.uv_executable):
             _path(path)
-        if not isinstance(result.uv_version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", result.uv_version):
-            raise EpochUnavailable("exact configured installer version required")
+        validate_uv_version(result.uv_version)
         for field in ("socket_directory_device", "socket_directory_inode"):
             if type(getattr(result, field)) is not int or getattr(result, field) <= 0:
                 raise EpochUnavailable("fixed recovery peer directory identity required")

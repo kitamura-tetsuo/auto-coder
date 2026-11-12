@@ -122,6 +122,14 @@ runtime arguments/environment/source identities must agree with
 `runtime_for_receipt`. The READY preparation directory must equal the approved
 preparation ID. Unsupported executable environment hooks refuse.
 
+The installer pin retains the complete `uv --version` text after its `uv `
+prefix, including any build descriptor. Its grammar is a numeric three-part
+version with one optional parenthesized ASCII build descriptor, bounded to 128
+characters in total. The stager still requires exact equality with the selected
+installer's actual output; a matching numeric version alone cannot authorize a
+different build. The native fixture verifies its separately selected numeric
+version before passing that complete observed pin into authorization and READY.
+
 Both the complete interpreter distribution and READY environment must be inside
 the exact same-path read-only version-root mount. In particular, a host-only venv
 interpreter symlink cannot satisfy target verification. The authorization's
@@ -215,7 +223,7 @@ reproduction procedure are documented in `scripts/recovery_vm/README.md`.
 | AS-B02 | Install the ordinary service/timer/watcher/alternate-root fixture routes, bind them in approved enrollment and verify their actual inhibition. Exercise unknown/omitted/startable controllers, retained namespace listeners, an escaped nonleader task and independently measured exit. Repeat the real containment verifier in a separate process and preserve unrelated worker claims and effect counters. |
 | AS-B03 | Use the real host and Docker bootstrap processes, kernel peer credentials/pidfds and independent SH/target EX acquisition. Refuse busy/replaced/missing fences, a foreign acquiring process, queued rights without acknowledgment, received rights before acknowledgment, and a changed target lifetime. Later successful issuance must retain the complete observed custody. |
 | AS-B04 | Reject actual CLI/environment root and inventory overrides. Stop the real issuer at its fsynced reservation head while a contender runs, then test conflicting target/preparation binding. In separate fresh VMs, SIGKILL the original process before and after every record/head publication and inspect the exact retained prefix and refused replay. |
-| AS-B05 | After the original intent head, change exact configuration, READY, installed source, original evidence, watcher/controller state, fence acquisition or target lifetime. Require refusal before consumption. Separately stop the receiver, require the real grant send to succeed, prove issuer death through its pidfd, then resume the receiver and require unavailable current custody with no replay. |
+| AS-B05 | After the original intent head, change exact configuration, READY, installed source, original evidence, watcher/controller state, fence acquisition or target lifetime. Require refusal before consumption. In a distinct fresh VM, change exact READY after the fsynced receipt head and resume the same issuer; require actual refusal and an empty authenticated receiver queue while the receiver is stopped. Preserve consumed records, the injected mutation and workers, and refuse replay. Separately require a real queued grant before issuer death, then resume the receiver and require unavailable current custody with no replay. |
 
 Publication and protocol fault helpers only observe real syscall entry/exit and
 kernel descriptors. They do not replace system-call results, inject verifier
@@ -227,3 +235,24 @@ worker ownership and effect requests, and the absence of any replacement child
 or application admission. The current PR's custody endpoint and a separately
 qualified installed READY are exercised independently; these checks do not claim
 that the separate #2825 management-child launch/readiness contract is complete.
+
+The separate `omit-post-consumption-verifier` mutation-control job proves that
+the post-receipt scenario detects omission of the second final verification.
+Before creating any original fixture, it copies the project into a fresh private
+directory and removes exactly that one standalone call. An AST comparison
+retains the first verifier and every other source expression; the original and
+copied file digests are retained. The copied project is installed and supplies
+every actual host process and fixture image, so source, history and enrollment
+identities continue to agree without replacing an authority provider.
+
+The control runs the same post-receipt READY mutation and the same no-grant
+assertion. Its distinct `mutation-detected` result requires the named
+`post-receipt-grant-forbidden` failure and a complete canonical grant observed
+with `pidfd_getfd` and nonconsuming `MSG_PEEK` on the stopped receiver's exact
+authenticated socket. A timeout, process kill, unrelated exception, unavailable
+kernel operation or log message cannot satisfy that result. Only after recording
+that incorrect dispatch does cleanup end the mutant issuer; the receiver must
+still reject current custody with no child/admission, and the consumed epoch,
+deliberate READY mutation and unrelated workers must survive refused replay.
+This control does not count as production acceptance, and it never changes the
+original source checkout or resets an epoch for another attempt.

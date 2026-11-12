@@ -30,8 +30,9 @@ from typing import Callable
 
 from scripts.recovery_epoch_containment_fixture import CapturedGeneration, capture_generation, enroll_recovery_scope, selected_file, start_watcher, target_from_container
 from scripts.recovery_epoch_fault_tracer import BOUNDARY_SCENARIOS, PUBLICATIONS, KernelPublicationBarrier, PublicationObservation, parse_boundary
+from scripts.recovery_epoch_mutation_control import CONTROL, CONTROL_SCHEMA, ORACLE, PostReceiptGrantDispatched, assert_post_receipt_refusal, validate_control_result, verify_source_evidence
 from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
-from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_intent, observe_queued_grant, pause_target_before_grant, run_native_peer_cases
+from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, POST_RECEIPT_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_publication, observe_post_receipt_dispatch, observe_queued_grant, pause_target_before_grant, run_native_peer_cases
 from scripts.test_management_containment_closed_host import InhibitedStockRoutes, WatcherFixture, require_disposable_host
 from scripts.test_management_containment_enrollment_host import DisposableSystemdRoutes, _private_directory, _write_private
 
@@ -44,7 +45,7 @@ from auto_coder.management.operations import ActionParameter, ManagedTarget, Ope
 from auto_coder.management.original_attempt_evidence import derive_lineage, observe, verify_lineage
 from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, canonical, source_identity
 from auto_coder.management.recovery_containment_model import RecoveryWatcher
-from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, AUTHORIZATION_ROOT, AUTHORIZATION_SCHEMA, PEER_ROOT, PEER_SOCKET, EpochAuthorization
+from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, AUTHORIZATION_ROOT, AUTHORIZATION_SCHEMA, PEER_ROOT, PEER_SOCKET, EpochAuthorization, validate_uv_version
 from auto_coder.management.recovery_epoch_consumer import GRANT_SCHEMA, ConsumerConfiguration, OriginalFence, TargetOwner, TransferredResource
 from auto_coder.management.recovery_epoch_state import EPOCH_ROOT, EpochInventory
 from auto_coder.management.self_update_handoff import runtime_for_receipt
@@ -59,7 +60,7 @@ ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "change
 LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused", "cross-deployment-original-lineage-refused"})
 FACTORY_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES if case.startswith("factory-"))
 TASK_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES if "nonleader" in case)
-ACCEPTANCE_SCENARIOS = ("grant", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS)
+ACCEPTANCE_SCENARIOS = ("grant", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS, *POST_RECEIPT_MUTATION_SCENARIOS)
 SCENARIOS = (*ACCEPTANCE_SCENARIOS, "kill-after-intent", "kill-after-consume")
 REQUIRED_CASES = frozenset(
     {
@@ -582,12 +583,24 @@ def validate_result(value: dict[str, object]) -> None:
     elif scenario == "retarget-after-reservation":
         assert value["durable"]["phase"] == "reserved" and value["durable"]["consumer_grant_acknowledged"] is False
         assert value["durable"]["inventory_sha256"] != value["durable"]["retargeted_inventory_sha256"]
-    elif scenario in LATE_MUTATION_SCENARIOS:
-        assert value["durable"]["phase"] == "intent" and value["durable"]["consumer_grant_acknowledged"] is False and value["durable"]["grant_send_completed"] is False
-        assert value["durable"]["mutation"]["scenario"] == scenario and value["durable"]["mutation"]["boundary"] == "after-intent-head"
+    elif scenario in (*LATE_MUTATION_SCENARIOS, *POST_RECEIPT_MUTATION_SCENARIOS):
+        phase = "receipt" if scenario in POST_RECEIPT_MUTATION_SCENARIOS else "intent"
+        assert value["durable"]["phase"] == phase and value["durable"]["consumer_grant_acknowledged"] is False and value["durable"]["grant_send_completed"] is False
+        assert value["durable"]["mutation"]["scenario"] == scenario and value["durable"]["mutation"]["boundary"] == "after-" + phase + "-head"
         assert value.get("preservation_baseline") == "after-deliberate-fixture-mutation"
         assert value["durable"]["mutation"]["preservation_baseline"] == value["preservation_baseline"]
         assert value["preserved_originals_sha256"] == value["durable"]["originals_after_injection_sha256"]
+        if scenario in POST_RECEIPT_MUTATION_SCENARIOS:
+            durable = value["durable"]
+            assert_post_receipt_refusal(durable["dispatch"])
+            assert durable["dispatch"]["issuer_death_before_receiver_resumed"] is True and durable["replay_returncode"] == 2
+            assert durable["retained_publications"] == list(PUBLICATIONS)
+            assert durable["epoch_sha256_before_resume"] == durable["epoch_sha256_after_refusal"] == durable["epoch_sha256_after_replay"]
+            boundary = durable["publication_boundary"]
+            assert (boundary["name"], boundary["when"], boundary["file_fsync_observed"], boundary["directory_fsync_observed"]) == ("receipt-head.json", "after", True, True)
+            assert all(durable["mutation"][name] == durable["dispatch"][name] for name in ("issuer_pid", "issuer_start_token"))
+            changed = durable["mutation"]["file_fault"]
+            assert tuple(changed["before"][:2]) == tuple(changed["after"][:2]) and changed["before"][-1] != changed["after"][-1]
         if scenario == "late-target-loss":
             target_fault = value["durable"]["mutation"]["target_fault"]
             assert target_fault["pidfd_death_observed"] is True and target_fault["exact_docker_id_absent"] is True and target_fault["docker_rm_returncode"] == 0
@@ -625,6 +638,8 @@ def _selected_boundary(scenario: str) -> tuple[str, str]:
         return parse_boundary(scenario)
     if scenario in LATE_MUTATION_SCENARIOS or scenario == "kill-after-intent":
         return "intent-head.json", "after"
+    if scenario in POST_RECEIPT_MUTATION_SCENARIOS:
+        return "receipt-head.json", "after"
     if scenario == "kill-after-consume":
         return "consumed-head.json", "after"
     if scenario == "lost-reply":
@@ -804,7 +819,7 @@ def _late_mutation(
 ) -> tuple[dict[str, object], str]:
     """Require an actual late refusal while retaining the injected uncertainty."""
     original = _snapshot(retained_roots)
-    with mutate_after_intent(context, scenario, issuer.pid) as observation:
+    with mutate_after_publication(context, scenario, issuer.pid) as observation:
         injected = _snapshot(retained_roots)
         epoch = _snapshot((EPOCH_ROOT,))
         check_workers()
@@ -838,10 +853,79 @@ def _late_mutation(
     return result, injected
 
 
-def run_fixture(*, authorization_id: str, source_repository: Path, source_token_file: Path, source_sha: str, uv: Path, uv_version: str, output: Path, scenario: str = "grant") -> dict[str, object]:
+def _post_receipt_mutation(
+    context: NativeNegativeContext,
+    scenario: str,
+    barrier: KernelPublicationBarrier,
+    observed: PublicationObservation,
+    issuer: subprocess.Popen,
+    issuer_log: Path,
+    consumer_log: Path,
+    target: PreparedTarget,
+    retained_roots: tuple[Path, ...],
+    check_workers: Callable[[], None],
+    *,
+    mutation_control: bool,
+) -> tuple[dict[str, object], str]:
+    """Require the same issuer to reject stale READY after its durable receipt."""
+    assert (observed.name, observed.when, observed.file_fsync_observed, observed.directory_fsync_observed) == ("receipt-head.json", "after", True, True)
+    original = _snapshot(retained_roots)
+    detected = False
+    with mutate_after_publication(context, scenario, issuer.pid) as mutation:
+        injected = _snapshot(retained_roots)
+        epoch = _snapshot((EPOCH_ROOT,))
+        assert set(os.listdir(EPOCH_ROOT)) == {"inventory.json", "epoch.lock", *PUBLICATIONS}
+        check_workers()
+        with observe_post_receipt_dispatch(context, issuer, barrier.release) as dispatch:
+            try:
+                assert_post_receipt_refusal(dispatch)
+            except PostReceiptGrantDispatched:
+                if not mutation_control:
+                    raise
+                detected = True
+            if mutation_control and not detected:
+                raise AssertionError("the focused second-verifier mutation did not fail the actual no-grant oracle")
+        _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "post-receipt refusal ends the original stopped receiver", timeout=120)
+        assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
+        _no_target_child(target.generation, running=False)
+        assert "Recovery custody acknowledged" not in consumer_log.read_text()
+        if not detected:
+            assert "One consumed recovery epoch grant send completed" not in issuer_log.read_text()
+        after_refusal = _snapshot((EPOCH_ROOT,))
+        assert after_refusal == epoch and _snapshot(retained_roots) == injected
+        check_workers()
+        replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
+        after_replay = _snapshot((EPOCH_ROOT,))
+        assert replay.returncode == 2 and after_replay == epoch and _snapshot(retained_roots) == injected
+        check_workers()
+        result = {
+            "phase": "receipt",
+            "consumer_grant_acknowledged": False,
+            "grant_send_completed": detected,
+            "mutation": mutation,
+            "dispatch": dispatch,
+            "publication_boundary": asdict(observed),
+            "retained_publications": list(PUBLICATIONS),
+            "replay_returncode": replay.returncode,
+            "originals_before_injection_sha256": original,
+            "originals_after_injection_sha256": injected,
+            "epoch_sha256_before_resume": epoch,
+            "epoch_sha256_after_refusal": after_refusal,
+            "epoch_sha256_after_replay": after_replay,
+        }
+    return result, injected
+
+
+def run_fixture(*, authorization_id: str, source_repository: Path, source_token_file: Path, source_sha: str, uv: Path, uv_version: str, output: Path, scenario: str = "grant", mutation_control_manifest: Path | None = None) -> dict[str, object]:
     required_cases(scenario)
-    if not re.fullmatch(r"[0-9a-f]{40}", source_sha) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", uv_version):
-        raise ValueError("an exact qualified source and installer version are required")
+    source_mutation = None
+    if mutation_control_manifest is not None:
+        if scenario not in POST_RECEIPT_MUTATION_SCENARIOS:
+            raise ValueError("the focused mutation control requires its exact post-receipt scenario")
+        source_mutation = verify_source_evidence(mutation_control_manifest, executing=True)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("an exact qualified source is required")
+    validate_uv_version(uv_version)
     if any(not path.is_absolute() or path != path.resolve(strict=True) for path in (source_repository, source_token_file, uv)) or not output.is_absolute():
         raise ValueError("canonical absolute native fixture inputs are required")
     for name in ("AUTOCODER_FRESH_TEST_BASE_IMAGE", "AUTOCODER_RECOVERY_CADDY_IMAGE"):
@@ -864,6 +948,8 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     setup_logger(stream=sys.stdout, log_file=str(root / "fixture.log"))
     cases: list[str] = []
     result: dict[str, object] = {"schema": RESULT_SCHEMA, "status": "failed", "scenario": scenario, "cases": cases, "authorization_id": authorization_id, "source_identity": source_identity(), "no_child_started": False, "preserved_originals": False, "preserved_workers": False}
+    if source_mutation is not None:
+        result.update(schema=CONTROL_SCHEMA, control=CONTROL, source_mutation=source_mutation[0], source_evidence_sha256=source_mutation[1])
     chain = None
     workers = None
     stock = None
@@ -989,6 +1075,9 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
             elif scenario in LATE_MUTATION_SCENARIOS:
                 result["durable"], preserved = _late_mutation(native_context, scenario, barrier, issuer, issuer_log, consumer_log, target, retained_roots, lambda: workers.preserved(*worker_before))
                 result["preservation_baseline"] = "after-deliberate-fixture-mutation"
+            elif scenario in POST_RECEIPT_MUTATION_SCENARIOS:
+                result["durable"], preserved = _post_receipt_mutation(native_context, scenario, barrier, observed_boundary, issuer, issuer_log, consumer_log, target, retained_roots, lambda: workers.preserved(*worker_before), mutation_control=source_mutation is not None)
+                result["preservation_baseline"] = "after-deliberate-fixture-mutation"
             else:
                 barrier.kill()
                 actual = scenario if scenario in BOUNDARY_SCENARIOS else "after-" + publication.removesuffix(".json")
@@ -998,6 +1087,23 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
             cases.extend(("native-" + scenario, "interrupted-epoch-replay-refused"))
             assert _snapshot(retained_roots) == preserved
             workers.preserved(*worker_before)
+            if mutation_control_manifest is not None:
+                cases.extend(("originals-oauth-and-workers-preserved", "no-consumer-child-or-admission"))
+                result.update(
+                    status="mutation-detected",
+                    no_child_started=True,
+                    preserved_originals=True,
+                    preserved_workers=True,
+                    preserved_originals_sha256=preserved,
+                    preserved_worker_claims_sha256=worker_claims,
+                    worker_lifetimes=worker_baseline,
+                    worker_effect_posts=worker_posts,
+                    oracle={"name": ORACLE, "detected": True, "queued_grant": result["durable"]["dispatch"]["queued_grant"]},
+                )
+                assert set(cases) == required_cases(scenario)
+                validate_control_result(result, mutation_control_manifest)
+                logger.info("The focused copied-source mutant failed the actual {} oracle; production acceptance is separate", ORACLE)
+                return result
             _passed(result, cases, preserved, worker_claims, worker_baseline, worker_posts)
             return result
         _wait(lambda: (EPOCH_ROOT / "receipt-head.json").is_file() and consumer_log.is_file() and "Recovery custody acknowledged" in consumer_log.read_text(), "native grant and consumer custody", timeout=1800, process=issuer)
@@ -1096,6 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uv-version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scenario", choices=SCENARIOS, default="grant")
+    parser.add_argument("--mutation-control-manifest", type=Path)
     args = parser.parse_args(argv)
     run_fixture(**vars(args))
     return 0

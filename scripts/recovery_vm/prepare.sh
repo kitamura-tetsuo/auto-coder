@@ -3,8 +3,8 @@ set -Eeuo pipefail
 umask 077
 
 # Export exact reviewed source/images; preparation does not launch a guest.
-if [[ "$#" != 6 || ! "$1" =~ ^/var/tmp/ac-recovery-vm-[a-zA-Z0-9_-]+$ || ! "$2" =~ ^[a-zA-Z0-9_.:-]{1,128}$ || ! "$3" =~ ^sha256:[0-9a-f]{64}$ || ! "$4" =~ ^sha256:[0-9a-f]{64}$ || ! "$6" =~ ^[a-z][a-z-]{1,63}$ ]]; then
-    echo 'Usage: prepare.sh /var/tmp/ac-recovery-vm-UNIQUE AUTHORIZATION_ID MANAGER_IMAGE_ID CADDY_IMAGE_ID READ_TOKEN_FILE SCENARIO' >&2
+if [[ ( "$#" != 6 && "$#" != 7 ) || ! "$1" =~ ^/var/tmp/ac-recovery-vm-[a-zA-Z0-9_-]+$ || ! "$2" =~ ^[a-zA-Z0-9_.:-]{1,128}$ || ! "$3" =~ ^sha256:[0-9a-f]{64}$ || ! "$4" =~ ^sha256:[0-9a-f]{64}$ || ! "$6" =~ ^[a-z][a-z-]{1,63}$ ]]; then
+    echo 'Usage: prepare.sh /var/tmp/ac-recovery-vm-UNIQUE AUTHORIZATION_ID MANAGER_IMAGE_ID CADDY_IMAGE_ID READ_TOKEN_FILE SCENARIO [omit-post-consumption-verifier]' >&2
     exit 2
 fi
 fixture_root=$1
@@ -13,6 +13,11 @@ manager_image=$3
 proxy_image=$4
 source_token_file=$5
 fixture_scenario=$6
+fixture_mutation_control=${7:-none}
+if [[ "$fixture_mutation_control" != none && ( "$fixture_mutation_control" != omit-post-consumption-verifier || "$fixture_scenario" != post-receipt-ready-mutation ) ]]; then
+    echo 'Only the explicit post-receipt verifier-omission control is supported.' >&2
+    exit 2
+fi
 tooling_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$tooling_root" rev-parse --show-toplevel)
 cd -- "$repo_root"
@@ -69,7 +74,7 @@ docker image save "$manager_image" "$proxy_image" | tee "$fixture_root/input/ima
 cp "$tooling_root/guest.sh" "$fixture_root/input/guest.sh"
 install -m 600 "$source_token_file" "$fixture_root/input/source-token"
 fixture_commit=$(git -C "$repo_root" rev-parse HEAD)
-python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" "$fixture_accelerator" "$fixture_image_store" <<'PY'
+python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" "$fixture_accelerator" "$fixture_image_store" "$fixture_mutation_control" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -77,7 +82,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 inputs = root / "input"
-manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario", "accelerator", "image_store"), sys.argv[2:]))
+manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario", "accelerator", "image_store", "mutation_control"), sys.argv[2:]))
 manifest["schema"] = "auto-coder-recovery-vm-input-v1"
 manifest["ready_source_sha"] = "e742338b3f311e6d30a22a8f5341b8072513d813"
 manifest["inputs_sha256"] = {}

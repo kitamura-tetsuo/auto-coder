@@ -55,6 +55,7 @@ mkdir -m 700 /opt/recovery-fixture /opt/reviewed-source
 tar --extract --gzip --file "$input/source.tar.gz" --directory /opt/recovery-fixture
 cd /opt/recovery-fixture
 /opt/fixture-tools/bin/uv sync --locked --no-editable --no-dev --extra test --link-mode copy
+verify_installed_watcher() {
 .venv/bin/python - <<'PY'
 from pathlib import Path
 import auto_coder.management.proxy_watch_cli as watcher
@@ -65,6 +66,8 @@ identity = source.stat()
 assert identity.st_uid == 0 and identity.st_nlink == 1
 print("Installed watcher source is a private, independently copied file.")
 PY
+}
+verify_installed_watcher
 docker compose version
 install -m 600 "$input/source-token" /run/recovery-fixture-source-token
 mapfile -t selected < <(python3 - "$input" <<'PY'
@@ -73,10 +76,42 @@ import pathlib
 import sys
 
 manifest = json.loads((pathlib.Path(sys.argv[1]) / "manifest.json").read_text())
-for key in ("authorization_id", "manager_image", "proxy_image", "ready_source_sha", "scenario"):
+for key in ("authorization_id", "manager_image", "proxy_image", "ready_source_sha", "scenario", "mutation_control"):
     print(manifest[key])
 PY
 )
+driver_module=scripts.test_management_recovery_epoch_host
+driver_prefix=()
+case "${selected[5]}" in
+    none) ;;
+    omit-post-consumption-verifier)
+        test "${selected[4]}" = post-receipt-ready-mutation
+        .venv/bin/python -m scripts.recovery_epoch_mutation_control prepare \
+            --source /opt/recovery-fixture \
+            --destination /opt/recovery-mutation-control \
+            --evidence "$output/mutation-source.json"
+        cd /opt/recovery-mutation-control
+        /opt/fixture-tools/bin/uv sync --locked --no-editable --no-dev --extra test --link-mode copy
+        verify_installed_watcher
+        driver_module=scripts.recovery_epoch_mutation_control
+        driver_prefix=(run --evidence "$output/mutation-source.json" --)
+        ;;
+    *) echo 'Unsupported recovery mutation control.' >&2; exit 2 ;;
+esac
+fixture_uv_version=$(.venv/bin/python - <<'PY'
+import subprocess
+from auto_coder.management.recovery_epoch_authorization import validate_uv_version
+
+banner = subprocess.check_output(["/opt/fixture-tools/bin/uv", "--version"], text=True).strip()
+if not banner.startswith("uv "):
+    raise ValueError("The selected fixture uv did not return its version banner")
+version = validate_uv_version(banner.removeprefix("uv "))
+if version.split(" ", 1)[0] != "0.13.6":
+    raise ValueError("The installed fixture uv does not match the reviewed release pin")
+print(version)
+PY
+)
+printf 'uv %s\n' "$fixture_uv_version" | tee "$output/uv-version.txt"
 git -C /opt/reviewed-source init
 git -C /opt/reviewed-source remote add origin https://github.com/kitamura-tetsuo/auto-coder.git
 git -C /opt/reviewed-source fetch --no-tags origin "${selected[3]}"
@@ -111,11 +146,11 @@ PY
 export AUTOCODER_FRESH_TEST_BASE_IMAGE="${selected[1]}"
 export AUTOCODER_RECOVERY_CADDY_IMAGE="${selected[2]}"
 export PATH="/opt/fixture-tools/bin:$PATH"
-.venv/bin/python -m scripts.test_management_recovery_epoch_host \
+.venv/bin/python -m "$driver_module" "${driver_prefix[@]}" \
     --authorization-id "${selected[0]}" \
     --source-repository /opt/reviewed-source \
     --source-token-file /run/recovery-fixture-source-token \
     --source-sha "${selected[3]}" \
     --scenario "${selected[4]}" \
-    --uv /opt/fixture-tools/bin/uv --uv-version 0.13.6 \
+    --uv /opt/fixture-tools/bin/uv --uv-version "$fixture_uv_version" \
     --output "$output/recovery-epoch-result.json"

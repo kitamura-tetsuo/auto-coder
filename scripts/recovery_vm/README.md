@@ -30,6 +30,12 @@ another image or weaken the production source checks.
 Docker documents the [fresh-install storage default](https://docs.docker.com/engine/storage/containerd/)
 and the [cross-store image-ID behavior](https://github.com/docker/cli/issues/6670).
 
+The guest installs the exact `uv==0.13.6` release and validates its reported release
+number. The complete observed `--version` banner, including its bounded build
+descriptor, is retained in `uv-version.txt` and supplied to staging and recovery
+authorization. The production installer continues to require exact banner
+equality; the fixture does not strip build identity from that comparison.
+
 ## Reproduce a reviewed scenario
 
 Use a clean, committed checkout with the locked test dependencies installed. The
@@ -64,7 +70,10 @@ scenario oracle. CI derives its matrix directly from this list and requires
 every matrix job to pass. The two `kill-after-*` debug aliases select boundaries
 already present in the matrix and do not add independent cases. All before/after
 publication cases and all eleven mutations after the original intent head run on
-independent fresh VMs. They
+independent fresh VMs. A distinct `post-receipt-ready-mutation` scenario changes
+the exact READY receipt after consumption and receipt-head publication, then
+resumes that same issuer and independently proves refusal with no queued grant.
+They
 use real ptrace syscall stops around the actual exclusive record/head creation
 and successful file/directory fsync, with a pinned SIGKILL and no syscall-result
 replacement. The native process oracles also inspect real peer custody, original
@@ -83,6 +92,29 @@ actual successful grant send while the receiver is stopped, then verifies the
 issuer's pidfd is dead before resuming the receiver; consumption must remain and
 the receiver must refuse current custody. The companion helper tests validate
 the fixture's native message parsing and guards; they are not VM acceptance.
+
+## Verifier-omission control
+
+A separate CI job proves that the post-receipt scenario detects omission of only
+the second final verification. It uses another fresh VM, copies the reviewed
+project into a private control directory, and removes exactly that one call with
+structural and byte-level checks. Its original producers, source identities,
+derived images and issuer all use the same copied package before any history is
+created. The canonical checkout and installed package remain unchanged.
+
+The control must reach the real receipt-head barrier and fail the unchanged
+native oracle because an exact canonical grant is actually queued on the stopped
+receiver's socket. An unrelated error, timeout, process exit or log message cannot
+pass this control. The result has a separate `mutation-detected` status, binds the
+exact original/mutant source evidence and preserves consumed state, the deliberate
+READY mutation and unrelated workers. It supplies test-sensitivity evidence and
+does not count as a successful production acceptance scenario.
+
+To prepare this explicitly selected control, use the reproduction command above
+with `post-receipt-ready-mutation omit-post-consumption-verifier` as the final two
+arguments to `prepare.sh`. Every ordinary preparation records `mutation_control`
+as `none`. Both the complete unmodified production matrix and this separate
+control must succeed for the aggregate CI gate.
 
 The guest read credential is deleted on exit. The outer input credential must
 also be deleted after the run; the CI workflow does this even on failure.
