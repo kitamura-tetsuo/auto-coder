@@ -120,7 +120,7 @@ def start_watcher(generation: Generation, original: RecoveryOriginal, *, first: 
     """Run, observe and inhibit the real watcher before retaining its EX lock."""
     unit = "auto-coder-management-proxy-watch" + ("" if first else "-" + generation.name) + ".service"
     fixture = WatcherFixture.start(generation.root, original.management_id, original.management_image_id, original.proxy_id, original.proxy_image_id, Path(original.proxy_config.path), unit=unit)
-    selected = RecoveryWatcher(unit, selected_file(fixture.config), selected_file(Path(proxy_watch_cli.__file__), source=True), selected_lock(fixture.state / "proxy-watch.lock"))
+    selected = RecoveryWatcher(unit, selected_file(fixture.config), selected_file(Path(proxy_watch_cli.__file__), source=True), selected_file(fixture.source, source=True), selected_lock(fixture.state / "proxy-watch.lock"))
     return fixture, selected
 
 

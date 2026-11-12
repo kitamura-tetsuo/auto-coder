@@ -211,7 +211,10 @@ def resource_case(mode: str = "independent") -> Iterator[ResourceCase]:
             configuration = bound(paths["configuration"])
             original = RecoveryOriginal("generation-one", "original-one", "a" * 64, "sha256:" + "b" * 64, "c" * 64, "sha256:" + "d" * 64, "started", observed["boot"], configuration, configuration, configuration, (), selected_lock(paths["original"]), configuration, pin)
             target = RecoveryTarget("target-one", "e" * 64, "sha256:" + "f" * 64, configuration, configuration, (), selected_lock(paths["target"]), 18080)
-            watcher = RecoveryWatcher("recovery-watch.service", configuration, configuration, selected_lock(paths["controller"]))
+            unit = root / "recovery-watch.service"
+            unit.write_bytes(b"# Resource-observation fixture; no executable controller.\n")
+            unit.chmod(0o600)
+            watcher = RecoveryWatcher("recovery-watch.service", configuration, configuration, bound(unit), selected_lock(paths["controller"]))
             enrollment = RecoveryEnrollment("approved-management-recovery-containment-v1", "deployment-one", "enrollment-one", "authorization-one", "ordinary-recovery-v1", "engine-one", "sha256:" + "0" * 64, (original,), target, (watcher,), True)
             yield ResourceCase(root, process, enrollment, resources, namespace, paths, parent_fds)
         finally:

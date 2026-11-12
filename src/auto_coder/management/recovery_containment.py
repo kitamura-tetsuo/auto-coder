@@ -64,6 +64,7 @@ from .recovery_containment_model import (
 )
 from .recovery_containment_profile import RecoveryManagerFact, _mapped_file, assert_disjoint_target, digest, read_bound_file, validate_manager_profile, validate_proxy_profile
 from .recovery_containment_resources import RecoveryResourceObservation, _private_lock, hold_observed_resources
+from .recovery_watcher_source import RecoveryWatcherUnitFact, observe_recovery_watcher_unit
 
 logger = get_logger(__name__)
 _REPORT_SCHEMA = "current-recovery-containment-v1"
@@ -112,6 +113,7 @@ class RecoveryWatcherFact:
     proxy_id: str
     configuration: RecoveryFile
     source: RecoveryFile
+    installed_unit: RecoveryWatcherUnitFact
     lock_device: int
     lock_inode: int
 
@@ -199,7 +201,7 @@ def route_selection(approved: RecoveryEnrollmentObservation) -> RecoveryRouteSel
         originals.extend((OriginalFile("bootstrap-config", **asdict(item.bootstrap_config)), OriginalFile("management-config", **asdict(item.management_config)), OriginalFile("proxy-config", **asdict(item.proxy_config))))
     originals.extend((OriginalFile("bootstrap-config", **asdict(selected.target.bootstrap_config)), OriginalFile("management-config", **asdict(selected.target.management_config))))
     for watcher in selected.watchers:
-        originals.extend((OriginalFile("watcher-source", **asdict(watcher.source)), OriginalFile("watcher-config", **asdict(watcher.configuration))))
+        originals.extend((OriginalFile("watcher-source", **asdict(watcher.source)), OriginalFile("watcher-config", **asdict(watcher.configuration)), OriginalFile("support-source", **asdict(watcher.unit_source))))
     scope = RecoveryRouteScope(selected.deployment_id, selected.enrollment_id, selected.authorization_id, selected.profile, selected.container_ids, tuple(originals))
     return RecoveryRouteSelection(scope, approved.sha256)
 
@@ -320,9 +322,10 @@ def _watchers(enrollment: RecoveryEnrollment, routes: RouteManifestObservation) 
         root = Path(raw["state_root"])
         _approved_directory(root, uid=0)
         fact = routes_by_name.get(selected.unit)
-        if fact is None or not fact.inhibited or fact.main_pid != 0 or {selected.source.path, selected.configuration.path} - {item.path for item in fact.command_sources}:
-            raise RecoveryContainmentUnavailable("watcher installed command or technical inhibition differs")
-        result.append(RecoveryWatcherFact(selected.unit, binding.manager_id, binding.proxy_id, selected.configuration, selected.source, selected.lock.device, selected.lock.inode))
+        if fact is None:
+            raise RecoveryContainmentUnavailable("watcher installed unit is outside the observed routes")
+        installed_unit = observe_recovery_watcher_unit(selected, fact)
+        result.append(RecoveryWatcherFact(selected.unit, binding.manager_id, binding.proxy_id, selected.configuration, selected.source, installed_unit, selected.lock.device, selected.lock.inode))
     source_sets = [(item.unit, item.command_sources) for item in routes.systemd]
     source_sets += [(str(item.uid) + ":" + item.fact.unit, item.fact.command_sources) for item in routes.user_systemd]
     source_sets += [(item.path, item.command_sources) for item in routes.cron_entries]

@@ -30,7 +30,7 @@ strict parsers are in `recovery_containment_model.py`.
 | Started original | Original boot ID; protected original manager/proxy lifetime capture; exact original owner file; live original namespace holder and its actual retained descriptor |
 | Never-started original | Existing Docker objects currently in the pristine `created` state; no invented owner, process lifetime, prior record or namespace pin |
 | Target | Exact separate manager/image/instance; protected bootstrap and management configuration; complete bind roots; prepared owner inode; distinct loopback published port |
-| Watcher | Exact installed systemd unit, actual installed module and protected configuration, and the existing `proxy-watch.lock` that the real watcher takes before tick/reconcile |
+| Watcher | Exact installed systemd unit and retained `unit_source` file identity, actual installed module and protected configuration, and the existing `proxy-watch.lock` that the real watcher takes before tick/reconcile |
 
 There are at most 16 original pairs and 32 watchers. Their complete eventual peer
 custody set must also satisfy `3 + 2 × started originals + watchers <= 64`; the
@@ -110,6 +110,21 @@ technically inhibited; restart policies must be `no`. Unknown exclusions and
 unsupported remote origins cannot be converted into closure by an operator list.
 Each real watcher must use its enrolled source/configuration and actual existing
 controller lock. The observer changes no unit, restart policy, file or controller.
+
+A masked effective unit has no executable command inventory. Recovery therefore
+requires a separate original `unit_source: RecoveryFile` for each watcher. The
+reader queries the actual system manager's `UnitPath`, verifies one protected
+mask above the selected regular fragment, and refuses competing fragments,
+aliases, or unit-specific, dash-prefix and type-wide drop-ins. The retained unit
+must use the supported simple-service profile with `Restart=no` and exactly the
+current observer's literal interpreter path followed by
+`-I -B -m auto_coder.management.proxy_watch_cli --config <bound configuration>`.
+Another virtual environment sharing the Python binary is a different selection.
+Environment, working-directory, root-directory and additional executable
+directives are unsupported. The observer independently repeats the fragment and
+load-path reads while retaining the existing actual mask, current task and
+controller-lock requirements. Its non-authorizing watcher facts retain this
+source evidence; no admission, dispatch or readiness event is added.
 
 For each started original, the observer checks the exact captured manager/proxy
 lifetimes and mount identities, every remaining cgroup task, absence of captured

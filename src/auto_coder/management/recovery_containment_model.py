@@ -191,12 +191,17 @@ class RecoveryWatcher:
     unit: str
     configuration: RecoveryFile
     source: RecoveryFile
+    unit_source: RecoveryFile
     lock: RecoveryLock
 
     @classmethod
     def parse(cls, value: object) -> RecoveryWatcher:
         raw = _object(value, cls.__dataclass_fields__, "recovery watcher")
-        return cls(_text(raw["unit"], re.compile(r"[A-Za-z0-9_.@:-]{1,120}\.service"), "watcher unit"), RecoveryFile.parse(raw["configuration"]), RecoveryFile.parse(raw["source"]), RecoveryLock.parse(raw["lock"]))
+        unit = _text(raw["unit"], re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.service"), "watcher unit")
+        fragment = RecoveryFile.parse(raw["unit_source"])
+        if Path(fragment.path).name != unit:
+            raise RecoveryContainmentUnavailable("recovery watcher retained unit source name differs")
+        return cls(unit, RecoveryFile.parse(raw["configuration"]), RecoveryFile.parse(raw["source"]), fragment, RecoveryLock.parse(raw["lock"]))
 
 
 @dataclass(frozen=True)

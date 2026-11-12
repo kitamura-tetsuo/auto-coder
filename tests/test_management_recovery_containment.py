@@ -81,7 +81,13 @@ def _enrollment(*, generations: int = 1, watchers: int = 1, started: bool = True
         18081,
     )
     controls = tuple(
-        RecoveryWatcher(f"auto-coder-management-proxy-watch-{index:02d}.service", _file(f"/private/watcher-{index}/config.json", 10000 + index), _file("/private/package/management/proxy_watch_cli.py", 20000), RecoveryLock(f"/private/watcher-{index}/state/proxy-watch.lock", 1, 30000 + index))
+        RecoveryWatcher(
+            f"auto-coder-management-proxy-watch-{index:02d}.service",
+            _file(f"/private/watcher-{index}/config.json", 10000 + index),
+            _file("/private/package/management/proxy_watch_cli.py", 20000),
+            _file(f"/run/systemd/system/auto-coder-management-proxy-watch-{index:02d}.service", 40000 + index),
+            RecoveryLock(f"/private/watcher-{index}/state/proxy-watch.lock", 1, 30000 + index),
+        )
         for index in range(watchers)
     )
     return RecoveryEnrollment("approved-management-recovery-containment-v1", "deployment", "enrollment", "authorization", RECOVERY_PROFILE, "local-engine", "sha256:" + "c" * 64, tuple(_original(index, started=started) for index in range(generations)), target, controls, True)
