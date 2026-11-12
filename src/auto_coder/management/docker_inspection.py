@@ -67,7 +67,12 @@ def management_candidate_roles(obj: dict[str, object], container_id: str, manage
         roles.append("selected-proxy")
     elif obj.get("Image") == proxy_image:
         roles.append("same-proxy-image")
-    if any(part.startswith("auto_coder.management.") for part in arguments) or ("auto_coder.cli" in arguments and "management" in arguments and "serve" in arguments):
+    # Shell -c and Python -c can place a management invocation inside one
+    # argument. Inspect the complete effective command, not only argv tokens.
+    command_text = " ".join(arguments)
+    management_module = re.search(r"(?<![\w.])auto_coder\.management\.", command_text) is not None
+    management_cli = re.search(r"(?<![\w.])auto_coder\.cli\b", command_text) is not None and re.search(r"\bmanagement\b", command_text) is not None and re.search(r"\bserve\b", command_text) is not None
+    if management_module or management_cli:
         roles.append("management-command")
     if network_mode == "container:" + management_id:
         roles.append("selected-management-network")

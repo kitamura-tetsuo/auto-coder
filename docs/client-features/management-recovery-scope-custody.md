@@ -91,10 +91,15 @@ management-serve command, selected manager/proxy network namespace, or bind-sour
 overlap with **any** original or target. Candidate discovery is shared with the
 existing single-pair observer; its existing refusal behavior is preserved.
 Unselected inspections require unambiguous image, effective command, network,
-lifetime and restart facts. Bind roots must resolve canonically and must not
-lexically overlap or alias a selected root's device/inode. Unsupported mount
-sources and ambiguous namespace aliases refuse rather than being classified as
-unrelated. An operator's label or classification supplies no proof.
+lifetime and restart facts. Candidate detection inspects module/management-serve
+tokens even when embedded in a shell `-c` or Python `-c` argument; splitting
+only on Docker's argv array would otherwise classify an explicit management
+invocation as an unrelated worker. This conservative command-text check does
+not prove the absence of indirect wrapper execution, source aliases or hidden
+controllers; full source and process closure remains an unmet requirement.
+Bind roots must resolve canonically and must not lexically overlap or alias a
+selected root's device/inode. Unsupported mount sources and ambiguous namespace
+aliases refuse rather than being classified as unrelated. An operator's label or classification supplies no proof.
 
 Engine identity and the complete inventory are reread, and the entire inspection
 and classification pass is repeated while custody descriptors remain open. All

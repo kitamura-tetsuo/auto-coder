@@ -672,6 +672,21 @@ def test_unselected_candidates_cannot_hide_as_workers(scope: ScopeFixture, pair_
         recovery.observe_recovery_custody("fixture")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["/bin/sh", "-c", "exec python -m auto_coder.management.bootstrap_supervisor"],
+        ["/bin/bash", "-ec", "python3 -m auto_coder.cli management serve"],
+        ["python", "-c", "import auto_coder.management.proxy_watch_cli"],
+    ],
+)
+def test_shell_embedded_management_command_is_not_an_unrelated_worker(scope: ScopeFixture, command: list[str]):
+    worker = _unrelated_worker(scope)
+    worker["Config"]["Cmd"] = command
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management/proxy candidate"):
+        recovery.observe_recovery_custody("fixture")
+
+
 @pytest.mark.parametrize("mutation", ["disappear", "swap", "state", "command", "mount"])
 def test_worker_changes_between_producer_and_consumer_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)
