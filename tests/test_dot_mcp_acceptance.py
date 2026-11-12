@@ -410,15 +410,7 @@ def test_corrupt_or_replaced_original_send_ticket_never_reports_no_dispatch(monk
 def test_mcp_task_group_wrapper_preserves_single_trusted_blocker() -> None:
     blocked = accept.Blocked("Signed Supervisor cannot establish a live original worker")
     failed = accept.Failed("Installed source binding contradicts the exact tested Git commit")
-    assert accept._single_nested_acceptance_error(
-        ExceptionGroup("streamable HTTP", [ExceptionGroup("session", [blocked])])
-    ) is blocked
-    assert accept._single_nested_acceptance_error(
-        ExceptionGroup("streamable HTTP", [failed])
-    ) is failed
-    assert accept._single_nested_acceptance_error(
-        ExceptionGroup("streamable HTTP", [ValueError("unexpected transport failure")])
-    ) is None
-    assert accept._single_nested_acceptance_error(
-        ExceptionGroup("streamable HTTP", [blocked, RuntimeError("other failure")])
-    ) is None
+    assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [ExceptionGroup("session", [blocked])])) is blocked
+    assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [failed])) is failed
+    assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [ValueError("unexpected transport failure")])) is None
+    assert accept._single_nested_acceptance_error(ExceptionGroup("streamable HTTP", [blocked, RuntimeError("other failure")])) is None
