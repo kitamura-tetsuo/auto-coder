@@ -583,7 +583,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
         mapped_rows, exec_searches = resolve_direct_systemd_commands(tuple(rows), unit=unit, shown=shown, environment_files=tuple(repeatable.get("EnvironmentFiles", [])), user=user, uid=trusted_uid, read_command=_command)
         commands = "\n".join(mapped_rows)
         commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "WorkingDirectory", "RootDirectory", "RootImage"))
-        local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources)
+        local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources, systemd_readback=True)
         reobserve_systemd_exec_searches(exec_searches, uid=trusted_uid, read_command=_command)
         local_sources = tuple(sorted((*local_sources, *fragment_sources), key=lambda item: item.path))
         candidate = candidate or local_candidate

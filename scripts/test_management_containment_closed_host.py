@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Callable
 from loguru import logger
 from scripts.test_management_containment_enrollment_host import APPROVAL_ROOT, FIXTURE_ROOT, INSTALLED_BOOTSTRAP, DisposableSystemdRoutes, _capture_manager, _docker, _original, _port, _private_directory, _systemctl, _write_private
 
-from auto_coder.management import proxy_watch_cli
+from auto_coder.management import containment_route_sources, proxy_watch_cli
 from auto_coder.management.archived_exclusions import unique_pairs
 from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalNetworkPin, OriginalOwnerFencePin, observe_approved_enrollment
 from auto_coder.management.containment_kernel_subobservation import capture_original_caddy_container
@@ -1603,6 +1603,134 @@ def _quarantine_variant_pair(
         return mapping
 
 
+def _absolute_dispatcher_alias_probe(root: Path, artifacts: list[Path]) -> dict[str, object]:
+    """Exercise actual packaged-shell aliases and systemd source readback."""
+    directory = root / "absolute-alias-probe"
+    directory.mkdir(mode=0o700)
+    tools_directory = directory / "tools"
+    tools_directory.mkdir(mode=0o700)
+    helper = tools_directory / "maintenance"
+    alias = directory / "launcher"
+    shell = Path("/bin/sh").resolve(strict=True)
+    shell_info = shell.stat()
+    if shell_info.st_uid != 0 or not stat.S_ISREG(shell_info.st_mode) or shell_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or not shell_info.st_mode & stat.S_IXUSR:
+        raise AssertionError("native alias probe requires the protected installed shell")
+    alias.symlink_to("/bin/sh")
+    _write_private(helper, b"#!/bin/sh\nprintf '%s\\n' 'benign-before'\n")
+    helper.chmod(0o700)
+    unit = CUSTOM_UNIT_ROOT / (root.name + "-absolute-alias.service")
+    evidence = root / "absolute-alias-dispatch.json"
+    if unit.exists() or unit.is_symlink():
+        raise FileExistsError("native alias probe unit already exists")
+    module = Path(containment_route_sources.__file__).resolve(strict=True)
+    outcome: dict[str, object] = {
+        "schema": "native-absolute-dispatcher-alias-probe-v1",
+        "status": "failed",
+        "unit": unit.name,
+        "module_sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
+        "installed_shell": str(shell),
+        "installed_shell_sha256": hashlib.sha256(shell.read_bytes()).hexdigest(),
+        "alias": str(alias),
+        "helper": str(helper),
+        "positive_controls": [],
+        "substitution_phases": [],
+    }
+    unit_identity: dict[str, int] | None = None
+    unit_digest: str | None = None
+
+    def identity(path: Path) -> dict[str, int]:
+        info = path.lstat()
+        return {name: getattr(info, "st_" + name) for name in ("dev", "ino", "mode", "uid", "gid", "size", "mtime_ns", "ctime_ns")}
+
+    def install_command(command: str) -> None:
+        nonlocal unit_identity, unit_digest
+        content = ("[Unit]\nDescription=Disposable absolute dispatch probe\n[Service]\nType=oneshot\nEnvironment=PATH=" + str(tools_directory) + "\nExecStart=" + command + "\n").encode()
+        if unit_identity is None:
+            _write_private(unit, content)
+        else:
+            if identity(unit) != unit_identity or hashlib.sha256(unit.read_bytes()).hexdigest() != unit_digest:
+                raise AssertionError("owned native alias probe unit changed")
+            unit.write_bytes(content)
+        unit_identity = identity(unit)
+        unit_digest = hashlib.sha256(content).hexdigest()
+        _systemctl("daemon-reload")
+
+    def unchanged_inputs() -> dict[str, object]:
+        properties = subprocess.run(("systemctl", "show", "--property=ExecStart,Environment", "--", unit.name), capture_output=True, text=True, check=True, timeout=20).stdout
+        return {
+            "directory": identity(tools_directory),
+            "alias": identity(alias),
+            "alias_target": os.readlink(alias),
+            "shell": identity(shell),
+            "shell_sha256": hashlib.sha256(shell.read_bytes()).hexdigest(),
+            "unit": identity(unit),
+            "unit_sha256": hashlib.sha256(unit.read_bytes()).hexdigest(),
+            "actual_systemd_properties": properties,
+        }
+
+    try:
+        controls = []
+        for command in ("/usr/bin/true", "/bin/sh -c /usr/bin/true"):
+            install_command(command)
+            fact = _systemd_unit(unit.name, extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+            if fact.management_candidate or fact.main_pid != 0 or fact.active_state != "inactive":
+                raise AssertionError("native direct packaged command control was not unrelated and inactive")
+            controls.append({"command": command, "fact": asdict(fact)})
+        outcome["positive_controls"] = controls
+        install_command(str(alias) + " -c maintenance")
+        phases = []
+        helper_lifetimes: list[tuple[int, int]] = []
+        for label, expected in (("before", "benign-before\n"), ("after", "/srv/original-state\n")):
+            if label == "after":
+                helper.write_bytes(b"#!/bin/sh\nprintf '%s\\n' '/srv/original-state'\n")
+            before = unchanged_inputs()
+            helper_identity = identity(helper)
+            helper_lifetimes.append((helper_identity["dev"], helper_identity["ino"]))
+            helper_digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+            executed = subprocess.run((str(alias), "-c", "maintenance"), env={"PATH": str(tools_directory)}, capture_output=True, text=True, check=True, timeout=10)
+            if executed.stdout != expected or executed.stderr:
+                raise AssertionError("native shell alias did not execute the actual controlled PATH helper")
+            try:
+                _systemd_unit(unit.name, extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+            except containment_route_sources.CommandSourceUnavailable as exc:
+                reason = str(exc)
+                if reason != "resolved executable alias uses an unsupported dispatcher profile":
+                    raise AssertionError("native shell alias refused for an unexpected source predicate") from exc
+            else:
+                raise AssertionError("native systemd source reader accepted unbound absolute shell alias dispatch")
+            if unchanged_inputs() != before or identity(helper) != helper_identity or hashlib.sha256(helper.read_bytes()).hexdigest() != helper_digest:
+                raise AssertionError("native alias execution or readback changed its controlled inputs")
+            phases.append({"phase": label, "unchanged_inputs": before, "helper_identity": helper_identity, "helper_sha256": helper_digest, "actual_argv": [str(alias), "-c", "maintenance"], "actual_stdout": executed.stdout, "actual_returncode": executed.returncode, "source_refusal": reason})
+            outcome["substitution_phases"] = phases
+        first, second = phases
+        if first["unchanged_inputs"] != second["unchanged_inputs"] or helper_lifetimes[0] != helper_lifetimes[1] or first["helper_sha256"] == second["helper_sha256"]:
+            raise AssertionError("native helper substitution did not preserve alias/unit/environment/directory identity")
+        outcome["status"] = "passed"
+    except BaseException as exc:
+        outcome["failure"] = type(exc).__name__ + ": " + str(exc)
+        raise
+    finally:
+        cleanup_error: BaseException | None = None
+        try:
+            if unit_identity is not None:
+                if identity(unit) != unit_identity or hashlib.sha256(unit.read_bytes()).hexdigest() != unit_digest:
+                    raise AssertionError("owned native alias probe unit changed before cleanup")
+                unit.unlink()
+                _systemctl("daemon-reload")
+                if unit.name in _systemd_catalog():
+                    raise AssertionError("owned native alias probe unit remains in the actual catalog")
+            outcome["unit_cleanup_completed"] = True
+        except BaseException as exc:
+            cleanup_error = exc
+            outcome["status"] = "failed"
+            outcome["cleanup_error"] = type(exc).__name__ + ": " + str(exc)
+        _write_private(evidence, _json(outcome))
+        artifacts.append(evidence)
+        if cleanup_error is not None:
+            raise cleanup_error
+    return outcome
+
+
 def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str, quarantine_image: str | None = None, source_repository: Path | None = None) -> Path:
     if (quarantine_image is None) != (source_repository is None):
         raise ValueError("quarantine image and genuine reviewed source checkout must be selected together")
@@ -1636,6 +1764,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     variant_pairs: list[dict[str, object]] = []
     result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "quarantine_refused_variants": refused_variants, "quarantine_variant_pairs": variant_pairs, "artifact_paths": []}
     try:
+        result["absolute_alias_dispatch_probe"] = _absolute_dispatcher_alias_probe(root, stock_evidence)
         stock_routes = InhibitedStockRoutes.install()
         result["stock_systemd_inhibition"] = stock_routes.evidence()
         stock_record = root / "stock-systemd-inhibition.json"

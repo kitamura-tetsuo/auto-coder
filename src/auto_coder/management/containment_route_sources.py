@@ -24,6 +24,8 @@ _MODULE = re.compile(r"(?:^|\s)-m\s+([A-Za-z_][A-Za-z0-9_.]*)")
 _DISPATCHER_BASENAME = re.compile(r"(?:sh|dash|bash|nice|nohup|setsid|timeout|flock|stdbuf|ionice|chrt|taskset|env|python[0-9.]*|node|nodejs|perl|ruby)")
 _MAX_REFERENCES = 128
 _MAX_SOURCE_BYTES = 8 * 1024 * 1024
+_EXECUTABLE_PROFILE_ERROR = "absolute executable alias or dispatcher path is outside the supported profile"
+_EXECUTABLE_ALIAS_ERROR = "resolved executable alias uses an unsupported dispatcher profile"
 _FSCK_EXECUTABLE = Path("/usr/lib/systemd/systemd-fsck")
 _FSCK_FRAGMENT = Path("/usr/lib/systemd/system/systemd-fsck@.service")
 _FSCK_FRAGMENT_SHA256 = "43be4420263da4e79a7fe33f6b628449cc56cf99ca30cdc4dedc7f53aff7ea7e"
@@ -198,16 +200,16 @@ def _execution_command_views(text: str) -> tuple[tuple[str, str], ...]:
     return tuple(result)
 
 
-def _unresolved_wrapper_dispatch(text: str) -> bool:
+def _unresolved_wrapper_dispatch(text: str, executable_inputs: list[tuple[str, str]] | None = None) -> bool:
     """Keep a finite literal-target profile for common command launchers."""
     pattern = r"(?<![A-Za-z0-9_./-])(?:/(?:usr/)?bin/)?(nice|nohup|setsid|timeout|flock|stdbuf|ionice|chrt|taskset)[\"']?[ \t]+"
     for _, command in _execution_command_views(text):
-        if _unresolved_wrapper_command(command, pattern):
+        if _unresolved_wrapper_command(command, pattern, executable_inputs):
             return True
     return False
 
 
-def _unresolved_wrapper_command(command: str, pattern: str) -> bool:
+def _unresolved_wrapper_command(command: str, pattern: str, executable_inputs: list[tuple[str, str]] | None = None) -> bool:
     for match in re.finditer(pattern, command):
         launcher, arguments = match.group(1), command[match.end() :]
         words = arguments.split()
@@ -236,10 +238,12 @@ def _unresolved_wrapper_command(command: str, pattern: str) -> bool:
                 return True
         if words and not _LITERAL_PATH.fullmatch(words[0]):
             return True
+        if words and executable_inputs is not None:
+            executable_inputs.append((words[0], " ".join(words)))
     return False
 
 
-def _unsupported_shell_invocation(text: str) -> bool:
+def _unsupported_shell_invocation(text: str, executable_inputs: list[tuple[str, str]] | None = None) -> bool:
     """Inline sh/dash supports only one literal absolute command without args."""
     pattern = r"(?<![A-Za-z0-9_./-])(?P<shell>(?:/(?:usr/)?bin/)?(?:sh|bash|dash))[\"']?(?=[ \t]|$)"
     for executable, command in _execution_command_views(text):
@@ -256,6 +260,9 @@ def _unsupported_shell_invocation(text: str) -> bool:
             if re.search(r"(?:^|[ \t])[\"']?(?:-[A-Za-z]*c[A-Za-z]*|--command)[\"']?(?=[ \t]|$)", arguments):
                 if not re.fullmatch(r"-c[ \t]+(?P<quote>[\"']?)/[A-Za-z0-9_.+@=:/-]+(?P=quote)[ \t]*", arguments):
                     return True
+                if executable_inputs is not None and command[: match.start()] in ("", "'", '"'):
+                    target = arguments[2:].strip().strip("\"'")
+                    executable_inputs.append((target, target))
                 continue
             words = arguments.split()
             while words and words[0].startswith("-"):
@@ -272,44 +279,165 @@ def _unsupported_shell_invocation(text: str) -> bool:
     return False
 
 
+def _interpreter_command_profile(program: str, arguments: str, known_modules: dict[str, str]) -> str:
+    """Classify this literal interpreter occurrence, never a path-wide exemption."""
+    if not program.startswith("/"):
+        return "unsupported"
+    family = program.rsplit("/", 1)[-1]
+    words = arguments.split()
+    options: set[str] = set()
+    while words and words[0].startswith("-"):
+        option = words.pop(0)
+        if option == "--":
+            break
+        if family.startswith("python") and option == "-m":
+            if not words or words.pop(0) not in known_modules or not {"-I", "-B"} <= options:
+                return "unsupported"
+            return "isolated-module"
+        if family.startswith("python") and re.fullmatch(r"-[BIEsSuOqvP]+", option):
+            options.update("-" + char for char in option[1:])
+        elif family in ("perl", "ruby") and re.fullmatch(r"-[wTW]+", option):
+            continue
+        else:
+            return "unsupported"
+    if not words or not _LITERAL_PATH.fullmatch(words[0]) or ".." in Path(words[0]).parts:
+        return "unsupported"
+    script = Path(words[0])
+    try:
+        if not _trusted_program(script) or not _trusted_program(script.resolve(strict=True)):
+            return "unsupported"
+    except OSError:
+        return "unsupported"
+    return "packaged-script"
+
+
 def _unprofiled_interpreter_dispatch(text: str, known_modules: dict[str, str]) -> bool:
     """Unreviewed local interpreter dependency graphs are not a source profile."""
     pattern = r"(?<![A-Za-z0-9_./-])(?P<program>(?:/[A-Za-z0-9_.+@=:/-]+/)?(?:python[0-9.]*|node|nodejs|perl|ruby))[\"']?(?=[ \t]|$)"
     for _, command in _execution_command_views(text):
         for match in re.finditer(pattern, command):
-            program = match.group("program")
-            if not program.startswith("/"):
-                return True
-            family = program.rsplit("/", 1)[-1]
-            words = command[match.end() :].split()
-            options: set[str] = set()
-            module = False
-            while words and words[0].startswith("-"):
-                option = words.pop(0)
-                if option == "--":
-                    break
-                if family.startswith("python") and option == "-m":
-                    if not words or words.pop(0) not in known_modules or not {"-I", "-B"} <= options:
-                        return True
-                    module = True
-                    break
-                if family.startswith("python") and re.fullmatch(r"-[BIEsSuOqvP]+", option):
-                    options.update("-" + char for char in option[1:])
-                elif family in ("perl", "ruby") and re.fullmatch(r"-[wTW]+", option):
-                    continue
-                else:
-                    return True
-            if module:
-                continue
-            if not words or not _LITERAL_PATH.fullmatch(words[0]) or ".." in Path(words[0]).parts:
-                return True
-            script = Path(words[0])
-            try:
-                if not _trusted_program(script) or not _trusted_program(script.resolve(strict=True)):
-                    return True
-            except OSError:
+            if _interpreter_command_profile(match.group("program"), command[match.end() :], known_modules) == "unsupported":
                 return True
     return False
+
+
+@dataclass(frozen=True)
+class _ExecutableInput:
+    path: str
+    argv0: str
+    isolated_module: bool
+
+
+def _literal_executable_inputs(text: str, *, systemd_readback: bool) -> list[tuple[str, str]]:
+    """Select actual command positions without promoting native data properties."""
+    result = []
+    for executable, command in _execution_command_views(text):
+        if executable:
+            result.append((executable, command))
+            continue
+        if systemd_readback:
+            continue
+        if command.startswith("#!"):
+            command = command[2:].lstrip()
+        elif command.startswith("#"):
+            continue
+        command = re.sub(r"^exec[ \t]+", "", command, count=1)
+        match = re.match(r"(?P<quote>[\"']?)(?P<path>/[A-Za-z0-9_.+@=:/-]+)(?P=quote)(?=[ \t]|$)", command)
+        if match is not None:
+            result.append((match.group("path"), command))
+    return result
+
+
+def _command_executable_inputs(text: str, *, systemd_readback: bool) -> list[tuple[str, str]]:
+    """Follow only the already supported literal delegation positions."""
+    result = _literal_executable_inputs(text, systemd_readback=systemd_readback)
+    cursor = 0
+    while cursor < len(result):
+        if len(result) > _MAX_REFERENCES:
+            raise CommandSourceUnavailable("local executable occurrence inventory exceeds bound")
+        name, command = result[cursor]
+        cursor += 1
+        path = Path(name)
+        nested: list[tuple[str, str]] = []
+        if path.name in ("nice", "nohup", "setsid", "timeout", "flock", "stdbuf", "ionice", "chrt", "taskset"):
+            pattern = r"^[\"']?" + re.escape(str(path.parent) + "/") + "(" + re.escape(path.name) + r")[\"']?[ \t]+"
+            if _unresolved_wrapper_command(command, pattern, nested):
+                raise CommandSourceUnavailable("opaque dynamic or relative local script dispatch is unsupported")
+        elif path.name in ("sh", "dash") and re.search(r"[ \t]-c[ \t]", command):
+            if _unsupported_shell_invocation(command, nested):
+                raise CommandSourceUnavailable("opaque dynamic or relative local script dispatch is unsupported")
+        for item in nested:
+            if item not in result:
+                result.append(item)
+    return result
+
+
+def _executable_input(path: str, command: str, known_modules: dict[str, str]) -> _ExecutableInput:
+    words = command.split(maxsplit=1)
+    argv0 = words[0].strip("\"'") if words else ""
+    isolated = bool(re.fullmatch(r"python[0-9.]*", Path(path).name) and argv0 == path and _interpreter_command_profile(path, words[1] if len(words) > 1 else "", known_modules) == "isolated-module")
+    return _ExecutableInput(path, argv0, isolated)
+
+
+def _dispatcher_family(path: Path) -> str:
+    name = path.name
+    if name in ("sh", "dash"):
+        return "posix-shell"
+    if name in ("bash", "zsh", "ksh", "csh", "tcsh", "fish", "busybox", "toybox"):
+        return "unsupported-shell"
+    if re.fullmatch(r"python[0-9.]*", name):
+        return "python"
+    if name in ("node", "nodejs"):
+        return "node"
+    if name in ("perl", "ruby", "nice", "nohup", "setsid", "timeout", "flock", "stdbuf", "ionice", "chrt", "taskset", "env"):
+        return name
+    return ""
+
+
+def _matches_observer_interpreter(resolved: Path, target: os.stat_result) -> bool:
+    """Read kernel executable identity; owner and source limits remain separate."""
+    try:
+        first = _source_node_identity(Path("/proc/self/exe").stat())
+        current = _source_node_identity(resolved.stat())
+        last = _source_node_identity(Path("/proc/self/exe").stat())
+    except OSError:
+        return False
+    return first == current == last == _source_node_identity(target)
+
+
+def _validate_executable_input(path: Path, resolved: Path, target: os.stat_result, occurrences: set[_ExecutableInput], *, data: bytes | None = None) -> None:
+    """Bind actual dispatch semantics before applying the trusted-program boundary."""
+    if not stat.S_ISREG(target.st_mode):
+        raise CommandSourceUnavailable("local command source is an unsupported filesystem object")
+    literal_family, resolved_family = _dispatcher_family(path), _dispatcher_family(resolved)
+    trusted_pair = _trusted_program(path) and _trusted_program(resolved)
+    for occurrence in occurrences:
+        if literal_family or resolved_family:
+            if not literal_family and resolved_family:
+                raise CommandSourceUnavailable(_EXECUTABLE_ALIAS_ERROR)
+            if resolved_family != literal_family:
+                raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
+            if occurrence.argv0 != str(path):
+                raise CommandSourceUnavailable("overridden dispatcher argv[0] is unsupported")
+            if literal_family == "posix-shell":
+                allowed_shells = {Path(root) / name for root in ("/bin", "/usr/bin") for name in ("sh", "dash")}
+                if path not in allowed_shells or resolved not in allowed_shells:
+                    raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
+            elif literal_family in ("unsupported-shell", "env"):
+                raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
+            elif literal_family not in ("python", "node", "perl", "ruby") and path.parent not in (Path("/bin"), Path("/usr/bin")):
+                raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
+            if not trusted_pair:
+                trusted_python = _trusted_program(resolved) and target.st_uid == 0 and not target.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and bool(target.st_mode & stat.S_IXUSR)
+                if not (literal_family == resolved_family == "python" and occurrence.isolated_module and (trusted_python or _matches_observer_interpreter(resolved, target))):
+                    raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
+        elif not trusted_pair and not _trusted_program(resolved):
+            # Local ELF or other opaque executable bytes do not establish the
+            # dependency closure of the program that those bytes implement.
+            if data is not None:
+                shebang = data.partition(b"\n")[0]
+                if not re.fullmatch(rb"#![ \t]*/(?:usr/)?bin/(?:sh|dash)(?:[ \t]+-[aefnuvxC]+)?[ \t]*", shebang):
+                    raise CommandSourceUnavailable(_EXECUTABLE_PROFILE_ERROR)
 
 
 def _dynamic_local_dispatch(text: str, *, shell_source: bool = False) -> bool:
@@ -359,6 +487,7 @@ def observe_command_sources(
     cues: tuple[str, ...],
     known_modules: tuple[tuple[str, str], ...] = (),
     shell_source: bool = False,
+    systemd_readback: bool = False,
 ) -> tuple[tuple[CommandSourceFact, ...], bool]:
     """Read known local inputs; selectors never decide whether a source is safe."""
     if len(text.encode()) > _MAX_SOURCE_BYTES:
@@ -368,15 +497,20 @@ def observe_command_sources(
     shell_inputs: set[str] = set()
     environment_inputs: set[str] = set()
     reviewed_module_inputs: set[str] = set()
+    executable_inputs: dict[str, set[_ExecutableInput]] = {}
 
-    def inputs(source: str, *, shell_source: bool = False, reviewed_module: bool = False) -> list[str]:
+    def inputs(source: str, *, shell_source: bool = False, reviewed_module: bool = False, systemd_readback: bool = False) -> list[str]:
         shell_source = shell_source or bool(re.match(r"#![^\n]*(?:/|[ \t])(?:sh|bash|dash)(?:[ \t]|\n|$)", source))
         executable_source = source.partition("\n")[2] if reviewed_module and source.startswith("#!") else source
         if _unprofiled_interpreter_dispatch(executable_source, selected_modules):
             raise CommandSourceUnavailable("unprofiled local interpreter dispatch or source binding is unsupported")
         if _dynamic_local_dispatch(executable_source, shell_source=shell_source):
             raise CommandSourceUnavailable("opaque dynamic or relative local script dispatch is unsupported")
+        execution_inputs = [] if reviewed_module else _command_executable_inputs(executable_source, systemd_readback=systemd_readback)
         references = list(_references(source))
+        for name, command in execution_inputs:
+            executable_inputs.setdefault(name, set()).add(_executable_input(name, command, selected_modules))
+            references.append(name)
         shell_inputs.update(references if shell_source else _shell_script_references(source))
         environment_inputs.update(_environment_file_references(source))
         modules = _MODULE.findall(source) if re.search(r"\bpython[0-9.]*\b", source) else []
@@ -387,10 +521,11 @@ def observe_command_sources(
             reviewed_module_inputs.add(selected_modules[module])
         return references
 
-    pending = inputs(text, shell_source=shell_source)
+    pending = inputs(text, shell_source=shell_source, systemd_readback=systemd_readback)
     facts: dict[str, CommandSourceFact] = {}
     inspected_shell_inputs: set[str] = set()
     inspected_environment_inputs: set[str] = set()
+    inspected_executable_inputs: dict[str, set[_ExecutableInput]] = {}
     candidate = any(cue in text for cue in cues)
     total_bytes = 0
     owners = frozenset((0, uid))
@@ -403,14 +538,14 @@ def observe_command_sources(
             previous = facts[name]
             as_shell = name in shell_inputs and name not in inspected_shell_inputs
             as_environment = name in environment_inputs and name not in inspected_environment_inputs
-            if (as_shell or as_environment) and previous.kind == "file":
+            as_executable = bool(executable_inputs.get(name, set()) - inspected_executable_inputs.get(name, set()))
+            if (as_shell or as_environment or as_executable) and previous.kind == "file":
                 path = Path(name)
                 try:
                     resolved = path.resolve(strict=True)
                     data, after = _protected_source(resolved, owners=owners)
                     info = path.lstat()
-                    script = data.decode("utf-8")
-                except (OSError, UnicodeDecodeError, UserControllerUnavailable) as exc:
+                except (OSError, UserControllerUnavailable) as exc:
                     raise CommandSourceUnavailable("cached local shell input cannot be independently reobserved") from exc
                 if (
                     str(resolved) != previous.resolved
@@ -423,6 +558,13 @@ def observe_command_sources(
                 total_bytes += len(data)
                 if total_bytes > _MAX_SOURCE_BYTES:
                     raise CommandSourceUnavailable("local command-source bytes exceed bound")
+                if as_executable:
+                    _validate_executable_input(path, resolved, after, executable_inputs[name], data=data)
+                    inspected_executable_inputs[name] = set(executable_inputs[name])
+                try:
+                    script = data.decode("utf-8") if as_shell or as_environment else ""
+                except UnicodeDecodeError as exc:
+                    raise CommandSourceUnavailable("cached local shell input cannot be independently reobserved") from exc
                 if as_environment:
                     if _bash_startup_environment(script):
                         raise CommandSourceUnavailable("Bash startup environment is unsupported")
@@ -431,6 +573,26 @@ def observe_command_sources(
                     nested = inputs(script, shell_source=True)
                     inspected_shell_inputs.add(name)
                     pending.extend(nested)
+            elif as_executable:
+                path = Path(name)
+                try:
+                    info = path.lstat()
+                    resolved = path.resolve(strict=True)
+                    target = resolved.stat()
+                except FileNotFoundError:
+                    if previous.kind == "missing":
+                        inspected_executable_inputs[name] = set(executable_inputs[name])
+                        continue
+                    raise CommandSourceUnavailable("cached local executable input changed during observation") from None
+                if (
+                    str(resolved) != previous.resolved
+                    or path.resolve(strict=True) != resolved
+                    or (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mode, info.st_uid) != (previous.device, previous.inode, previous.ctime_ns, previous.mode, previous.uid)
+                    or (target.st_dev, target.st_ino, target.st_ctime_ns) != (previous.source_device, previous.source_inode, previous.source_ctime_ns)
+                ):
+                    raise CommandSourceUnavailable("cached local executable input changed during observation")
+                _validate_executable_input(path, resolved, target, executable_inputs[name])
+                inspected_executable_inputs[name] = set(executable_inputs[name])
             continue
         path = Path(name)
         if not path.is_absolute() or ".." in path.parts or len(name) > 4096:
@@ -449,11 +611,10 @@ def observe_command_sources(
             if not _trusted_program(path) or name in environment_inputs:
                 facts[name] = CommandSourceFact(name, name, "missing", 0, 0, 0, 0, 0, "")
             continue
-        # Reclassify the actual executable after symlink and directory resolution.
-        # An alias to a dispatcher cannot inherit a non-dispatching source profile.
-        if path != resolved and _DISPATCHER_BASENAME.fullmatch(resolved.name) and not _DISPATCHER_BASENAME.fullmatch(path.name):
-            raise CommandSourceUnavailable("resolved executable alias hides unsupported dispatcher dispatch")
         candidate = candidate or any(cue in str(resolved) for cue in cues)
+        if name in executable_inputs:
+            _validate_executable_input(path, resolved, target, executable_inputs[name])
+            inspected_executable_inputs[name] = set(executable_inputs[name])
         if _trusted_program(path) and _trusted_program(resolved) and name not in environment_inputs:
             # Trusted distro programs are not recursively interpreted. Root's
             # unrelated-service review remains a deliberate trust boundary.
@@ -478,6 +639,8 @@ def observe_command_sources(
             interpreted = path.suffix in (".py", ".pl", ".rb", ".js") or bool(re.match(rb"#![^\n]*(?:/|[ \t])(?:python[0-9.]*|node|nodejs|perl|ruby)(?:[ \t]|\n|$)", data))
             if interpreted and name not in reviewed_module_inputs and name not in environment_inputs:
                 raise CommandSourceUnavailable("unprofiled local interpreter source is unsupported")
+            if name in executable_inputs:
+                _validate_executable_input(path, resolved, after, executable_inputs[name], data=data)
             facts[name] = CommandSourceFact(name, str(resolved), "file", original.st_dev, original.st_ino, original.st_ctime_ns, original.st_mode, original.st_uid, hashlib.sha256(data).hexdigest(), after.st_dev, after.st_ino, after.st_ctime_ns)
             if name in environment_inputs:
                 try:

@@ -212,6 +212,21 @@ Resolve and classify the actual target even when the alias and its protected
 source bytes remain unchanged. An explicitly reviewed isolated `-I -B -m`
 module retains its separate source binding.
 
+Each executable occurrence retains both the literal command spelling and its
+independently resolved target, separately from plain data references.
+Unprofiled aliases, noncanonical dispatcher paths and local executable binaries
+without a supported dependency profile refuse. Canonical packaged shell paths
+retain their bounded argument rules, and explicitly reviewed isolated Python
+module calls retain their separate source profile. A noncanonical Python path
+must resolve to protected trusted Python or the observer's actual kernel
+executable identity; a Python-like filename and module flags alone are
+insufficient. The existing source ownership, identity and size limits still
+apply. Original argv and native
+systemd metadata remain unchanged; resolution does not rewrite an overridden
+argv[0] into an apparently supported command. Plain data references are kept
+separate from executable occurrences, including when one path is encountered
+again in a newly executable role.
+
 A direct system-manager executable name has a separate measured systemd 255
 profile. The installed `systemd-path` utility and running manager versions must
 match, and the native compiled search order must be exactly
@@ -370,6 +385,17 @@ from the exact original supervisor. The quarantine fixture prepares a genuine
 installed runtime using the published tested-source record, public GitHub
 readback and synthetic OAuth; no fake READY receipt or bootstrap substitution is
 accepted as original-source evidence.
+
+Before the full-profile approvals, a separately owned native systemd probe checks
+a local absolute alias to the actual protected OS shell. Direct packaged-program
+and bounded packaged-shell controls must first pass. The real helper is then
+executed before and after an in-place rewrite; unchanged unit, environment,
+directory, alias and shell identities must accompany different real output, and
+the actual systemd source reader must refuse the specific unprofiled dispatcher
+in both phases. The probe retains measured identities, hashes, actual outputs
+and refusal evidence, removes its owned unit and verifies its absence from the
+catalog before the complete ordinary/quarantine cases begin. This source probe
+supplements their complete production CLI results.
 
 This driver requires a separately provisioned root-private
 `/etc/auto-coder-disposable-containment-host.json` matching its authorization ID,
