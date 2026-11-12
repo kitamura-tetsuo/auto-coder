@@ -70,6 +70,10 @@ def main() -> None:
         "--log-file",
         os.path.join(os.environ["AUTO_CODER_RUNTIME_ROOT"], "logs", "auto-coder.log"),
     ]
+    if os.environ.get("GITHUB_TOKEN") in {"nonfunctional-ci-placeholder", "nonfunctional-disposable-no-github-write"}:
+        # Offline fixtures may bypass the CLI's live GitHub startup probe using
+        # only a fixed, non-secret placeholder. Never put a real token in argv.
+        command.extend(["--github-token", "nonfunctional-ci-placeholder"])
     run_in_process = False
     if os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME") == os.environ.get("VIRTUAL_ENV") and os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"):
         import asyncio
