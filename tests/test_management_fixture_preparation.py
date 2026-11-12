@@ -10,6 +10,8 @@ import pytest
 import yaml
 from scripts import prepare_management_test_image as preparation
 
+from tests.support.ci_browser_install import assert_conditional_chromium_install
+
 
 @pytest.mark.parametrize("name,selection", [("publish-beta.yml", 'bash scripts/test.sh -m "not opencode_live"'), ("test-source-for-runtime.yml", "uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin")])
 def test_complete_workflow_prepares_python_fixture_before_unchanged_tests(name, selection):
@@ -34,6 +36,42 @@ def test_dirty_fixture_does_not_build_or_publish_identity(tmp_path, monkeypatch)
     assert not output.exists()
 
 
+def test_source_fixture_exports_buildable_tag_only_after_immutable_verification(tmp_path, monkeypatch):
+    identity = SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0")
+    image_id = "sha256:" + "b" * 64
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: identity)
+    monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + identity.source_revision + '"}')
+    monkeypatch.setattr(preparation.subprocess, "run", Mock())
+    check_output = Mock(side_effect=[image_id, "/opt/auto-coder/.venv\n"])
+    monkeypatch.setattr(preparation.subprocess, "check_output", check_output)
+    verify = Mock(return_value=image_id)
+    monkeypatch.setattr(preparation, "verify_image", verify)
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
+    github_env = tmp_path / "github-env"
+
+    assert preparation.prepare_image(tmp_path, github_env) == image_id
+    verify.assert_called_once_with(tmp_path, image_id)
+    assert check_output.call_count == 2
+    assert check_output.call_args.args[0][check_output.call_args.args[0].index("--entrypoint") + 1] == "python3"
+    assert github_env.read_text() == "AUTOCODER_FRESH_TEST_BASE_IMAGE=auto-coder:management-fixture-aaaaaaaaaaaa\n"
+
+
+def test_source_fixture_refuses_system_python_without_export(tmp_path, monkeypatch):
+    identity = SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0")
+    image_id = "sha256:" + "b" * 64
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: identity)
+    monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + identity.source_revision + '"}')
+    monkeypatch.setattr(preparation.subprocess, "run", Mock())
+    monkeypatch.setattr(preparation.subprocess, "check_output", Mock(side_effect=[image_id, "/usr/local\n"]))
+    monkeypatch.setattr(preparation, "verify_image", Mock(return_value=image_id))
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
+    github_env = tmp_path / "github-env"
+
+    with pytest.raises(RuntimeError, match="installed runtime dependencies"):
+        preparation.prepare_image(tmp_path, github_env)
+    assert not github_env.exists()
+
+
 @pytest.mark.parametrize("failure", ["build", "malformed_identity", "provenance_mismatch"])
 def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0"))
@@ -54,14 +92,22 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
 
     dockerfile = build.call_args.kwargs["input"]
     assert "FROM python-environment AS management-test-fixture" in dockerfile
+    assert 'ENV PATH="/opt/auto-coder/.venv/bin:${PATH}"' in dockerfile
     assert "build_provenance embed" in dockerfile
     assert build.call_args.kwargs["text"] is True
 
 
 def test_source_fixture_precedes_checkout_local_chromium_download():
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/test-source-for-runtime.yml").read_text())
-    commands = [step.get("run") for step in workflow["jobs"]["complete-source-shard"]["steps"]]
-    assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index("uv run playwright install --with-deps chromium")
+    steps = workflow["jobs"]["complete-source-shard"]["steps"]
+    names = [step.get("name") for step in steps]
+    fixture = names.index("Prepare Python-only management test fixture")
+    install = names.index("Install Chromium")
+    preflight = names.index("Verify real headless Chromium")
+    selection = names.index("Run complete required source selection")
+    assert fixture < install < preflight < selection
+    assert_conditional_chromium_install(steps[install])
+    assert steps[preflight] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
 
 
 @pytest.mark.parametrize("failure", ["missing", "wrong_identity"])

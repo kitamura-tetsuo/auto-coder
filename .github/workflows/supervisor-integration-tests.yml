@@ -504,6 +504,7 @@ jobs:
       AUTO_CODER_INTEGRATION_UV_CACHE_DIR: ${{ github.workspace }}/.cache/nested-preparation-uv
       PYTHONPATH: ${{ github.workspace }}/scripts
       AUTOCODER_SUPERVISOR_IMAGE: auto-coder:supervisor-${{ github.sha }}
+      AUTOCODER_FRESH_TEST_BASE_IMAGE: auto-coder:supervisor-${{ github.sha }}
       AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"
       SUPERVISOR_PROFILE: isolated-containers
       SUPERVISOR_SHARD_ID: ${{ matrix.shard }}

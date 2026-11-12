@@ -1,0 +1,48 @@
+name: NEW Docker Private Engine Acceptance
+
+'on':
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  private-engine:
+    name: NEW private Engine first-launch probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - name: Install locked test dependencies
+        run: uv sync --locked --dev --extra test
+      - name: Build immutable management test image
+        run: uv run python scripts/prepare_management_test_image.py
+      - name: Prove private Engine parent, excluded API starts, and retained first child
+        timeout-minutes: 48
+        env:
+          AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE: "1"
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          set -euo pipefail
+          docker --host=unix:///var/run/docker.sock pull docker:29-dind
+          uv run pytest -q -vv --maxfail=1 --basetemp="$(mktemp -d /tmp/acne-XXXXXX)" \
+            tests/test_management_new_private_engine_docker.py \
+            tests/test_management_new_private_engine_gate.py

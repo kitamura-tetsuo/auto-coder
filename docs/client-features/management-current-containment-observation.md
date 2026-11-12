@@ -1,35 +1,27 @@
-# Read-only current containment prerequisite observations
+# Read-only current management containment observation
 
-`python -m auto_coder.management.containment_observation` provides a bounded
-**unavailable prerequisite report**, not a successful closed-profile observation.
-Issue #2827 is not fully implemented by this adapter. Neither selector currently
-has an accepted production profile. The existing `fresh_host` capture/claim/guard,
-replacement admission, retained journal and original owner boundaries are unchanged.
-No recovery launch or admission from #2824/#2825 is implemented here.
+`python -m auto_coder.management.containment_observation` independently observes a
+separately approved current management deployment. A complete observation has
+status `observed-current-containment` and exit code **0**. Any missing, changed,
+uninspectable or unsupported authority produces `unavailable` and exit code
+**2**. Partial components never satisfy the complete result.
 
-The explicitly versioned selectors are `ordinary-v1` and
-`quarantined-original-v1`. They identify requested review targets, not reviewed
-original source evidence. The adapter must not infer that today's installed
-bootstrap bytes were the original deployed bytes. The ordinary source currently
-in this checkout takes `.supervisor-owner.lock` exclusively in
-`ManagementBootstrapSupervisor.run` before calling `_run_owned`; that source inspection
-does not bind an original deployment to that implementation or owner inode.
-The quarantine selector continues to report unresolved original lifetime,
-support-mount execution-effect and provenance authority. A narrowly reviewed
-*current* command, `no-new-privileges` and file/directory bind-mount component
-can now be inspected when separately enrolled protected evidence exists; this
-does not accept a quarantine configuration as a replacement profile or loosen
-the existing replacement checks.
+The result is current evidence, not historical continuity, an admission decision,
+a recovery action or permission to launch. The observer creates no enrollment,
+inhibits no controller, acquires no owner lock and retains no namespace resource
+after return. The existing fresh-host replacement, admission and journal rules
+remain separate. Successful component tests do not constitute real-host acceptance
+of Issue #2827; the full ordinary and quarantined host tests remain a merge gate.
 
-## Interface and available facts
+## Scope and CLI
 
-Create a scope selection JSON with exactly these keys:
+A scope file selects exactly one proposed deployment and original container pair:
 
 ```json
 {
-  "deployment_id": "proposed-deployment",
-  "enrollment_id": "proposed-enrollment",
-  "authorization_id": "proposed-authorization",
+  "deployment_id": "selected-deployment",
+  "enrollment_id": "approved-enrollment",
+  "authorization_id": "separate-operator-approval",
   "profile": "ordinary-v1",
   "management_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "proxy_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -37,680 +29,292 @@ Create a scope selection JSON with exactly these keys:
 }
 ```
 
-IDs here select a proposed scope only. `files` can select up to 32 sorted unique
-absolute file paths, for example the installed controller source and effective
-configuration. Canonical regular files of at most 1 MiB are read without following
-symlinks. The report includes their device, inode, size, change/modification times
-and SHA-256, never file contents. It checks their identities again after Docker
-observation. File hashes are observations, not independent enrollment approval or
-proof that the configuration is immutable. Files, stores and owner locks are not
-created, locked, repaired or modified by these reads.
+The supported selectors are `ordinary-v1` and `quarantined-original-v1`. Selectors,
+operator file lists and names do not establish approval. Duplicate keys, unknown
+fields, unsupported profiles, abbreviated container IDs and relative paths refuse.
+The optional sorted unique `files` list can select up to 32 canonical regular files,
+each at most 1 MiB. Reports expose identities and SHA-256 digests, not file contents.
 
 ```sh
 python -m auto_coder.management.containment_observation observe \
-  --scope /private/proposed-scope.json > /private/prerequisites.json
+  --scope /private/scope.json > /private/current-observation.json
 python -m auto_coder.management.containment_observation verify \
-  --scope /private/proposed-scope.json --previous /private/prerequisites.json
+  --scope /private/scope.json --previous /private/current-observation.json
 ```
 
-Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v10` includes the full
-proposed scope and its hash, a new observation UUID, current boot ID, observer PID
-and process-start token, monotonic observation interval, observed file identities,
-available Docker identities and explicit unavailable authorities/reasons.
-Malformed inputs also return 2 with an unavailable diagnostic. Duplicate JSON
-keys, arbitrary profile names, relative paths and ambiguous container IDs refuse.
+The `current-containment-observation-v11` report contains the exact scope and hash,
+a fresh observation ID, boot/process lifetime and monotonic sampling interval,
+file identities, whole-engine Docker facts, protected enrollment, original source
+and mount profile, watcher, approved route inventory and original kernel checks.
+All missing predicates have explicit unavailable reasons.
 
-The Docker reader only uses `context inspect`, `info`, unfiltered `container ls`
-and container `inspect`.
-It requires the local `/var/run/docker.sock` context and refuses Docker endpoint
-overrides. Complete inspection hashes bind selected container IDs to the engine,
-image, effective command, mounts, security options, restart configuration and
-current Docker lifetime without exposing environment/configuration contents.
-Two independent complete engine reads must agree. This inventory includes every
-listed container; it does **not** establish deployment enrollment, close launch
-routes or prove task absence. The v7 report additionally derives potential
-management routes from the selected pair's Docker images, installed
-bootstrap/serve commands, and shared management network namespace. Unselected
-matches remain visible as refusals in the independent verifier. These are
-conservative candidates, not an authoritative inventory of all installed routes.
-The inventory also treats another container as a management candidate when its
-bind-mount source overlaps the selected manager's original bootstrap, child
-state, management-source or management-versions source root, even when the
-other container uses a different image and command. A similarly named but
-non-overlapping directory does not count as the same root. This detects an
-additional alternate-root path, but does not prove that all such paths have
-been enumerated outside Docker.
+`verify` runs the same independent observation path again. It compares the complete
+stable scope, authority and kernel identities; it validates sampling intervals
+without requiring two fresh samples to have identical timestamps. The original
+producer may have exited. Its saved assertion cannot replace any current read.
+Cross-deployment, enrollment, authorization, profile, boot, file, container,
+controller or holder substitutions refuse. A saved launch-grant status is invalid.
+A new consumer observation is successful only while every required external
+namespace pin and exclusive owner-lock holder remains independently inspectable.
 
-The verifier independently reads the selected current files, Docker facts,
-selected Linux process facts and the fixed watcher systemd route; it never
-accepts a saved success assertion. It compares scope, boot, file, Docker,
-process, watcher and resource-limit observations,
-including all prior explicit unavailable reasons. Removing or replacing missing
-prerequisite reasons in a saved report is detected even though the reobserved
-result always remains unavailable. Its fresh process and observation identities
-differ from the producer. Agreement does not remove any missing prerequisite.
-A saved object remains unavailable after the producer exits, and is never a
-launch grant, historical completeness claim,
-continuous exclusion, or reservation of a listener/namespace.
+## Authority and supported host
 
-## Missing authoritative prerequisites
+Observation requires initial-namespace Linux host root, host PID/user/mount/network
+visibility, unrestricted procfs and cgroups, and the local `/var/run/docker.sock`
+engine. Docker endpoint overrides and remote contexts refuse. A separate VM has
+its own initial host namespaces; ordinary nested Docker does not satisfy this
+host contract.
 
-An accepted production observer still requires initial-namespace Linux host root,
-unrestricted host procfs/cgroup visibility and local Docker authority. More
-importantly, it requires original authoritative deployment provenance or a
-separately approved present-time enrollment and independent original installed
-source/controller/route authority. Merely naming an enrollment or supplying
-operator lists is insufficient. No enrollment or controller mutation is performed here.
+Docker reads use context inspection, engine identity, unfiltered container lists,
+container inspection and bounded copies of the exact reviewed bootstrap file.
+The complete engine inventory is read twice. Unselected containers using selected
+images, management commands, a shared management network namespace or overlapping
+original bind roots remain potential ordinary routes and cause refusal. An
+operator cannot hide an alternative by omitting it from the scope file. Busy or
+otherwise unsupported hosts can conservatively refuse; no global host filter is
+inferred from a selected pair.
 
-### Protected enrollment component (introduced in v4, external pin in v8)
+Approval is a separate trusted-host-operator action. The observer reads
+`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json` from a
+canonical root-owned mode-0700 directory. The file is a root-owned mode-0600 regular
+file. The exact enrollment, protected original files and prior lifetime evidence
+are independently reopened with device/inode, timestamps, size and hash checks.
+An inode replacement containing identical bytes is still a change.
 
-The v7 report optionally includes `approved_enrollment`, a bounded component
-readback from the fixed trusted-local path
-`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
-The observer never writes to that path. Initial-namespace host root (matching
-PID, user, mount and network namespaces to host PID 1, with unrestricted procfs)
-and an existing private
-root-owned directory (mode 0700), private regular file (mode 0600), canonical
-paths, exact deployment IDs, original image IDs and independently reopened
-protected original source/configuration and prior-evidence file identities are
-required. The observer reopens the enrollment, originals and prior evidence and
-compares file identity (device, inode, size, mtime and ctime) as well as exact
-contents/hashes across both reads. An inode replacement with identical bytes is
-an observed change and refuses, not evidence of an unchanged installed source.
-Absent, mismatched, mutable and uninspectable records contribute
-`approved-enrollment-component` refusal reasons. Unit-level fixtures use a
-separate explicitly injected private directory and their own UID, never the
-production CLI path.
+A separately approved **present-time enrollment** is valid authority; it need not
+prove past execution continuity. Root ownership alone is not a substitute for the
+operator's separate approval. The record selects the exact deployment, image,
+container, configuration and original lifetime scope, and carries
+`approved_observation_only: true`.
 
-The original v1 approval schema remains readable as an explicitly **unpinned**
-selection. The new `approved-current-containment-enrollment-v2` schema may bind
-an externally retained original network namespace FD through an exact holder
-PID, process-start token, boot ID, descriptor number, nsfs device/inode and
-`net:[inode]` identity. The trusted operator must have opened that FD **while
-the real original manager namespace was still alive** and must retain it
-through observation and verification. The observer never creates or replaces
-the FD, and a v1 record cannot silently gain pin authority. A path or PID
-selected by the operator is only a proposal until its actual live kernel
-object and holder lifetime are independently verified.
+The enrollment versions have distinct technical capabilities:
 
-An installed record only establishes that a protected *candidate approval
-component* can be inspected. File hashes and root ownership do **not** establish
-that bytes were the original running program, that an enrollment was separately
-approved, that its scope covers all ordinary restart/launch routes, or that
-Docker/kernel/owner-fence containment holds. The report therefore continues
-to carry the independent `deployment-enrollment`, `original-source-profile`,
-`ordinary-route-closure` and `kernel-containment` unavailable reasons and
-always returns status 2. There is no accepted profile, authority to launch or
-full-scope positive fixture yet.
+| Schema suffix | Independently observable resource | Complete result |
+| --- | --- | --- |
+| v1 | Protected selection and original files/lifetimes | Insufficient: no retained namespace or owner fence |
+| v2 | v1 plus a live external original network namespace FD | Insufficient: no external exclusive owner fence |
+| v3 | v2 plus a live external exclusive flock on the exact original owner inode | Eligible only when all source, route and kernel checks also pass |
 
-### Protected ordinary-route manifest component (introduced in v9)
+The namespace holder must open the real original nsfs object while the manager is
+alive and retain that descriptor through every observation. The owner-fence holder
+acquires its exclusive lock after the original manager stops. Both are separately
+authorized operator activities. Their boot, PID/start token, descriptor and object
+identities are bound in the protected enrollment and independently rechecked with
+PIDFD/kernel readback. The observer never creates those resources on demand.
 
-The trusted host operator can separately review and install a private
-`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.routes.json`
-file, owned by root and mode `0600`, beneath the existing private mode `0700`
-root. The observer **never creates, repairs or signs** it. Its strict
-`approved-management-ordinary-routes-v1` schema binds the exact enrollment
-file SHA-256 and deployment/enrollment/authorization/profile IDs, requiring
-`approved_observation_only: true` and
-`complete_ordinary_routes_attested: true`. Neither a scope JSON nor a
-test-generated manifest establishes the trusted root's separate review.
+## Exact original source and effective execution
 
-The manifest lists and classifies the **entire** selected host-systemd
-activation-capable unit-file and loaded-unit universe (service, timer, socket,
-path, target, mount, automount and swap units, including unrelated ones). Each
-route has `unit`, a SHA-256 of freshly re-read effective
-`systemctl show` properties, `systemctl cat` source and mask-link identity,
-and `role: restarter` or `unrelated`. Root must review exclusions. The actual
-catalog is enumerated afresh, not selected by the manifest. Unknown or omitted
-units, changed effective configurations, enabled restarters and uninspectable
-states refuse. A restarter must be masked and inactive, with PID 0, no pending
-daemon reload and a root-owned `/dev/null` mask link. The known management
-proxy watcher must be a restarter; other management names and source-detected
-management commands cannot be approved as unrelated.
+Only the following reviewed bootstrap bytes are recognized:
 
-The `Wants`, `Requires`, `Triggers` and `TriggeredBy` dependency sets are sorted
-when hashed because systemd's presentation order is not stable. Added/removed
-dependencies still change the digest; command sequence and ordered drop-ins are
-not reordered. A previously approved digest from an older hashing version
-must be freshly reviewed and approved, never silently migrated.
-Kernel-reflected `.mount` units with no fragment are inventoried only when
-systemd identifies `/proc/self/mountinfo` as their source; they cannot count
-as inhibited restarters. Any other source-less loaded unit refuses.
+| Profile | Bootstrap SHA-256 |
+| --- | --- |
+| ordinary-v1 | `66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb` |
+| quarantined-original-v1 | `6a7da1f8f57aab76acb062a911598f75f4ea0b237308389f3807bc6368785e59` |
 
-The manifest also binds the complete unfiltered Docker ID set to the existing
-whole-engine readback; the complete directory/file census of fixed
-`/etc/cron*`, `/etc/anacrontab` and `/var/spool/{cron,at,atjobs}` roots;
-and root-protected local repair/recreate scripts with their masked systemd
-inhibitors. Known or source-detected cron restarters must have inhibited
-installed scheduler units. A cron symlink to a protected regular script is
-bound to both its own link identity/target text and the target's device, inode,
-change time and content hash; an uninspectable or nonregular target refuses.
-The root-attested remote-script origin list must
-currently be empty; any nonempty list refuses until authenticated remote
-scheduler and script reobservation is implemented. Root is responsible for
-reviewing the completeness of other local/remote origin and opaque wrapper
-classifications. Such root attestation is an explicit **trust boundary**, not
-proof that the observer technically discovered an absent remote script.
-
-The optional `route_manifest` observation contains the protected manifest's
-inode and SHA-256 and the current full systemd, cron, script and Docker
-readback. A separate verifier repeats all reads. Missing or changed authority
-or enabled/unreadable routes add `approved-route-manifest` refusal; no approval
-record is modified. This component alone is **not** proof of complete
-original-source, user-session systemd, alternative-root or kernel containment.
-
-For initial inspection, trusted host root can run
-`python -m auto_coder.management.containment_route_manifest propose --scope /private/proposed-scope.json`.
-The JSON result contains `status: unapproved-root-review-required`, with
-`complete_ordinary_routes_attested: false`, no inferred local scripts and no
-inferred remote origins. It is **not accepted by the reader as installed
-authority**. A separate root operator must audit every exclusion, missing
-local/remote controller origin, scheduler and route classification, arrange
-inhibition outside this read-only path, and explicitly approve a protected
-record. The proposal command itself neither installs nor modifies anything.
-
-The entire adapter remains unavailable with exit status 2 until its real
-full-profile positive test is passed. Protocol tests for this component are
-not substitutes for Issue #2827 AS-T01–AS-T05 original-origin acceptance:
-
-```sh
-python -m pytest -q tests/test_management_containment_route_manifest.py
-```
-
-For the specifically reviewed `ordinary-v1` bootstrap-source bytes
-(`66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb`),
-v7 additionally invokes read-only `docker cp` twice against the exact selected
-management container's installed
+The quarantined bytes match Git revision
+`1b23f3be30ca47926462e7d261ef98e79bb82728`, blob
+`594bec30aafa56852b9d9db3035718c7a1f9e887`. Both reviewed implementations acquire
+`.supervisor-owner.lock` exclusively before entering their launch path. These are
+exact byte profiles, not an allowlist of arbitrary images with similar commands.
+The installed bootstrap is copied twice from the selected container's
 `/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/management/bootstrap_supervisor.py`.
-It accepts only a bounded, regular, single-member tar archive with that filename
-and exact hash equality to the protected enrollment's independently re-read
-`bootstrap-source`. The source was inspected for exclusive
-`.supervisor-owner.lock` acquisition before `_run_owned`. The result is a
-non-authorizing `installed_bootstrap_source` component, re-observed and compared
-by the separate consumer. Other ordinary source digests, unreviewed profiles,
-archive ambiguity, failed Docker copy or changed bytes report
-`installed-bootstrap-source` unavailable. The same non-authorizing byte check
-now also recognizes **only** the reviewed `quarantined-original-v1` bootstrap
-SHA-256 `6a7da1f8f57aab76acb062a911598f75f4ea0b237308389f3807bc6368785e59`,
-independently copied from the stopped original image and verified against Git
-revision `1b23f3be30ca47926462e7d261ef98e79bb82728` (Git blob
-`594bec30aafa56852b9d9db3035718c7a1f9e887`). This image contains
-exclusive `.supervisor-owner.lock` acquisition before `_run_owned`.
+The bounded single regular tar member must match the protected enrolled source.
 
-Read-only original-host checks established that the selected stopped quarantined
-candidate's child runtime has `execution_kind=management-installed`, its
-executable/source root are under `/management-versions/`, and its arguments
-include `/bootstrap/management.yml`. The separate `/management-source` mount
-was not referenced by those recorded executable/source/argument paths. It is a
-directory mount, so it cannot be validated as a protected regular file directly.
-The optional quarantined mount component described below now admits an
-independently installed **regular-file descriptor** of that directory's exact
-path, identity and declared purpose. **Neither** a current image digest, runtime
-path check nor approved descriptor proves actual original-time execution effect,
-controller closure or kernel containment. The quarantined profile still emits
-`quarantined-original-profile` unavailable and cannot return a successful
-containment verdict in the present adapter.
-This review does not authorize replacing or launching a quarantined image.
-Any checked image file is current-byte evidence only, not proof it was
-historically executed; the full installed route, mount, owner-lock, kernel,
-and positive test requirements remain unresolved.
+The mount reader binds the full current Docker inspection to the original captured
+mount digest, exact command, configuration, security options, state/OAuth paths and
+owner inode. Both profiles reject ambiguous Python environment resolution and
+mounts shadowing the interpreter, package, `/workspace` working directory or user
+package paths. Examining one file is insufficient if the command could resolve to
+a different mounted module.
 
-### Reviewed original bootstrap effective mount/config components (v10)
+The ordinary profile supports the original directory mount at `/bootstrap` and
+its reviewed supervisor command. A command retaining `--fresh-initialization`
+after successful initialization is supported only with independently read,
+protected intent, launch claim, launch and successful outcome records, matching
+configuration hashes and original state/journal/OAuth/guard/owner identities.
+The initialized container identity is recorded separately from the current
+supervisor identity: the reviewed source supports reconstruction after successful
+initialization. Current lifetime evidence must still identify the actual current
+container and process.
 
-If the protected enrollment, original prior-container evidence and matching
-reviewed ordinary image source are available, the optional
-`installed_mount_profile` independently re-reads the selected manager/proxy
-Docker inspections twice and binds them to the whole-engine inventory. The
-manager's exact bootstrap entrypoint, security options, original whole-container
-bind-mount digest, proxy network mode and original proxy mount digest must match
-the supported ordinary capture. This also rejects added, omitted or shadowing
-mounts, including a submount obscuring `/bootstrap`, the owner state directory
-or the OAuth directory. It verifies the `/bootstrap` source is read-only, the
-state/OAuth sources are writable as originally captured, and `/bootstrap/config.json`
-is the same current protected original file that the live original producer
-identified. That file's instance/state/OAuth references and every configured
-management runtime's `--config` path are independently compared with the
-protected original `management-config` under the same bootstrap mount.
+The quarantined-original profile separately checks the exact fresh-initialization
+command, `no-new-privileges`, read-only root filesystem, individual read-only
+`/bootstrap/config.json` and `/bootstrap/management.yml` mounts, writable original
+state/OAuth mounts and read-only `/management-versions` and `/management-source`.
+Its configured installed runtime must resolve under `/management-versions` and
+reference the protected management configuration. Healthchecks, unsupported
+security/mount effects and bootstrap executable/environment references to the support
+mount refuse. Observation-specific capture and stop checks cover this original
+profile without relaxing fresh replacement admission.
 
-For `quarantined-original-v1`, the optional reader separately checks the exact
-original *current* `python -m auto_coder.management.bootstrap_supervisor
---config /bootstrap/config.json --fresh-initialization` bootstrap command, the
-original `/workspace` working directory and empty container user, the selected
-manager's `no-new-privileges` and read-only root filesystem, captured whole-mount
-digests for both manager and proxy, proxy network binding, and read-only
-individual file mounts at `/bootstrap/config.json` and
-`/bootstrap/management.yml`. It checks writable state/OAuth mounts, read-only
-`/management-versions` and `/management-source` directory mounts, and refuses
-shadowing beneath those protected destinations. The two bootstrap file sources
-and their hashes must match re-read protected enrollment and prior evidence.
-The exact runtime's isolated Python executable/source must be under
-`/management-versions/` and its arguments must reference the mounted management
-config, not `/management-source`. The selected manager must not configure a
-healthcheck or refer to `/management-source` from its effective Docker config,
-including environment and working directory.
+A support-source original-file entry refers to a protected regular JSON descriptor
+of the exact read-only support directory, rather than treating a directory as a
+regular file. Its schema is `approved-quarantine-support-directory-v1`, purpose is
+`non-executed-bootstrap-reference`, destination is `/management-source`,
+`read_only` is true, and source/device/inode bind the actual canonical directory.
+The effective runtime and bootstrap resolution checks must agree with that role.
+This establishes the supported current mapping, without claiming no historical
+process ever executed from the directory.
 
-Because the support mount is a directory, its `support-source` original-file
-entry points to a separately installed, root-protected **regular JSON file**,
-not to the directory itself. The file must contain exactly the fields shown
-below, with the current Docker source path and the independently observed
-directory device and inode in the two numeric fields:
+Both original profiles require a real Caddy proxy with its reviewed
+`caddy run --config /etc/caddy/Caddyfile --adapter caddyfile` command and a protected,
+read-only, unshadowed Caddyfile bind. An unrelated `sleep` process or an unattached
+file labelled proxy configuration cannot satisfy the original proxy profile.
 
-```json
-{
-  "schema": "approved-quarantine-support-directory-v1",
-  "purpose": "non-executed-bootstrap-reference",
-  "source": "/absolute/root-protected/source/directory",
-  "destination": "/management-source",
-  "read_only": true,
-  "device": 123,
-  "inode": 456
-}
-```
+## Closed ordinary-route inventory
 
-The reader rejects noncanonical/mutable directory paths, changed identities,
-unexpected mount effects or runtime commands. The descriptor's purpose is an
-**approved claim** supported by a lexical runtime-path check; it is not proof
-that no imported module, symlink, config hook or prior process ever executed
-from that directory. An authoritative original capture is still required: a
-freshly created descriptor cannot retroactively prove original deployment.
+The separately approved route file is
+`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.routes.json`.
+It has the same protection rules and binds the exact enrollment hash and scope.
+The v2 schema `approved-management-ordinary-routes-v2` is required for complete
+closure. The older v1 component remains readable but cannot close user-controller
+or deployment-root scope.
 
-The separate consumer repeats the entire current inspection and protected
-config readback, compares the same component, and refuses modified mounts,
-commands, directory identities or config. Unsupported configurations or
-uninspectable files add `installed-bootstrap-mount-profile`. The components are
-bounded present-time command/config/mount checks, not a historical source
-provenance claim, a proxy effective-config validation, immutable mount
-reservation or complete controller/kernel closure. Existing capture tooling
-does not yet support the quarantined live original's individual-file mounts,
-so this optional quarantined reader has unit validation only, **not** a
-host-accepted original quarantine fixture. Both full entrypoints still return
-status 2 and unavailable.
+The reader independently enumerates and compares:
 
-### Original-kernel sub-observation (introduced in v7, external pin in v8)
+- The entire installed and loaded host systemd service, timer, socket, path,
+  target, mount, automount and swap catalog, effective properties, unit text,
+  drop-ins, dependencies and mask identities.
+- Local accounts, user-manager lifetimes, linger/runtime directories, installed
+  user unit trees and the actual live user managers' effective units and UnitPath.
+  An uninspectable bus, manager, source tree or unknown/missing route refuses.
+- Every Docker container ID and every actual selected manager/proxy bind source,
+  including canonical path, device/inode, mode, destination and writable effect.
+- Fixed `/etc/cron*`, `/etc/anacrontab` and `/var/spool/{cron,at,atjobs}` roots,
+  protected local repair/recreate scripts and their independently observed
+  inhibiting controllers.
+- Supported local executable, script and configuration inputs referenced by
+  controller commands. Their current bytes/identities are bound rather than
+  assuming an unchanged unit file implies an unchanged wrapper.
 
-When the protected approval and complete Docker inventory are available, the
-observer also reads the protected prior manager/proxy lifetime evidence again.
-It rechecks the exact original Docker/cgroup stop state (including captured
-process start tokens), scans every host `/proc/<pid>/task/<tid>/ns/net` entry
-for the old manager namespace, verifies that the recorded host listener is
-absent, reopens the original owner-file inode through the current state mount,
-and rereads the original evidence and Docker/cgroups afterward. These checks
-are bounded by existing host-root/procfs rules and return an optional
-`kernel_subobservation` component. A separate process independently repeats
-the checks and compares the complete saved component.
+The trusted operator reviews the entire catalog and every `restarter`/`unrelated`
+classification. Known management sources, names and overlapping deployment roots
+cannot be classified as unrelated. Each restarter must be masked, inactive, PID 0
+and free of pending daemon reload, with the expected protected `/dev/null` mask.
+Cron restarters need inhibited installed schedulers. Local script routes need an
+observed inhibited controller. Nonempty remote script origins refuse until an
+independent authenticated remote-controller reader exists. Root review of absent
+origins and unrelated packaged services is an explicit trusted boundary; this is
+not arbitrary-program analysis or protection against future privileged changes.
 
-A v1 *sub-observation* still adds `kernel-subcomponent-unpinned` because the
-original namespace has no proven live pin. For a v2 enrollment, the observer
-uses PIDFD/process-start/boot checks to open and retain the independently
-reopenable **original nsfs object** during its entire cgroup, all-task and
-listener scan. It rechecks the holder's PID lifetime, descriptor target,
-device/inode and original namespace after those reads, then closes its own FD.
-`external_namespace_pin_verified=true` is current **subcomponent evidence**:
-the external holder must survive, and a separate consumer must reopen the
-same kernel object afresh. A saved result does not retain a pin or reserve the
-namespace. Releasing or replacing the holder's FD after the producer exits
-must cause the verifier to refuse.
+The fixed `auto-coder-management-proxy-watch.service` is checked independently of
+the catalog. Its protected mask and current systemd state must agree with the
+approved route inventory. Known local watcher source/configuration inputs are
+independently bound when present; a mask can hide the older ExecStart text.
+A stopped Docker pair alone cannot
+satisfy a still-enabled watcher, timer, socket or repair route.
 
-For the v3 enrollment, a **separately authorized operator process** also
-acquires and retains an exclusive `flock` on the exact original owner file
-**after** the original manager stops. The enrollment selects that external
-process's PID/start token/boot, open FD and original file device/inode. The
-observer does not acquire a lock: it independently reopens the holder's FD,
-checks a real `FLOCK ADVISORY WRITE` kernel record owned by that exact live
-process, and checks its lifetime and lock again after the kernel scan. A
-second verifier must repeat these observations while the external process
-continues to hold the lock. Releasing the flock, closing/replacing the FD,
-changing the file, terminating the holder or reusing its PID causes refusal.
-An enrollment with no external lock holder now explicitly adds
-`kernel-subcomponent-unfenced`; a file's inode identity alone does not fence
-another controller. A v3 record does not retrospectively establish the
-original manager's prior lock or add historical execution authority. The
-separate fixture holder is test-only and cleans up its exclusive flock.
-
-All v1–v3 enrollments still retain `kernel-containment` as an independently missing
-full-profile condition. A positively pinned subcomponent is **not** a positive
-closed-profile verdict. Unreadable processes, nonleader namespace occupancy, wrong original
-cgroup/owner identities, occupied listeners, replaced prior evidence and
-interleaving changes add a specific `kernel-subcomponent` refusal. This path
-does not acquire an owner lock, pin a namespace, start a process or change a
-controller; it always releases read-only file descriptors before returning.
-
-Run the new bounded protected-record regressions with:
+A read-only proposal is available:
 
 ```sh
-bash scripts/test.sh --ci-tests-only tests/test_management_containment_enrollment.py
+python -m auto_coder.management.containment_route_manifest propose \
+  --scope /private/scope.json --closed-profile
 ```
 
-These tests use owner-private disposable files and real file identities, but
-the test-created approval record and prior facts are deliberately not accepted
-as original deployment authority or positive controller containment.
+The draft has `status: unapproved-root-review-required` and
+`complete_ordinary_routes_attested: false`. It is not accepted authority. An
+operator must audit classifications, supported local inputs, omitted/remote
+origins and inhibition before separately installing an approved record. Neither
+proposal nor observation modifies routes, user sessions or approval records.
 
-An optional host-only integration probe exercises the production `observe` and
-separate-process `verify` entrypoints against a disposable *real* Docker manager
-and proxy with a root-private test-only approval record. On an explicitly
-authorized Linux/Docker test host with the preexisting image
-`auto-coder:management-local-abc65544`, run as initial-namespace host root:
+## Original lifetime and kernel checks
+
+The kernel component reopens protected original manager/proxy lifetime evidence
+and checks exact Docker start/finish/restart identity, current stopped state and
+all original cgroup tasks. It scans every host process and nonleader thread for
+the original pinned network namespace and checks the original host listener.
+Escaped tasks, inaccessible observations, uncertain zombie lifetimes, occupied
+namespaces/listeners and interleaving identity changes refuse.
+
+During the scan the observer temporarily holds a reopened descriptor to the real
+externally retained nsfs object. It independently checks the exact holder's live
+exclusive `FLOCK ADVISORY WRITE` on the original owner inode, without taking a
+lock itself. Docker, original evidence, pin and owner holder are read again after
+the scan. A final complete observation pass also rechecks enrollment, selected
+files, Docker, source/mount mappings, watcher, routes and stable kernel identities.
+The observer closes its own descriptors on success and refusal.
+
+A saved result retains neither resource. Releasing a pin, owner flock or holder,
+replacing a descriptor/file, changing a controller or altering a scoped config
+causes a later independent verifier to refuse. The report cannot reserve future
+absence or authorize a replacement process.
+
+## Validation and disposable real-host acceptance
+
+Bounded automated regressions are run through the project runner:
 
 ```sh
-python scripts/test_management_containment_enrollment_host.py --confirm-test-only-fixture
+CI=true bash scripts/test.sh --ci-tests-only \
+  tests/test_management_containment_observation.py \
+  tests/test_management_containment_composition.py \
+  tests/test_management_containment_enrollment.py \
+  tests/test_management_containment_route_manifest.py \
+  tests/test_management_containment_kernel_subobservation.py \
+  tests/test_management_installed_bootstrap_mount_profile.py \
+  -m 'not supervisor_integration'
 ```
 
-To test an already installed, independently identified original image instead
-of the historical fixture tag, add `--test-image sha256:<64-hex-digit-image-id>`.
-The flag selects an immutable local image reference only: the script never
-pulls, retags, rebuilds, starts or changes an existing original container.
-The same explicit `--confirm-test-only-fixture` gate, disposable mounts and
-cleanup apply. Selecting original image bytes alone does not approve the
-original installed source, prove complete controller closure or enable a
-positive containment verdict.
-For a reviewed ordinary bootstrap image, additionally select
-`--require-reviewed-ordinary-source` to require both independent CLI processes
-to return both the successful installed-image source/lock-before-launch
-sub-observation and the separately re-read original command/mount/config
-component. That flag fails on altered original source, mount, effective command
-or protected config; it still does not claim full deployment closure.
+Composition tests inject component contracts to exercise status, replay, time and
+failure propagation. They are protocol tests, not full-host success evidence.
+The older `scripts/test_management_containment_enrollment_host.py` remains an
+explicitly authorized partial-component probe with a synthetic sleeping proxy;
+its image-source option checks source bytes only. Full mount/proxy acceptance is
+owned by the separate closed-host driver.
 
-An additional manual integration check is available with
-`--exercise-test-route-manifest`. It temporarily simulates a **test-only**
-root-approved complete-route declaration, reads the actual whole systemd,
-cron/at and Docker inventories, then requires both real CLI processes to
-re-read the same protected route component. The generated test declaration is
-not independent production review, and this check cannot establish an
-original-production positive closed-profile verdict. It always removes the
-test-only route file, leaving production approvals unchanged.
+`scripts/test_management_containment_closed_host.py` uses real Docker managers,
+a real Caddy proxy, actual systemd routes, real namespace descriptors/owner locks,
+and separate production `observe`/`verify` CLI processes. Successful scenarios
+must return 0 with every required component; deliberate route, source, lifetime,
+listener, pin and replay changes must return 2. Initialization/ledger facts come
+from the exact original supervisor. The quarantine fixture prepares a genuine
+installed runtime using the published tested-source record, public GitHub
+readback and synthetic OAuth; no fake READY receipt or bootstrap substitution is
+accepted as original-source evidence.
 
-With **separate explicit host approval for test-only systemd mutations**, add
-`--exercise-disposable-systemd` together with `--exercise-test-route-manifest`.
-This opt-in path creates only UUID-qualified `ac-test-pr2829-*` service, timer
-and socket units, whose service would start only the disposable fixture
-manager. It places their temporary fragments under `/run/systemd/system` and
-installs protected `/etc/systemd/system` masks for all three (not
-`masked-runtime`, which does not meet the verifier's permanent-mask rule).
-It independently reads the protected
-full-route manifest from the production `observe` and separate `verify`
-entrypoints, then temporarily unmasks **only the disposable service** and
-requires the verifier to refuse its changed/enabled route. It restores the
-mask, removes only its own verified runtime fragments and permanent mask links, and reloads
-the systemd catalog to eliminate test-unit references. It does not operate
-on installed Auto-Coder services or authorize any full-profile acceptance.
-The host systemd catalog and its daemon-reload are shared host facilities,
-so this option must never run under read-only authorization alone.
+This driver requires a separately provisioned root-private
+`/etc/auto-coder-disposable-containment-host.json` matching its authorization ID,
+current machine/boot/Docker identities and `synthetic_only: true`. It also requires
+an otherwise empty Docker inventory, an absent fixed watcher and an actual
+QEMU/KVM VM. The driver does not install its own authorization marker or turn a
+production host into a disposable test environment.
 
-This probe does not pull images. It creates uniquely named test containers and
-only its own files under `/var/lib/auto-coder/containment-readback-fixtures` and
-the fixed approval directory, and cleans up those resources after completion or
-failure. It checks that a protected test approval is actually read in both
-entrypoint processes, that the full containment verdict remains unavailable,
-and that a post-observation original-file substitution is rejected by the
-separate verifier. It additionally uses a separately identified live container
-in the old manager network namespace to force a kernel refusal; after stopping
-that fixture-only holder, it checks the current stopped-cgroup, namespace-scan
-and loopback-listener **sub-observations** in both CLI processes. The fixture
-parent retains a real FD opened from the original manager **before** it stops;
-after the last namespace occupant stops, the separate CLI processes each open
-and verify the same live original nsfs object, then release their own handles.
-Closing the parent FD deliberately proves a saved producer observation cannot
-be replayed as a current positive pin. It temporarily
-enables and restores only the disposable proxy's restart policy, introduces and
-removes a stopped same-image alternative manager candidate, and binds only the
-released test port to force a listener-conflict refusal. None of these is a
-positive *closed-profile* verdict: full original route/source/owner authority
-and both original profile validations are still missing. The probe does **not** exercise or alter the original production
-controllers, nor establish original production provenance or a full positive
-closed profile. The operator must ensure that the host, the fixed approval
-directory, the test image and temporary Docker/localhost-port effects are
-separately authorized before running this probe.
+The concrete VM package is under `scripts/containment_vm/`. Preparation exports
+only immutable preexisting images and the committed source; it does not launch
+a VM. Its Ubuntu cloud disk is SHA-256 pinned. The runner uses Docker Compose,
+2 vCPUs, 3 GiB guest RAM (4 GiB container limit), a 24 GiB sparse guest disk,
+read-only input and a dedicated writable evidence directory. It exposes
+`/dev/kvm` only to the temporary VM runner, with no host PID/network namespace,
+Docker socket, production volume, account token or SSH port forwarding. The
+guest uses public Ubuntu/PyPI/GitHub bootstrap access and its own Docker engine.
 
-### Fixed watcher systemd route component (introduced in v5)
-
-The report also exposes a bounded `watcher_systemd` fact for the exact
-`auto-coder-management-proxy-watch.service` installed path. The observer runs
-`systemctl show` twice and reads the filesystem unit identity and symbolic link
-twice. The component reports inhibition only if PID 1 identifies the unit as
-`masked`, `inactive`, `dead`, PID 0, `NeedDaemonReload=no` and its fixed
-fragment path is a root-owned link to `/dev/null`. A changed status or link
-identity during observation refuses. A missing, unmasked, enabled, running,
-stale or uninspectable unit adds a `watcher-systemd` unavailable reason. The
-separate consumer independently repeats these reads, compares the complete
-watcher fact and refuses replay after any observed state/identity change.
-
-This is **one** current installed restarter inhibition fact, not the complete
-set of relevant watcher/reconcile, service/timer/socket, script, Docker or
-repair routes. Even a verified mask does not remove the independent
-`ordinary-route-closure` refusal or establish positive current containment.
-The observer never runs `systemctl disable`, `mask`, `daemon-reload`, or any
-process lifecycle command. Those remain separately authorized host-operator
-actions, outside REQ-405 observer behavior.
-
-For deterministic protocol, mask identity, race and separate-consumer refusal
-regressions, run:
+On the separately authorized host, prepare and build without launching:
 
 ```sh
-.venv/bin/python -m pytest tests/test_management_systemd_watcher_observation.py tests/test_management_containment_observation.py -m 'not supervisor_integration'
+bash scripts/containment_vm/prepare.sh \
+  /var/tmp/ac-pr2829-vm-UNIQUE APPROVAL_ID
+docker compose --env-file /var/tmp/ac-pr2829-vm-UNIQUE/compose.env \
+  --project-name ac-pr2829-vm-UNIQUE \
+  --file scripts/containment_vm/compose.yaml build
 ```
 
-The installed route inventory must independently cover the actual watcher and
-explicit reconciliation, services/timers, socket activation, Docker restart
-policies, configured local and remote scripts, repair/recreate routes, and
-alternative roots. The v9 manifest reader verifies a bounded part of this
-inventory but does not yet establish complete original-profile closure.
-Unknown, omitted, enabled, uninspectable or mutable alternative
-routes cannot be declared outside the deployment. It does not impose a new threat
-model on trusted Docker, Git, worktrees or later administrator actions.
-
-An accepted observer also needs the exact original manager/proxy/task and boot
-lifetimes, all cgroup tasks including nonleaders, currently pinned namespace
-objects, current occupancy and endpoint listeners, and exact original owner-file
-fencing evidence. No such pins or fences are held by this report. Saved inode
-strings, stopped Docker state and inaccessible tasks cannot prove absence or
-exclude escaped tasks, namespace reuse, zombies with uncertain lifetimes, or
-observation races. Existing conservative host observation helpers are unchanged.
-All temporary read descriptors are closed before return, including refusals.
-
-## Validation boundary and remaining Issue coverage
-
-Run `bash scripts/test.sh --ci-tests-only
-tests/test_management_containment_observation.py -m 'not supervisor_integration'`.
-These regressions invoke the
-actual checked-out module in separate real Linux processes, fingerprint actual
-bootstrap source, detect changed controller source and alternate selected roots,
-reject cross-deployment/enrollment/authorization/profile replay, preserve selected
-retained-file contents and identities, and independently reobserve after producer
-exit. A deterministic unit interleaving supplements these tests for file mutation;
-it is not production authority or an acceptance substitute.
-
-These tests establish part of REQ-401/404/405/406's refusal and interface behavior.
-They do not establish complete REQ-401/402/403/404/406 compliance. All AS-T01–AS-T05
-production-host acceptance scenarios remain unpassed: positive exact-source
-ordinary/quarantine containment, real watcher/service/timer/socket/Docker route
-inhibition and omission detection, unselected alternate roots, escaped/nonleader
-tasks, namespace reuse/occupancy and conflicting listeners, exact mount/security
-substitution, controller races, and original-store/worker/OAuth preservation across
-real host attempts require the missing deployment authority, exact original
-profiles and isolated root/Docker/controller harness. The implementation sandbox
-denies Docker socket access, TCP socket creation and Unix socket binding, and
-runs as UID 1000, so those fixtures cannot run here. The bounded validation run
-also exercises the unchanged `tests/test_management_fresh_initialization.py`:
-its four socket-dependent cases fail with `PermissionError: Operation not
-permitted` in this sandbox. They are not skipped, weakened or counted as passing.
-No successful synthetic-profile test is reported as acceptance.
-
-This path creates no operation admission/dispatch, worker effect, OAuth change,
-recovery-success event, or Issue/PR dashboard trace. Its unavailable JSON is local
-diagnostic output only. Later integration of accepted evidence into #2824 owns
-the corresponding production trace-to-view obligations.
-
-## Complete current Docker inventory sub-observation
-
-The `current-containment-prerequisites-v10` report extends v9 with optional original
-ordinary/quarantined mount/configuration readback; v9 introduced protected
-ordinary-route observations. Earlier
-reports are refused; v1/v2 did not bind the complete engine inventory, and v4
-did not bind the current fixed watcher systemd route. `docker` includes
-**every** container returned by unfiltered `docker container ls --all --quiet
---no-trunc`, sorted by full ID, rather than only the proposed manager/proxy pair.
-Both selected objects must occur in that inventory. Each object records the engine,
-container and image IDs, inspection digest, mount digest, explicit current
-restart policy and retry limit, running/status/PID, Docker start/finish timestamps
-and restart count. `management_route_roles` records detected selected-image,
-bootstrap/serve-command and selected-management-network relationships. An
-installed controller candidate retains the unmodified full inspection digest,
-including its current Docker `ExecIDs`. For unrelated containers only, the
-short-lived `ExecIDs` value is normalized in the inspection digest: a normal
-`docker exec` poll is not a configured management launch or restart route.
-All other inspection fields, including effective command, mounts, restart
-policy, process status and lifetime, remain pinned. An
-unselected match generates `docker-alternative-management:<container-id>`
-until independent installed-controller membership and inhibition are established.
-If a protected enrollment was read, its engine and selected image identities
-are independently checked against current Docker inspection; mismatches generate
-`enrollment-live-docker`. Neither check is a complete route closure.
-Docker timestamps/PIDs are Docker observations, not independently
-correlated kernel lifetimes. Raw configuration, environment and mount contents are
-not emitted.
-
-Enumeration occurs before and after inspection; the entire read is then repeated.
-Engine/context changes, additions/removals, differing pinned inspections, missing selected
-objects, unsupported/missing restart policies or lifetime fields, contradictory
-Docker running/PID state, duplicate/short IDs, inspection failure and inventories
-over 512 containers refuse the Docker sub-observation. For a Docker-running
-object whose selected positive PID is independently unreadable, exited or lacks
-a current Linux boot/start lifetime, the adapter emits a container-specific
-`docker-process:<full-id>` unavailable reason; the separate consumer reobserves
-and compares that reason. A consistent selected PID remains only a partial
-observation, not proof that other escaped tasks or restarters are absent.
-The bound keeps saved reports within the verifier's file-size limit. The verifier
-repeats all these reads, including objects omitted from the proposed scope,
-and compares the full inventory. A configured `always`, `unless-stopped` or
-`on-failure` policy on the selected manager/proxy or an unselected **candidate
-management/proxy route** produces `docker-restart:<full-id>` unavailable, even
-when stopped. An unrelated running worker with its own Docker restart policy is
-still included in the complete inventory and rechecked by the verifier, but it
-does not itself require worker restart inhibition to prove management closure.
-A `no` policy is a positive observation of Docker's current configuration only;
-it does not establish inhibition by a watcher, service, timer, socket, script or
-repair route. Unselected objects remain of unresolved deployment membership;
-labels and names never exclude them. Inventory/digest agreement neither proves
-immutable source/configuration nor closes alternative roots.
-
-Every command still returns status 2. Both complete original profiles and
-positive closed-route/kernel acceptance remain unavailable. The route manifest
-is a separately reobserved component only. No original histories have been
-recovered.
-
-Run the bounded ordinary regressions with:
+Under an explicit authorization covering this disposable fixture, run:
 
 ```sh
-bash scripts/test.sh --ci-tests-only tests/test_management_containment_observation.py -m 'not supervisor_integration'
+APPROVED_AUTHORIZATION_ID=APPROVAL_ID docker compose \
+  --env-file /var/tmp/ac-pr2829-vm-UNIQUE/compose.env \
+  --project-name ac-pr2829-vm-UNIQUE \
+  --file scripts/containment_vm/compose.yaml up \
+  --abort-on-container-exit --exit-code-from fixture
 ```
 
-The deterministic Docker protocol tests are explicitly unit tests, supplementing
-the real Linux separate-process tests; they are not runtime acceptance evidence.
-The separate `test_real_docker_inventory_and_separate_consumer` fixture is selected
-and required by the Supervisor `isolated-containers` CI profile. To run it locally
-on an authorized disposable Docker test host with an already prepared image:
+The guest writes separate acceptance results and diagnostic artifacts before
+poweroff. A VM process exiting normally without a successful guest result is a
+failure. A used guest disk is not silently reused as a fresh acceptance run.
+Remove only this Compose project and its dedicated guest disk after preserving
+its evidence. Existing production controllers, workers, OAuth, approval records
+and failed managers are outside the fixture's mutation scope.
 
-```sh
-AUTOCODER_CONTAINMENT_TEST_IMAGE=python:3.12-slim bash scripts/test.sh --ci-tests-only tests/test_management_containment_observation.py::test_real_docker_inventory_and_separate_consumer
-```
-
-It also accepts the CI `AUTOCODER_SUPERVISOR_IMAGE`. It never pulls an image.
-It creates only randomly named `ac-containment-test-*` containers with networking
-disabled, never starts them, changes a restart policy only on one such container,
-and removes only its own objects. It mounts a disposable copy of current bootstrap
-source and fingerprints a retained fixture file. It drives the real producer and
-separate verifier after producer exit, checks unchanged inventory readback, then
-adds an unselected object with a configured restarter and substitutes selected
-source bytes. This validates only the Docker inventory and file sub-observations;
-it does not run the exact original controller or qualify AS-T01–AS-T05 as passed.
-
-In the prior v2 revision session, 30 ordinary tests passed. The real Docker case
-failed at its first `docker info` call with socket permission denied, before
-creating any fixture object; it was not skipped. Host UID was 1000. Thus positive
-Docker/controller acceptance remains unverified in this environment, and Issue
-#2827/PR #2829 remain incomplete. No production or beta deployment is performed.
-
-
-## Current Linux process observation component (bounded REQ-402/REQ-406 work)
-
-The v6 prerequisite report retains `processes`: current `/proc` observations for
-positive PIDs in the Docker inventory. A stopped object's PID 0 supplies no task
-absence evidence. Docker PIDs only select proposed current processes; this does
-not correlate them to original manager/proxy lifetimes or discover escaped tasks.
-The full entrypoint still returns unavailable and exit status 2.
-
-The same read-only component can be exercised without Docker for explicitly
-selected thread-group leaders, independently of deployment authorization:
-
-```sh
-.venv/bin/python -m auto_coder.management.proc_observation observe --pid 1234 > .agent-tmp/process-facts.json
-.venv/bin/python -m auto_coder.management.proc_observation verify --pid 1234 --previous .agent-tmp/process-facts.json
-```
-
-Both commands always return status 2 and `status: unavailable` under the separate
-`current-proc-facts-v1` schema. Supply the consumer's intended PIDs explicitly;
-saved objects never choose its scope. The consumer reopens procfs and pidfds and
-compares fresh complete process facts, including boot ID and task start tokens,
-without trusting signatures, saved success claims or numeric PID stability.
-The full v6 verifier likewise compares newly read `processes`; earlier reports are
-refused as unsupported rather than upgraded into authority.
-
-Each selected process records every currently enumerated thread's TID, start
-token, state, cgroup membership, current namespace links and socket FD inodes.
-Network tables record TCP/TCP6 listening sockets, bound UDP/UDP6 sockets and Unix
-listening socket inodes in that process's current network namespace. These tables
-include other processes' listeners in the same namespace; an inode in a task's
-FD list supplies a current ownership correlation, not exclusivity. Unix paths
-are omitted. Different network namespaces among threads refuse because their
-individual tables cannot be independently inspected by this reader. Namespace
-strings are current facts only, never historical pins or namespace-absence proof.
-
-A pidfd brackets two task/socket reads; observed lifetime, task-set, namespace,
-cgroup, FD/socket or boot changes refuse. Zombies/dead tasks preserve their
-observed lifetime/state and explicitly refuse instead of becoming absence.
-Missing, inaccessible, oversized, malformed and raced reads retain explicit
-unavailable diagnostics. Reads are bounded to 1 MiB per file, 4096 tasks, 8192
-FDs per task and 32 explicitly selected processes in the standalone interface.
-All descriptors are closed on return, including refusal. Procfs sampling is not
-atomic and cannot rule out a change and restoration between samples.
-
-This component requires Linux procfs visibility and pidfd support for inspected
-live tasks; missing privileges or inspectability never become an empty successful
-scan. It neither validates initial host namespace/root authority nor scans the
-whole host, enumerates all cgroup tasks, retains namespace pins, reserves endpoints,
-closes ordinary launch routes, or establishes approved installation/enrollment.
-Those missing authorities remain full-observation blockers. Current namespace
-occupancy by selected tasks can be observed, but complete deployment-wide absence
-cannot be inferred from selected processes, even when all subreads agree.
-
-Run the bounded component regressions with:
-
-```sh
-.venv/bin/python -m pytest tests/test_management_proc_observation.py tests/test_management_containment_observation.py -m 'not supervisor_integration'
-```
-
-These include real subprocesses with nonleader threads, zombies synchronized by
-`waitid(WNOWAIT)`, real thread creation between reads, producer/target exit and
-separate consumers, plus bounded/malformed OS table fixtures and explicit unit
-fault interleavings. The real disposable Unix-listener regression requires bind
-permission: sandbox EPERM is a failing prerequisite, never a skip or fake pass.
-It must also run on an authorized disposable host. None of these component tests
-qualifies AS-T01–AS-T05 or exact original-source/controller acceptance as passed.
-No operation admission, dispatch, recovery-success or dashboard event is created.
-
-
-V3 sandbox validation ran both test files excluding the Docker integration marker:
-43 tests passed and the disposable Unix-listener test failed at `bind()` with
-`PermissionError: [Errno 1] Operation not permitted`. After fixture synchronization
-was tightened, the 43 runnable cases passed again with that already demonstrated
-bind-blocked case excluded from the bounded rerun. The listener assertions remain
-intact. Execute the blocked test on an authorized disposable Linux host with:
-
-```sh
-.venv/bin/python -m pytest tests/test_management_proc_observation.py::test_real_unix_listener_inode_is_observed_and_consumer_detects_release -q
-```
-
-Black, isort, flake8, package-wide mypy (330 source files), and `git diff --check`
-passed. Real Docker/controller/profile acceptance was not executed in this v3
-sandbox session, and no AS-T01–AS-T05 success or full Issue completion is claimed.
+Full-host success for both original profiles, plus the explicit Issue #2827
+negative scenarios, must be recorded against the exact PR head before claiming
+merge readiness. The presence of this driver or a green unit-test run is not that
+acceptance result.

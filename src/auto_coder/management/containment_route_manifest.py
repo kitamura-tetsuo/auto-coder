@@ -30,6 +30,8 @@ from .containment_enrollment import (
     _protected,
     _trusted_ancestors,
 )
+from .containment_route_sources import CommandSourceFact, observe_command_sources
+from .containment_user_routes import UserControllerInventory, observe_user_controller_inventory
 
 _UNIT_NAME = re.compile(r"(?:[A-Za-z0-9_.@:-]|\\x[0-9a-fA-F]{2})+\.(?:service|timer|socket|path|target|mount|automount|swap)")
 _ACTIVATION_UNIT_TYPES = ("service", "timer", "socket", "path", "target", "mount", "automount", "swap")
@@ -73,7 +75,15 @@ _UNIT_PROPERTIES = (
     "ExecStart",
     "ExecStartPre",
     "ExecStartPost",
+    "ExecCondition",
+    "ExecReload",
+    "ExecStop",
     "ExecStopPost",
+    "WorkingDirectory",
+    "RootDirectory",
+    "RootImage",
+    "Environment",
+    "EnvironmentFiles",
     "Triggers",
     "TriggeredBy",
     "Wants",
@@ -89,7 +99,7 @@ _REQUIRED_UNIT_PROPERTIES = (
     "NeedDaemonReload",
     "FragmentPath",
 )
-_REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStopPost"))
+_REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecReload", "ExecStop", "ExecStopPost"))
 # systemd serializes dependency sets in nondeterministic order. Source and
 # command precedence remain ordered and must never be normalized as sets.
 _UNORDERED_UNIT_PROPERTIES = frozenset(("Triggers", "TriggeredBy", "Wants", "Requires"))
@@ -133,10 +143,11 @@ class CronEntry:
     target_device: int = 0
     target_inode: int = 0
     target_ctime_ns: int = 0
+    command_sources: tuple[CommandSourceFact, ...] = ()
 
     @classmethod
     def parse(cls, value: object) -> CronEntry:
-        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+        if not isinstance(value, dict) or set(value) not in (set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - {"command_sources"}):
             raise RouteManifestUnavailable("approved cron entry schema differs")
         if not isinstance(value["path"], str) or not Path(value["path"]).is_absolute() or len(value["path"]) > 4096:
             raise RouteManifestUnavailable("approved cron entry path differs")
@@ -160,7 +171,13 @@ class CronEntry:
                 raise RouteManifestUnavailable("approved cron target identity is incomplete")
         elif value["link_target"] or any(value[key] for key in ("target_device", "target_inode", "target_ctime_ns")):
             raise RouteManifestUnavailable("approved nonlink cron entry has a target identity")
-        return cls(**value)
+        sources = value.get("command_sources", [])
+        if not isinstance(sources, list) or len(sources) > 128:
+            raise RouteManifestUnavailable("approved cron command-source inventory differs")
+        parsed_sources = tuple(CommandSourceFact.parse(item) for item in sources)
+        if tuple(item.path for item in parsed_sources) != tuple(sorted({item.path for item in parsed_sources})):
+            raise RouteManifestUnavailable("approved cron command sources are duplicate or unsorted")
+        return cls(**{**value, "command_sources": parsed_sources})
 
 
 @dataclass(frozen=True)
@@ -187,6 +204,46 @@ class LocalScriptRoute:
 
 
 @dataclass(frozen=True)
+class DeploymentRootBinding:
+    """A current exact Docker bind source, independently reopened on this host."""
+
+    container_id: str
+    destination: str
+    source: str
+    writable: bool
+    device: int
+    inode: int
+    mode: int
+
+    @classmethod
+    def parse(cls, value: object) -> DeploymentRootBinding:
+        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            raise RouteManifestUnavailable("approved deployment root schema differs")
+        if not isinstance(value["container_id"], str) or not _CONTAINER.fullmatch(value["container_id"]):
+            raise RouteManifestUnavailable("approved deployment root container differs")
+        if any(not isinstance(value[key], str) or not Path(value[key]).is_absolute() or ".." in Path(value[key]).parts or len(value[key]) > 4096 for key in ("source", "destination")):
+            raise RouteManifestUnavailable("approved deployment root path differs")
+        if type(value["writable"]) is not bool or any(type(value[key]) is not int or value[key] <= 0 for key in ("device", "inode", "mode")):
+            raise RouteManifestUnavailable("approved deployment root identity differs")
+        return cls(**value)
+
+
+@dataclass(frozen=True)
+class UserSystemdRoute:
+    uid: int
+    unit: str
+    sha256: str
+    role: str
+
+    @classmethod
+    def parse(cls, value: object) -> UserSystemdRoute:
+        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__) or type(value["uid"]) is not int or not 0 <= value["uid"] <= 2147483647:
+            raise RouteManifestUnavailable("approved user systemd scope differs")
+        route = SystemdRoute.parse({key: value[key] for key in ("unit", "sha256", "role")})
+        return cls(value["uid"], route.unit, route.sha256, route.role)
+
+
+@dataclass(frozen=True)
 class ApprovedRouteManifest:
     schema: str
     deployment_id: str
@@ -202,10 +259,40 @@ class ApprovedRouteManifest:
     cron_restarter_paths: tuple[str, ...]
     local_script_routes: tuple[LocalScriptRoute, ...]
     remote_script_origins: tuple[str, ...]
+    deployment_roots: tuple[DeploymentRootBinding, ...] = ()
+    user_controller_catalog_sha256: str = ""
+    user_systemd_routes: tuple[UserSystemdRoute, ...] = ()
 
     @classmethod
     def parse(cls, value: object) -> ApprovedRouteManifest:
-        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__) or value["schema"] != "approved-management-ordinary-routes-v1":
+        if not isinstance(value, dict):
+            raise RouteManifestUnavailable("approved ordinary-route manifest schema differs")
+        extra = {"deployment_roots", "user_controller_catalog_sha256", "user_systemd_routes"}
+        if value.get("schema") == "approved-management-ordinary-routes-v1":
+            if set(value) not in (set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - extra) or any(value.get(key) for key in extra):
+                raise RouteManifestUnavailable("legacy ordinary-route manifest cannot assert closed user/root scope")
+            bindings: tuple[DeploymentRootBinding, ...] = ()
+            user_digest = ""
+            user_routes: tuple[UserSystemdRoute, ...] = ()
+        elif value.get("schema") == "approved-management-ordinary-routes-v2" and set(value) == set(cls.__dataclass_fields__):
+            raw_bindings = value["deployment_roots"]
+            if not isinstance(raw_bindings, list) or not 1 <= len(raw_bindings) <= 128:
+                raise RouteManifestUnavailable("approved deployment root inventory is absent or oversized")
+            bindings = tuple(DeploymentRootBinding.parse(item) for item in raw_bindings)
+            binding_keys = tuple((item.container_id, item.destination) for item in bindings)
+            if binding_keys != tuple(sorted(set(binding_keys))):
+                raise RouteManifestUnavailable("approved deployment roots are duplicate or unsorted")
+            user_digest = value["user_controller_catalog_sha256"]
+            if not isinstance(user_digest, str) or not _HASH.fullmatch(user_digest):
+                raise RouteManifestUnavailable("approved user controller inventory digest is absent")
+            raw_users = value["user_systemd_routes"]
+            if not isinstance(raw_users, list) or len(raw_users) > 4096:
+                raise RouteManifestUnavailable("approved user unit inventory is oversized")
+            user_routes = tuple(UserSystemdRoute.parse(item) for item in raw_users)
+            user_keys = tuple((item.uid, item.unit) for item in user_routes)
+            if user_keys != tuple(sorted(set(user_keys))):
+                raise RouteManifestUnavailable("approved user units are duplicate or unsorted")
+        else:
             raise RouteManifestUnavailable("approved ordinary-route manifest schema differs")
         if value["approved_observation_only"] is not True or value["complete_ordinary_routes_attested"] is not True:
             raise RouteManifestUnavailable("approved ordinary routes lack explicit host-root completeness attestation")
@@ -273,6 +360,9 @@ class ApprovedRouteManifest:
             tuple(crons),
             scripts,
             tuple(remote),
+            bindings,
+            user_digest,
+            user_routes,
         )
 
 
@@ -285,6 +375,15 @@ class SystemdRouteFact:
     main_pid: int
     inhibited: bool
     management_candidate: bool = False
+    needs_daemon_reload: bool = False
+    command_sources: tuple[CommandSourceFact, ...] = ()
+
+
+@dataclass(frozen=True)
+class UserSystemdRouteFact:
+    uid: int
+    account_name: str
+    fact: SystemdRouteFact
 
 
 @dataclass(frozen=True)
@@ -300,6 +399,10 @@ class RouteManifestObservation:
     cron_entries: tuple[CronEntry, ...]
     local_script_sha256: tuple[tuple[str, str], ...]
     docker_container_ids: tuple[str, ...]
+    closed_profile: bool = False
+    deployment_roots: tuple[DeploymentRootBinding, ...] = ()
+    user_controller_inventory: UserControllerInventory | None = None
+    user_systemd: tuple[UserSystemdRouteFact, ...] = ()
 
 
 def _digest(value: object) -> str:
@@ -313,11 +416,19 @@ def _command(*args: str, max_bytes: int = _MAX_UNIT_BYTES) -> str:
     return result.stdout
 
 
-def _systemd_catalog() -> tuple[str, ...]:
+def _systemctl_prefix(user: str | None = None) -> tuple[str, ...]:
+    if user is None:
+        return ("systemctl",)
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\$?", user):
+        raise RouteManifestUnavailable("user systemd account name is unsupported")
+    return ("systemctl", "--user", "--machine=" + user + "@.host")
+
+
+def _systemd_catalog(*, user: str | None = None) -> tuple[str, ...]:
     names: set[str] = set()
     for operation, field in (("list-unit-files", "unit_file"), ("list-units", "unit")):
         raw = _command(
-            "systemctl",
+            *_systemctl_prefix(user),
             operation,
             "--all",
             *("--type=" + unit_type for unit_type in _ACTIVATION_UNIT_TYPES),
@@ -337,15 +448,15 @@ def _systemd_catalog() -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _unit_enablement(unit: str) -> str:
-    result = subprocess.run(("systemctl", "is-enabled", "--", unit), capture_output=True, text=True, timeout=15)
+def _unit_enablement(unit: str, *, user: str | None = None) -> str:
+    result = subprocess.run((*_systemctl_prefix(user), "is-enabled", "--", unit), capture_output=True, text=True, timeout=15)
     state = result.stdout.strip()
     if result.returncode not in (0, 1, 3) or len(result.stderr) > 4096 or not re.fullmatch(r"[a-z-]{1,64}", state):
         raise RouteManifestUnavailable("installed systemd enablement cannot be independently verified")
     return state
 
 
-def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
+def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, extra_cues: tuple[str, ...] = (), inspect_local_inputs: bool = False, module_sources: tuple[tuple[str, str], ...] = ()) -> SystemdRouteFact:
     if not _UNIT_NAME.fullmatch(unit):
         raise RouteManifestUnavailable("installed systemd route name differs")
     is_template = "@." in unit
@@ -355,12 +466,12 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
         # `systemctl show`. Every instantiated unit is also separately found
         # by the unfiltered loaded-unit catalog. An installed template alone
         # cannot establish a positive restarter inhibition claim.
-        state = _unit_enablement(unit)
+        state = _unit_enablement(unit, user=user) if user is not None else _unit_enablement(unit)
         shown = {"Id": unit, "UnitFileState": state, "LoadState": "template", "ActiveState": "inactive", "SubState": "dead", "MainPID": "0", "NeedDaemonReload": "unknown", "FragmentPath": ""}
         properties = ""
         repeatable: dict[str, list[str]] = {}
     else:
-        properties = _command("systemctl", "show", "--property=" + ",".join(_UNIT_PROPERTIES), "--", unit)
+        properties = _command(*_systemctl_prefix(user), "show", "--property=" + ",".join(_UNIT_PROPERTIES), "--", unit)
         shown = {}
         repeatable = {}
         for line in properties.splitlines():
@@ -382,7 +493,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
         if not required <= set(shown) or not _UNIT_NAME.fullmatch(shown["Id"]) or shown["NeedDaemonReload"] not in ("yes", "no") or not shown["MainPID"].isdecimal():
             raise RouteManifestUnavailable("effective systemd unit properties are incomplete")
         if shown["Id"] != unit:
-            alias_state = _unit_enablement(unit)
+            alias_state = _unit_enablement(unit, user=user) if user is not None else _unit_enablement(unit)
             if alias_state != "alias":
                 raise RouteManifestUnavailable("systemd unit identity redirected without approved alias state")
         if any(not re.fullmatch(r"[a-z-]+", shown[key]) for key in ("LoadState", "ActiveState", "SubState")):
@@ -393,7 +504,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
         if not shown["UnitFileState"] and not kernel_mount and (shown["LoadState"] != "not-found" or shown["FragmentPath"]):
             raise RouteManifestUnavailable("effective systemd unit-file state is unavailable")
     try:
-        unit_source = _command("systemctl", "cat", "--no-pager", "--", unit)
+        unit_source = _command(*_systemctl_prefix(user), "cat", "--no-pager", "--", unit)
     except subprocess.CalledProcessError:
         if not is_template and shown["LoadState"] == "loaded" and shown["UnitFileState"] == "" and not shown["FragmentPath"] and shown.get("SourcePath") == "/proc/self/mountinfo" and unit.endswith(".mount"):
             # Passive mount units reflected from the kernel have no installed
@@ -407,23 +518,92 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
     identity: tuple[int, int, int, int, str] | None = None
     if shown["UnitFileState"] == "masked":
         if is_template:
-            candidates = (Path(root) / unit for root in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"))
+            roots = _user_unit_paths(user) if user is not None else ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+            candidates = (Path(root) / unit for root in roots)
             path = next((item for item in candidates if item.is_symlink()), Path("/dev/null"))
         else:
             path = Path(shown["FragmentPath"])
         if not path.is_absolute() or len(str(path)) > 4096 or path == Path("/dev/null"):
             raise RouteManifestUnavailable("masked systemd unit fragment is ambiguous")
         info = path.lstat()
-        if not stat.S_ISLNK(info.st_mode) or info.st_uid != trusted_uid or os.readlink(path) != "/dev/null":
+        if not stat.S_ISLNK(info.st_mode) or info.st_uid not in (0, trusted_uid) or os.readlink(path) != "/dev/null":
             raise RouteManifestUnavailable("masked systemd unit is not backed by a protected /dev/null link")
         identity = (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_uid, str(path))
     inhibited = not is_template and shown["LoadState"] == "masked" and shown["UnitFileState"] == "masked" and shown["ActiveState"] == "inactive" and shown["SubState"] == "dead" and shown["MainPID"] == "0" and shown["NeedDaemonReload"] == "no" and identity is not None
     normalized = {name: (repeatable.get(name, []) if name in _REPEATABLE_UNIT_PROPERTIES else sorted(shown.get(name, "").split()) if name in _UNORDERED_UNIT_PROPERTIES else shown.get(name, "")) for name in _UNIT_PROPERTIES}
-    candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES)
-    return SystemdRouteFact(unit, _digest((normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)), shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate)
+    candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES + extra_cues)
+    local_sources: tuple[CommandSourceFact, ...] = ()
+    if inspect_local_inputs:
+        commands = "\n".join(value for values in repeatable.values() for value in values)
+        commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "EnvironmentFiles", "WorkingDirectory", "RootDirectory", "RootImage"))
+        local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources)
+        candidate = candidate or local_candidate
+    fingerprint = (normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)
+    digest = _digest((*fingerprint, [asdict(item) for item in local_sources])) if inspect_local_inputs else _digest(fingerprint)
+    return SystemdRouteFact(unit, digest, shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate, shown["NeedDaemonReload"] == "yes", local_sources)
 
 
-def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0) -> tuple[CronEntry, ...]:
+def _user_unit_paths(user: str) -> tuple[str, ...]:
+    raw = _command(*_systemctl_prefix(user), "show", "--property=UnitPath", "--value")
+    paths = tuple(raw.strip().split())
+    if not paths or len(paths) > 128 or len(set(paths)) != len(paths) or any(not Path(path).is_absolute() or ".." in Path(path).parts or "\\" in path or len(path) > 4096 for path in paths):
+        raise RouteManifestUnavailable("user manager load paths are unavailable or ambiguous")
+    return paths
+
+
+def _user_controllers(systemd: tuple[SystemdRouteFact, ...], cues: tuple[str, ...], module_sources: tuple[tuple[str, str], ...] = ()) -> tuple[UserControllerInventory, tuple[UserSystemdRouteFact, ...]]:
+    pids = {}
+    for fact in systemd:
+        match = re.fullmatch(r"user@([0-9]+)\.service", fact.unit)
+        if match:
+            uid = int(match.group(1))
+            if str(uid) != match.group(1) or uid in pids:
+                raise RouteManifestUnavailable("installed user manager identity is ambiguous")
+            pids[uid] = fact.main_pid
+    try:
+        inventory = observe_user_controller_inventory(pids, _user_unit_paths, cues=_MANAGEMENT_CUES + cues)
+    except (OSError, ValueError) as exc:
+        raise RouteManifestUnavailable("user controller inventory unavailable: " + str(exc)) from exc
+    units = []
+    for account in inventory.accounts:
+        if not account.manager_pid:
+            continue
+        for unit in _systemd_catalog(user=account.name):
+            units.append(UserSystemdRouteFact(account.uid, account.name, _systemd_unit(unit, trusted_uid=account.uid, user=account.name, extra_cues=cues, inspect_local_inputs=True, module_sources=module_sources)))
+    return inventory, tuple(sorted(units, key=lambda item: (item.uid, item.fact.unit)))
+
+
+def _deployment_root_bindings(approval: EnrollmentObservation, *, trusted_uid: int = 0) -> tuple[DeploymentRootBinding, ...]:
+    """Derive scope roots from the exact enrolled pair, never a caller root list."""
+    if os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"):
+        raise RouteManifestUnavailable("remote Docker root discovery is unsupported")
+    selected = (approval.enrollment.management_id, approval.enrollment.proxy_id)
+    raw = _command("docker", "inspect", "--type", "container", *selected, max_bytes=8 * _MAX_MANIFEST_BYTES)
+    decoded = json.loads(raw, object_pairs_hook=unique_pairs)
+    if not isinstance(decoded, list) or len(decoded) != 2 or {item.get("Id") for item in decoded if isinstance(item, dict)} != set(selected):
+        raise RouteManifestUnavailable("deployment root Docker scope differs")
+    result = []
+    for container in decoded:
+        if not isinstance(container, dict) or not isinstance(container.get("Mounts"), list) or len(container["Mounts"]) > 64:
+            raise RouteManifestUnavailable("deployment root mount inventory is unsupported")
+        for mount in container["Mounts"]:
+            if not isinstance(mount, dict) or mount.get("Type") != "bind" or not isinstance(mount.get("Source"), str) or not isinstance(mount.get("Destination"), str) or type(mount.get("RW")) is not bool:
+                raise RouteManifestUnavailable("deployment root mount is unsupported")
+            path = Path(mount["Source"])
+            if not path.is_absolute() or path == Path("/") or path != path.resolve(strict=True) or ".." in Path(mount["Destination"]).parts:
+                raise RouteManifestUnavailable("deployment root source is noncanonical or ambiguous")
+            _trusted_ancestors(path.parent, uid=trusted_uid)
+            info = path.lstat()
+            if info.st_uid != trusted_uid or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISSOCK(info.st_mode)):
+                raise RouteManifestUnavailable("deployment root source is mutable outside the trusted owner")
+            result.append(DeploymentRootBinding(container["Id"], mount["Destination"], str(path), mount["RW"], info.st_dev, info.st_ino, info.st_mode))
+    bindings = tuple(sorted(result, key=lambda item: (item.container_id, item.destination)))
+    if not bindings or len({(item.container_id, item.destination) for item in bindings}) != len(bindings):
+        raise RouteManifestUnavailable("deployment root inventory is absent or ambiguous")
+    return bindings
+
+
+def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0, extra_cues: tuple[str, ...] = (), inspect_local_inputs: bool = False, module_sources: tuple[tuple[str, str], ...] = ()) -> tuple[CronEntry, ...]:
     """Scan a fixed whole-cron/at surface; missing roots remain in the digest."""
     pending = list(roots)
     observed: dict[str, CronEntry] = {}
@@ -452,7 +632,8 @@ def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0) -> tuple[Cro
             aggregate_bytes += len(data)
             if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
                 raise RouteManifestUnavailable("cron source changed or exceeded bounded read")
-            observed[name] = CronEntry(name, "regular", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), any(term.encode() in data for term in _MANAGEMENT_CUES))
+            local_sources, candidate = observe_command_sources(data.decode("utf-8"), uid=info.st_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources) if inspect_local_inputs else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
+            observed[name] = CronEntry(name, "regular", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), candidate, command_sources=local_sources)
         elif stat.S_ISLNK(info.st_mode):
             target_text = os.readlink(path)
             if not target_text or len(target_text) > 4096 or info.st_uid != trusted_uid:
@@ -471,7 +652,8 @@ def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0) -> tuple[Cro
             aggregate_bytes += len(data)
             if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(resolved.lstat()) or _file_identity(path.lstat()) != _file_identity(info) or os.readlink(path) != target_text:
                 raise RouteManifestUnavailable("installed cron symbolic link or its target changed during observation")
-            observed[name] = CronEntry(name, "symlink", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), any(term.encode() in data for term in _MANAGEMENT_CUES), target_text, after.st_dev, after.st_ino, after.st_ctime_ns)
+            local_sources, candidate = observe_command_sources(data.decode("utf-8"), uid=after.st_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources) if inspect_local_inputs else ((), any(term.encode() in data for term in _MANAGEMENT_CUES + extra_cues))
+            observed[name] = CronEntry(name, "symlink", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), candidate, target_text, after.st_dev, after.st_ino, after.st_ctime_ns, local_sources)
         else:
             raise RouteManifestUnavailable("symlink or unsupported installed cron route requires explicit refusal")
     return tuple(observed[path] for path in sorted(observed))
@@ -491,6 +673,41 @@ def _local_script(path: Path, *, expected_uid: int) -> tuple[str, int, int]:
     if len(data) > _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
         raise RouteManifestUnavailable("installed local script source changed during observation")
     return hashlib.sha256(data).hexdigest(), after.st_dev, after.st_ino
+
+
+def _deployment_cues(approval: EnrollmentObservation, bindings: tuple[DeploymentRootBinding, ...]) -> tuple[str, ...]:
+    return tuple(sorted({item.source for item in bindings} | {item.path for item in approval.enrollment.original_files} | {approval.enrollment.management_id, approval.enrollment.proxy_id}))
+
+
+def _deployment_modules(approval: EnrollmentObservation) -> tuple[tuple[str, str], ...]:
+    # This known original controller is supported only through its separately
+    # approved source binding and isolated Python command, not arbitrary -m.
+    return tuple(("auto_coder.management.proxy_watch_cli", item.path) for item in approval.enrollment.original_files if getattr(item, "purpose", None) == "watcher-source")
+
+
+def _validate_user_scope(manifest: ApprovedRouteManifest, inventory: UserControllerInventory, facts: tuple[UserSystemdRouteFact, ...]) -> None:
+    if _digest(asdict(inventory)) != manifest.user_controller_catalog_sha256:
+        raise RouteManifestUnavailable("unknown, omitted or changed user controller account/source/lifetime scope")
+    if tuple((item.uid, item.unit) for item in manifest.user_systemd_routes) != tuple((item.uid, item.fact.unit) for item in facts):
+        raise RouteManifestUnavailable("unknown, omitted or changed user systemd unit inventory")
+    approved = {(item.uid, item.unit): item for item in manifest.user_systemd_routes}
+    for selected, actual in zip(manifest.user_systemd_routes, facts):
+        fact = actual.fact
+        if selected.sha256 != fact.sha256 or fact.needs_daemon_reload:
+            raise RouteManifestUnavailable("effective user systemd route changed: " + actual.account_name + ":" + fact.unit)
+        if fact.management_candidate and selected.role != "restarter":
+            raise RouteManifestUnavailable("detected user management route is excluded: " + actual.account_name + ":" + fact.unit)
+        if selected.role == "restarter" and not fact.inhibited:
+            raise RouteManifestUnavailable("ordinary user systemd restarter remains enabled: " + actual.account_name + ":" + fact.unit)
+    for account in inventory.accounts:
+        for source in account.sources + inventory.global_sources:
+            if not source.management_candidate:
+                continue
+            parts = Path(source.path).parts
+            unit = next((part[:-2] if part.endswith(".d") and _UNIT_NAME.fullmatch(part[:-2]) else part for part in reversed(parts) if _UNIT_NAME.fullmatch(part) or part.endswith(".d") and _UNIT_NAME.fullmatch(part[:-2])), "")
+            route = approved.get((account.uid, unit))
+            if route is None or route.role != "restarter":
+                raise RouteManifestUnavailable("installed user management source lacks an independently inhibited unit")
 
 
 def _observe_approved_route_manifest(
@@ -519,13 +736,19 @@ def _observe_approved_route_manifest(
     ids = tuple(sorted(getattr(item, "container_id", "") for item in docker))
     if ids != manifest.docker_container_ids:
         raise RouteManifestUnavailable("whole-engine Docker inventory differs from approved routes")
+    is_closed_version = manifest.schema == "approved-management-ordinary-routes-v2"
+    bindings = _deployment_root_bindings(approval, trusted_uid=expected_uid) if is_closed_version else ()
+    if bindings != manifest.deployment_roots:
+        raise RouteManifestUnavailable("original deployment root/config binding differs from approved routes")
+    cues = _deployment_cues(approval, bindings) if is_closed_version else ()
+    modules = _deployment_modules(approval) if is_closed_version else ()
     first_catalog = _systemd_catalog()
     if first_catalog != tuple(item.unit for item in manifest.systemd_routes):
         raise RouteManifestUnavailable("unknown, omitted or newly installed systemd route")
-    observed_systemd = tuple(_systemd_unit(unit, trusted_uid=expected_uid) for unit in first_catalog)
+    observed_systemd = tuple(_systemd_unit(unit, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules) for unit in first_catalog)
     restarters = {item.unit for item in manifest.systemd_routes if item.role == "restarter"}
     for approved, actual in zip(manifest.systemd_routes, observed_systemd):
-        if approved.sha256 != actual.sha256:
+        if approved.sha256 != actual.sha256 or is_closed_version and actual.needs_daemon_reload:
             raise RouteManifestUnavailable("effective systemd route changed: " + approved.unit)
         if actual.management_candidate and approved.role != "restarter":
             raise RouteManifestUnavailable("detected management systemd route is excluded: " + approved.unit)
@@ -533,11 +756,16 @@ def _observe_approved_route_manifest(
             raise RouteManifestUnavailable("ordinary systemd restarter remains enabled: " + approved.unit)
     if manifest.cron_restarter_paths and not _CRON_SCHEDULERS.intersection(restarters):
         raise RouteManifestUnavailable("ordinary cron restarter lacks scheduler inhibition")
-    cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid)
+    cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules)
     if cron != manifest.cron_entries:
         raise RouteManifestUnavailable("unknown, omitted or changed cron/at route")
     if any(entry.management_candidate and entry.path not in manifest.cron_restarter_paths for entry in cron):
         raise RouteManifestUnavailable("detected management cron/at route is excluded")
+    users = None
+    user_units: tuple[UserSystemdRouteFact, ...] = ()
+    if is_closed_version:
+        users, user_units = _user_controllers(observed_systemd, cues, modules)
+        _validate_user_scope(manifest, users, user_units)
     local = []
     for route in manifest.local_script_routes:
         try:
@@ -549,14 +777,20 @@ def _observe_approved_route_manifest(
         if route.inhibited_by not in restarters:
             raise RouteManifestUnavailable("local script ordinary restarter is not inhibited: " + route.path)
         local.append((route.path, digest))
-    if _systemd_catalog() != first_catalog or tuple(_systemd_unit(unit, trusted_uid=expected_uid) for unit in first_catalog) != observed_systemd or _cron_catalog(roots=cron_roots, trusted_uid=expected_uid) != cron:
+    if (
+        _systemd_catalog() != first_catalog
+        or tuple(_systemd_unit(unit, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules) for unit in first_catalog) != observed_systemd
+        or _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules) != cron
+    ):
         raise RouteManifestUnavailable("installed ordinary routes changed during observation")
+    if is_closed_version and (_deployment_root_bindings(approval, trusted_uid=expected_uid) != bindings or _user_controllers(observed_systemd, cues, modules) != (users, user_units)):
+        raise RouteManifestUnavailable("installed user controllers or deployment roots changed during observation")
     if any(_local_script(Path(route.path), expected_uid=expected_uid) != (route.sha256, route.device, route.inode) for route in manifest.local_script_routes):
         raise RouteManifestUnavailable("installed local script source changed during observation")
     last_content, last_info = _protected(path, uid=expected_uid, size_limit=_MAX_MANIFEST_BYTES)
     if last_content != content or _file_identity(last_info) != _file_identity(info):
         raise RouteManifestUnavailable("approved route manifest changed during observation")
-    return RouteManifestObservation(manifest, hashlib.sha256(content).hexdigest(), info.st_dev, info.st_ino, info.st_ctime_ns, observed_systemd, cron, tuple(local), ids)
+    return RouteManifestObservation(manifest, hashlib.sha256(content).hexdigest(), info.st_dev, info.st_ino, info.st_ctime_ns, observed_systemd, cron, tuple(local), ids, is_closed_version, bindings, users, user_units)
 
 
 def observe_approved_route_manifest(approval: EnrollmentObservation, docker: tuple[object, ...]) -> RouteManifestObservation:
@@ -564,18 +798,22 @@ def observe_approved_route_manifest(approval: EnrollmentObservation, docker: tup
     return _observe_approved_route_manifest(approval, docker, root=ENROLLMENT_ROOT, expected_uid=0)
 
 
-def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tuple[object, ...]) -> dict[str, object]:
+def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tuple[object, ...], *, closed_profile: bool = False) -> dict[str, object]:
     """Provide inspectable values for a human review; never attest completeness.
 
     All exclusions and absent local/remote sources are unreviewed. This draft
     cannot be installed as usable approval until a trusted root explicitly
     audits and replaces the false completeness declaration.
     """
+    bindings = _deployment_root_bindings(approval) if closed_profile else ()
+    cues = _deployment_cues(approval, bindings) if closed_profile else ()
+    modules = _deployment_modules(approval) if closed_profile else ()
     catalog = _systemd_catalog()
-    systemd = tuple(_systemd_unit(unit) for unit in catalog)
-    cron = _cron_catalog(roots=_CRON_ROOTS)
+    systemd = tuple(_systemd_unit(unit, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules) for unit in catalog)
+    cron = _cron_catalog(roots=_CRON_ROOTS, extra_cues=cues, inspect_local_inputs=closed_profile, module_sources=modules)
+    users, user_units = _user_controllers(systemd, cues, modules) if closed_profile else (None, ())
     return {
-        "schema": "approved-management-ordinary-routes-v1",
+        "schema": "approved-management-ordinary-routes-v2" if closed_profile else "approved-management-ordinary-routes-v1",
         "deployment_id": approval.enrollment.deployment_id,
         "enrollment_id": approval.enrollment.enrollment_id,
         "authorization_id": approval.enrollment.authorization_id,
@@ -589,6 +827,9 @@ def propose_unapproved_route_draft(approval: EnrollmentObservation, docker: tupl
         "cron_restarter_paths": [item.path for item in cron if item.management_candidate],
         "local_script_routes": [],
         "remote_script_origins": [],
+        "deployment_roots": [asdict(item) for item in bindings],
+        "user_controller_catalog_sha256": _digest(asdict(users)) if users is not None else "",
+        "user_systemd_routes": [asdict(UserSystemdRoute(item.uid, item.fact.unit, item.fact.sha256, "restarter" if item.fact.management_candidate else "unrelated")) for item in user_units],
     }
 
 
@@ -596,6 +837,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Produce a read-only, explicitly unapproved route manifest draft")
     parser.add_argument("propose", choices=("propose",))
     parser.add_argument("--scope", required=True, type=Path)
+    parser.add_argument("--closed-profile", action="store_true", help="Include independently read user controllers and exact deployment roots; the draft still requires separate approval")
     args = parser.parse_args()
     try:
         # Import here to avoid a module cycle between the observer and its
@@ -606,7 +848,7 @@ def main() -> int:
         scope = read_scope(args.scope)
         approved = observe_approved_enrollment(scope)
         docker = _docker(scope)
-        draft = propose_unapproved_route_draft(approved, docker)
+        draft = propose_unapproved_route_draft(approved, docker, closed_profile=args.closed_profile)
         print(json.dumps({"status": "unapproved-root-review-required", "draft": draft}, sort_keys=True, separators=(",", ":")))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

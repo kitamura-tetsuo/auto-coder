@@ -27,6 +27,7 @@ from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.tested_source_refs import main as publication_main
 from auto_coder.tested_source_refs import parse_record, record_from_checkout, serialize_record, verify_source_shard_attempt
 from auto_coder.util.gh_cache import GitDataResponse
+from tests.support.ci_browser_install import assert_conditional_chromium_install
 
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
@@ -69,7 +70,7 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert shard["strategy"] == {"fail-fast": False, "max-parallel": 12, "matrix": "${{ fromJSON(needs.source-plan.outputs.matrix) }}"}
     assert "runner.temp" not in str(shard.get("env", {}))
     complete_steps = {step.get("name"): step for step in shard["steps"] if isinstance(step, dict) and step.get("name")}
-    assert complete_steps["Install Chromium"] == {"name": "Install Chromium", "run": "uv run playwright install --with-deps chromium"}
+    assert_conditional_chromium_install(complete_steps["Install Chromium"])
     assert complete_steps["Verify real headless Chromium"] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
     run = complete_steps["Run complete required source selection"]["run"]
     assert "--ci-plan=" in run and "--ci-shard=${{ matrix.shard }}" in run

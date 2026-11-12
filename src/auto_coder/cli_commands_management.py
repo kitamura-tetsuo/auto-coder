@@ -1,5 +1,6 @@
 """CLI for the independent management resource server."""
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -24,9 +25,13 @@ def management_serve(config_path: Path) -> None:
 
     try:
         settings = load_management_settings(config_path)
+        if settings.bind_host == "0.0.0.0" and settings.local_development:
+            from .management.fresh_new_management_binding import assert_admitted_new_docker_http_binding
+
+            assert_admitted_new_docker_http_binding(settings)
         settings.state_root.mkdir(parents=True, exist_ok=True)
         app = create_management_app(settings)
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, TypeError, ValueError, sqlite3.Error) as exc:
         raise click.ClickException(f"invalid management configuration: {exc}") from exc
     setup_logger(stream=sys.stdout, log_file=str(settings.state_root / "logs" / "management.log"))
     uvicorn.run(app, host=settings.bind_host, port=settings.port, access_log=False)
@@ -111,6 +116,14 @@ def management_fresh_status(config_path: Path) -> None:
         bootstrap = BootstrapConfig.read(settings.bootstrap_config_path)
         if bootstrap.oauth_root != settings.state_root or bootstrap.journal_root != settings.operation_state_root or (bootstrap.management_config is not None and bootstrap.management_config != settings.config_path):
             raise ValueError("management and bootstrap configuration differ")
-        click.echo(json.dumps(read_fresh_status(bootstrap.state_root), sort_keys=True))
+        if bootstrap.new_instance_initialization:
+            if bootstrap.fresh_guard_path is None:
+                raise ValueError("NEW status guard is not configured")
+            from .management.fresh_new_first_launch import read_new_first_status
+
+            result = read_new_first_status(bootstrap.state_root, bootstrap.fresh_guard_path.parent, bootstrap.instance_id)
+        else:
+            result = read_fresh_status(bootstrap.state_root)
+        click.echo(json.dumps(result, sort_keys=True))
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
         raise click.ClickException(f"fresh status unavailable: {exc}") from exc

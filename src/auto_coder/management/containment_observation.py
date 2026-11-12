@@ -1,9 +1,8 @@
-"""Non-authorizing, read-only prerequisite observations for current containment.
+"""Read-only current containment observations, never admission or launch grants.
 
-There is deliberately no successful containment verdict in this adapter yet.
-The repository has no authoritative closed deployment enrollment reader or
-reviewed original quarantine profile. Partial observations must not hide either
-missing prerequisite behind operator-supplied IDs, lists, or source hashes.
+Only independently verified enrollment, reviewed source/configuration, complete
+installed routes and current kernel facts can produce an observed result.
+Every consumer repeats those observations; a saved result has no authority.
 """
 
 from __future__ import annotations
@@ -32,6 +31,8 @@ from .proc_observation import ProcessObservation, observe_process
 from .systemd_watcher_observation import WatcherSystemdObservation, observe_watcher_unit
 
 PROFILES = ("ordinary-v1", "quarantined-original-v1")
+REPORT_SCHEMA = "current-containment-observation-v11"
+OBSERVED = "observed-current-containment"
 _LIMIT = 1024 * 1024
 _MANAGEMENT_MOUNT_DESTINATIONS = frozenset(("/bootstrap", "/management-child-state", "/management-source", "/management-versions"))
 
@@ -121,7 +122,11 @@ class PrerequisiteReport:
     docker: tuple[DockerObservation, ...]
     unavailable: tuple[Unavailable, ...]
     processes: tuple[ProcessObservation, ...] = ()
-    resource_limit: str = "Observer-owned descriptors are released before return; a separately enrolled namespace FD holder, if any, must still exist when a consumer reopens and independently verifies it. No owner fence or launch grant is retained."
+    resource_limit: str = (
+        "Current observations only; no historical continuity or launch authority. Observer-owned descriptors are released before return. "
+        "Separately approved namespace and exclusive owner-lock holders must remain alive and be independently reopened by every consumer; "
+        "this report retains neither resource and is never a grant."
+    )
     approved_enrollment: EnrollmentObservation | None = None
     watcher_systemd: WatcherSystemdObservation | None = None
     installed_bootstrap_source: InstalledBootstrapSource | None = None
@@ -304,14 +309,13 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     started = time.monotonic_ns()
     unavailable = [
         Unavailable("ordinary-route-closure", "No authoritative installed-route inventory is available for watcher/reconcile, services/timers, socket activation, Docker restart, configured local/remote scripts, repair/recreate and alternative roots; none are excluded from scope."),
-        Unavailable("original-source-profile", "Present-time original source/configuration readback cannot establish historical deployed execution provenance or original lock-before-launch evidence for " + scope.profile + "."),
+        Unavailable("original-source-profile", "The approved current original source, exact effective configuration and reviewed lock-before-launch mapping are not independently established for " + scope.profile + "."),
         Unavailable("kernel-containment", "No original task/boot lifetime capture with retained namespace object pins and exact owner-file fence is supplied; stopped Docker state and saved namespace inode strings cannot establish absence."),
     ]
     approved_enrollment = None
     try:
-        # A protected enrollment is evidence of a separately installed record.
-        # The original installed execution, route and kernel facts still need
-        # independent verification; never remove those refusal reasons here.
+        # Root approval selects a present-time deployment, not a historical
+        # execution claim. Every technical predicate is inspected separately.
         approved_enrollment = observe_approved_enrollment(scope)
     except (EnrollmentUnavailable, OSError, ValueError) as exc:
         unavailable.append(Unavailable("approved-enrollment-component", str(exc)))
@@ -328,7 +332,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
             0,
             Unavailable(
                 "deployment-enrollment",
-                "The protected present-time enrollment was read, but independent original execution, complete installed controller membership and current technical closure are not established by that record.",
+                "The protected present-time enrollment was read, but complete installed controller membership and current technical closure still require independent source, route and kernel verification.",
             ),
         )
     installed_bootstrap_source = None
@@ -337,7 +341,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         unavailable.append(
             Unavailable(
                 "quarantined-original-profile",
-                "An optional exact current bootstrap file-mount, no-new-privileges and approved support-directory component cannot establish the support mount's actual execution effects across the original lifetime or complete quarantined original provenance; replacement admission is unchanged.",
+                "The current original bootstrap file mounts, no-new-privileges, support-directory execution mapping and original stopped-lifetime profile are not completely verified; replacement admission is unchanged.",
             )
         )
     watcher_systemd = None
@@ -454,16 +458,66 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     kernel_subobservation = None
     if approved_enrollment is not None and isinstance(approved_enrollment, EnrollmentObservation) and docker:
         try:
-            kernel_subobservation = observe_kernel_subcomponent(approved_enrollment)
+            kernel_subobservation = observe_kernel_subcomponent(approved_enrollment, installed_profile=installed_mount_profile)
             if not kernel_subobservation.external_namespace_pin_verified:
                 unavailable.append(Unavailable("kernel-subcomponent-unpinned", "Current old-cgroup, task-namespace and host-listener checks passed, but the original namespace object is not retained by an independently re-openable pin. These facts cannot establish kernel containment."))
             if not kernel_subobservation.external_owner_fence_verified:
                 unavailable.append(Unavailable("kernel-subcomponent-unfenced", "The original owner-lock inode was read, but no separately authorized external holder maintained an exclusive kernel flock throughout the read. File identity alone cannot prevent a new owner from launching."))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
+    # Compose actual predicates rather than treating an approval record or
+    # several successful components as an independently closed deployment.
+    source_closed = installed_bootstrap_source is not None and installed_bootstrap_source.reviewed_lock_before_launch and installed_mount_profile is not None
+    routes_closed = route_manifest is not None and getattr(route_manifest, "closed_profile", False) is True
+    kernel_closed = (
+        kernel_subobservation is not None
+        and kernel_subobservation.original_cgroups_empty
+        and kernel_subobservation.unpinned_network_task_scan_absent
+        and kernel_subobservation.host_listener_absent
+        and kernel_subobservation.external_namespace_pin_verified
+        and kernel_subobservation.external_owner_fence_verified
+        and installed_mount_profile is not None
+    )
+    established = set()
+    if source_closed:
+        established.add("original-source-profile")
+    if routes_closed:
+        established.add("ordinary-route-closure")
+    if kernel_closed:
+        established.add("kernel-containment")
+    if source_closed and kernel_closed:
+        established.add("quarantined-original-profile")
+    if isinstance(approved_enrollment, EnrollmentObservation) and source_closed and routes_closed and kernel_closed:
+        established.add("deployment-enrollment")
+    unavailable = [item for item in unavailable if item.authority not in established]
+    if not unavailable:
+        # Close the observation window with fresh reads of every authority.
+        # The external holders are checked last; they are not owned by us and
+        # must be checked again by a later consumer even if this read succeeds.
+        assert isinstance(approved_enrollment, EnrollmentObservation)
+        assert kernel_subobservation is not None
+        try:
+            repeated_enrollment = observe_approved_enrollment(scope)
+            repeated_docker = _docker(scope)
+            if repeated_enrollment != approved_enrollment or repeated_docker != docker:
+                raise ValueError("deployment enrollment or Docker scope changed during complete observation")
+            if observe_watcher_unit() != watcher_systemd:
+                raise ValueError("installed watcher changed during complete observation")
+            if inspect_installed_bootstrap_source(repeated_enrollment) != installed_bootstrap_source:
+                raise ValueError("installed original source changed during complete observation")
+            repeated_profile = inspect_installed_bootstrap_mount_profile(repeated_enrollment, {item.container_id: item.inspection_sha256 for item in repeated_docker})
+            if repeated_profile != installed_mount_profile or observe_approved_route_manifest(repeated_enrollment, repeated_docker) != route_manifest:
+                raise ValueError("installed original profile or ordinary routes changed during complete observation")
+            repeated_kernel = observe_kernel_subcomponent(repeated_enrollment, installed_profile=repeated_profile)
+            if _stable_kernel(asdict(repeated_kernel)) != _stable_kernel(asdict(kernel_subobservation)):
+                raise ValueError("original kernel scope or retained holders changed during complete observation")
+            if any(_file(Path(item.path))[1] != item for item in files):
+                raise ValueError("selected original file changed during complete observation")
+        except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
+            unavailable.append(Unavailable("complete-observation-race", "Final independent scope readback failed (" + type(exc).__name__ + "): " + (str(exc) if isinstance(exc, ValueError) else "underlying authority unavailable")))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v10",
-        "unavailable",
+        REPORT_SCHEMA,
+        "unavailable" if unavailable else OBSERVED,
         scope,
         _digest(asdict(scope)),
         str(uuid.uuid4()),
@@ -485,22 +539,44 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     )
 
 
+def _stable_kernel(value: object) -> object:
+    """Compare kernel identities, independently validating each sample window."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(KernelSubObservation.__dataclass_fields__):
+        raise ValueError("saved kernel observation schema differs")
+    start, finish = value.get("started_monotonic_ns"), value.get("finished_monotonic_ns")
+    if type(start) is not int or type(finish) is not int or not 0 < start <= finish:
+        raise ValueError("kernel observation interval is malformed")
+    return {key: item for key, item in value.items() if key not in ("started_monotonic_ns", "finished_monotonic_ns")}
+
+
 def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
     """Reobserve independently; a saved report is never a current verdict."""
     current = observe(scope)
     reasons = list(current.unavailable)
-    if not isinstance(previous, dict) or set(previous) != set(PrerequisiteReport.__dataclass_fields__) or previous.get("schema") != current.schema or previous.get("status") != "unavailable":
-        reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
+    if not isinstance(previous, dict) or set(previous) != set(PrerequisiteReport.__dataclass_fields__) or previous.get("schema") != current.schema or previous.get("status") not in ("unavailable", OBSERVED):
+        reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; an observation is never a launch grant."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "installed_mount_profile", "kernel_subobservation", "route_manifest", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "installed_mount_profile", "route_manifest", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
-    return replace(current, unavailable=tuple(reasons))
+        try:
+            if _stable_kernel(previous["kernel_subobservation"]) != _stable_kernel(current_value["kernel_subobservation"]):
+                reasons.append(Unavailable("saved-report:kernel_subobservation", "Independent current observation differs from saved report."))
+        except ValueError as exc:
+            reasons.append(Unavailable("saved-report:kernel_subobservation", str(exc)))
+        start, finish = previous.get("started_monotonic_ns"), previous.get("finished_monotonic_ns")
+        if type(start) is not int or type(finish) is not int or not 0 < start <= finish <= current.started_monotonic_ns:
+            reasons.append(Unavailable("saved-report:interval", "Saved observation interval is malformed or is not earlier than the consumer."))
+        if (previous["status"] == OBSERVED) != (previous["unavailable"] == []):
+            reasons.append(Unavailable("saved-report:status", "Saved observation status contradicts its unavailable predicates."))
+    return replace(current, status="unavailable" if reasons else OBSERVED, unavailable=tuple(reasons))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Read-only current containment prerequisites; never a launch grant or containment success")
+    parser = argparse.ArgumentParser(description="Read-only current containment observations; never a launch grant or historical continuity")
     parser.add_argument("command", choices=("observe", "verify"))
     parser.add_argument("--scope", required=True, type=Path)
     parser.add_argument("--previous", type=Path)
@@ -515,7 +591,7 @@ def main() -> int:
         else:
             result = observe(scope)
         print(json.dumps(asdict(result), sort_keys=True, separators=(",", ":")))
-        return 2
+        return 0 if result.status == OBSERVED else 2
     except (OSError, ValueError, TypeError) as exc:
         print(json.dumps({"status": "unavailable", "reason": str(exc)}, sort_keys=True))
         return 2

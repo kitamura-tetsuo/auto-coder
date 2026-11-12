@@ -3505,6 +3505,31 @@ oracle. See `client-features/management-source-release-dispatch.md` for the sche
 and safe uncertainty projection. This is an observability-neutral management
 addition: it introduces no production-to-dashboard event or deployment outcome.
 
+### NEW-instance host preflight and origin record (Issue #2672 DRAFT)
+
+`fresh_host preflight --request-file PATH` emits only a local `assessed-only`
+JSON diagnostic with `launch_authorized: false`. An explicit separate
+`fresh_host begin` command writes a non-authorizing 0600 protected origin
+record and `inspect-begin` reopens it in another process. Neither path
+provides production admission, launch, process ownership, an authorized
+resumption or a dashboard-event producer; it
+cannot report authenticated readiness or success. No production trace or view
+schema changes are required because no processing path consumes these diagnostics
+as authority.
+The existing fresh initialization/recovery emissions retain their meaning.
+See `docs/client-features/management-new-instance-preflight.md` for the bounded
+subset and missing REQ-001–005 gates. Run `bash scripts/test.sh --ci-tests-only
+tests/test_management_new_instance_preflight.py
+tests/test_management_new_instance_begin.py
+tests/test_management_new_instance_profile.py
+tests/test_management_new_instance_admission_fence.py` to verify host refusal,
+source/profile reinspection, overlapping scans, original-record O_EXCL
+contention and real guard-lock contention. The separate
+`tests/test_management_new_instance_docker_created.py` supervisor integration
+suite inspects disposable Docker CREATED-state origins and invalidation after
+a real Docker start. None of these component diagnostics establish continuous
+prior-startup exclusion, a first management launch or authenticated readiness.
+
 ### Authenticated release-worker source deployment (isolated-host acceptance)
 
 `management/release_worker_deployment.py` remains a read-only provenance
@@ -3556,8 +3581,19 @@ Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempt
 drives the real original admission/refusal producer, inspects structured Loguru
 fields and source locations, and checks that no success/recovery claim appears.
 The process contention cases use those actual post-fsync emissions as observable
-barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
-these tests do not substitute for the independent host suite.
+barriers. The separately required real Docker `original-lineage` cutover and
+original-host durable-boundary cases exercise the actual host producers and
+independent evidence consumer. They establish only the selected prospective
+profile, never a recovered legacy history or recovery-success projection.
+
+Chronological predecessor validation refuses a descendant anchored before its
+parent's durable claim, before any new original boundary can be appended. This
+changes refusal eligibility without adding a trace field, dashboard job or
+success event. Run `bash scripts/test.sh --ci-tests-only
+tests/test_management_original_event_order.py
+tests/test_management_original_attempts.py` for the ordering/refusal and existing
+structured-emission oracles. The full-origin acceptance commands and REQ/AS map
+are in `client-features/management-original-attempt-provenance.md`.
 
 Managed release startup abandonment emits the existing health-log event envelope
 with category `engine_startup_failure`, fixed message

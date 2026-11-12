@@ -79,7 +79,9 @@ def prepare_image(repository: Path, github_env: Path | None = None) -> str:
         raise RuntimeError(f"Management test fixtures require a complete clean source identity (state={identity.state}, reason={getattr(identity, 'reason', None)})")
     encoded = base64.b64encode(serialize_build_identity(identity).encode()).decode()
     tag = f"auto-coder:management-fixture-{identity.source_revision[:12]}"
-    dockerfile = (repository / "Dockerfile").read_text() + ("\nFROM python-environment AS management-test-fixture\n" "ARG AUTO_CODER_SOURCE_REVISION\n" "RUN AUTO_CODER_SOURCE_REVISION=$AUTO_CODER_SOURCE_REVISION /opt/auto-coder/.venv/bin/python -m auto_coder.build_provenance embed\n")
+    dockerfile = (repository / "Dockerfile").read_text() + (
+        "\nFROM python-environment AS management-test-fixture\n" 'ENV PATH="/opt/auto-coder/.venv/bin:${PATH}"\n' "ARG AUTO_CODER_SOURCE_REVISION\n" "RUN AUTO_CODER_SOURCE_REVISION=$AUTO_CODER_SOURCE_REVISION /opt/auto-coder/.venv/bin/python -m auto_coder.build_provenance embed\n"
+    )
     subprocess.run(
         ["docker", "build", "--file", "-", "--target", "management-test-fixture", "--build-arg", f"AUTO_CODER_BUILD_IDENTITY_B64={encoded}", "--build-arg", f"AUTO_CODER_SOURCE_REVISION={identity.source_revision}", "--tag", tag, str(repository)],
         input=dockerfile,
@@ -88,9 +90,38 @@ def prepare_image(repository: Path, github_env: Path | None = None) -> str:
     )
     image_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", tag], text=True).strip()
     verify_image(repository, image_id)
+    # The production image puts the installed virtualenv first on PATH. The
+    # Python-only CI stage must run the same interpreter when tests request
+    # `python3` as PID 1 or as a separately executing non-owner process.
+    selected_python = subprocess.check_output(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--read-only",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--entrypoint",
+            "python3",
+            image_id,
+            "-B",
+            "-c",
+            "import sys, auto_coder.management.bootstrap_supervisor; print(sys.prefix)",
+        ],
+        text=True,
+        timeout=30,
+    ).splitlines()
+    if not selected_python or selected_python[-1] != "/opt/auto-coder/.venv":
+        raise RuntimeError("Python-only management fixture does not select installed runtime dependencies")
     if github_env is not None:
         with github_env.open("a", encoding="utf-8") as output:
-            output.write(f"AUTOCODER_FRESH_TEST_BASE_IMAGE={image_id}\n")
+            # Dockerfile FROM requires the local image tag; callers that execute
+            # the fixture resolve and verify the immutable image ID themselves.
+            output.write(f"AUTOCODER_FRESH_TEST_BASE_IMAGE={tag}\n")
     logger.info("Prepared Python-only management test fixture source={} image={}", identity.source_revision, image_id)
     return image_id
 

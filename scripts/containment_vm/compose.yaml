@@ -1,0 +1,34 @@
+services:
+  fixture:
+    build:
+      context: ${CONTAINMENT_VM_TOOLING:?Set the tooling directory}
+    environment:
+      APPROVED_AUTHORIZATION_ID: ${APPROVED_AUTHORIZATION_ID:-}
+    user: "${CONTAINMENT_VM_UID:?Set the preparation UID}:${CONTAINMENT_VM_GID:?Set the preparation GID}"
+    group_add:
+      - "${CONTAINMENT_KVM_GID:?Set the KVM device group}"
+    init: true
+    cpus: 2.0
+    mem_limit: 4g
+    pids_limit: 256
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/kvm:/dev/kvm:rwm
+    tmpfs:
+      - /tmp:size=128m
+    volumes:
+      - type: bind
+        source: ${CONTAINMENT_VM_ROOT:?Set the prepared fixture directory}/input
+        target: /input
+        read_only: true
+      - type: bind
+        source: ${CONTAINMENT_VM_ROOT:?Set the prepared fixture directory}/disk
+        target: /disk
+      - type: bind
+        source: ${CONTAINMENT_VM_ROOT:?Set the prepared fixture directory}/output
+        target: /output
+    stop_grace_period: 30s

@@ -172,6 +172,8 @@ def _installed_release(
     stop_prior_before_deployment: bool = False,
     live_failed_candidate: bool = False,
     hold_failed_candidate: bool = False,
+    interrupt_reboot_exit: bool = False,
+    exit_candidate_before_reconstruction: bool = False,
 ) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
@@ -260,6 +262,10 @@ def _installed_release(
             (runtime / "fixture-hold-terminal-exit").write_text("hold actual failed candidate terminal", encoding="utf-8")
         if hold_failed_candidate:
             environment["AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"] = str(candidate["environment_path"])
+        if interrupt_reboot_exit:
+            environment["AUTO_CODER_TEST_INTERRUPT_REBOOT_EXIT"] = "1"
+        if exit_candidate_before_reconstruction:
+            environment["AUTO_CODER_TEST_EXIT_CANDIDATE_BEFORE_RECONSTRUCTION"] = "1"
         if reconstruct_supervisor:
             environment["AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR"] = "1"
         if hold_terminal_exit or hold_terminal_after_recovery:
@@ -383,6 +389,13 @@ def test_unready_live_release_candidate_recovers_by_docker_pid1_restart(real_bou
 
 
 @pytest.mark.timeout(2400)
+@pytest.mark.parametrize("exit_candidate", [False, True])
+def test_original_reboot_intent_refuses_actual_same_pid1_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, exit_candidate: bool) -> None:
+    """A real owner reconstruction cannot impersonate a new Docker lifetime."""
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, hold_failed_candidate=True, interrupt_reboot_exit=True, exit_candidate_before_reconstruction=exit_candidate)
+
+
+@pytest.mark.timeout(2400)
 def test_lost_installed_start_response_survives_manager_process_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, reconstruct_manager=True)
 
@@ -474,7 +487,11 @@ def _exercise_installed_release_join(
     live_failed_candidate: bool = False,
     expire_failed_drain: bool = False,
     hold_failed_candidate: bool = False,
+    interrupt_reboot_exit: bool = False,
+    exit_candidate_before_reconstruction: bool = False,
 ) -> None:
+    assert not interrupt_reboot_exit or hold_failed_candidate
+    assert not exit_candidate_before_reconstruction or interrupt_reboot_exit
     assert not expire_failed_drain or live_failed_candidate
     assert not live_failed_candidate or fail_candidate
     assert not hold_failed_candidate or not fail_candidate
@@ -532,12 +549,14 @@ def _exercise_installed_release_join(
                     root / "release",
                     scenario,
                     fail_candidate=fail_candidate,
-                    reconstruct_supervisor=lose_start_reconstruct or reconstruct_recovery_supervisor or hold_terminal_after_recovery or recovery_process or reconstruct_held_exit or live_failed_candidate,
+                    reconstruct_supervisor=lose_start_reconstruct or reconstruct_recovery_supervisor or hold_terminal_after_recovery or recovery_process or reconstruct_held_exit or live_failed_candidate or interrupt_reboot_exit,
                     hold_terminal_exit=hold_terminal_exit,
                     hold_terminal_after_recovery=hold_terminal_after_recovery,
                     stop_prior_before_deployment=supersede_stopped_after_stage,
                     live_failed_candidate=live_failed_candidate,
                     hold_failed_candidate=hold_failed_candidate,
+                    interrupt_reboot_exit=interrupt_reboot_exit,
+                    exit_candidate_before_reconstruction=exit_candidate_before_reconstruction,
                 ) as release,
                 _source_http(system.remote) as endpoint,
                 ExitStack() as processes,
@@ -948,6 +967,49 @@ def _exercise_installed_release_join(
 
                         restarted = _wait_for(rebooted, timeout=120)
                         assert time.time() >= deadline
+                        if interrupt_reboot_exit:
+                            assert (release.runtime / "fixture-supervisor-reconstructions").read_text() == "1"
+                            state = json.loads((release.runtime / "supervisor" / "state.json").read_text())
+                            marker = state["reboot_recovery"]
+                            recovery_id = marker["operation_id"]
+                            record = state["operations"][recovery_id]
+                            assert marker["phase"] == "REQUESTED"
+                            assert marker["origin_incarnation"] == previous.supervisor_generation
+                            assert marker["origin_pid1_start_token"] == pid1_token
+                            assert record["request"]["operation"] == "RECOVER_PREVIOUS_REBOOT"
+                            assert record["result"] == {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"}
+                            assert all(record["reboot_exit_evidence"][key] == marker["eligibility"][key] for key in ("pid", "start_token", "runtime_id", "deployment_generation", "process_run_id", "socket_device", "socket_inode", "socket_ctime_ns"))
+                            assert state.get("prior_recovery_generation") is None and state.get("launch_intent") is None
+                            actual_token = _docker("exec", release.container, "python", "-c", "from pathlib import Path; print(Path('/proc/1/stat').read_text().rsplit(')', 1)[1].split()[19])").stdout.strip()
+                            assert actual_token == pid1_token
+                            assert _container_identity(release.container) == before
+                            assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == before_restart == 0
+                            if exit_candidate_before_reconstruction:
+                                _assert_lifetime_exited(release.container, failed_os)
+                            else:
+                                stat = _docker("exec", release.container, "cat", f"/proc/{failed_os['pid']}/stat").stdout.rsplit(") ", 1)[1].split()
+                                assert stat[19] == failed_os["start_token"] and stat[0] not in {"Z", "X"}
+                            socket_identity = (release.runtime / "management.sock").lstat()
+                            assert (socket_identity.st_dev, socket_identity.st_ino, socket_identity.st_ctime_ns) == tuple(marker["eligibility"][key] for key in ("socket_device", "socket_inode", "socket_ctime_ns"))
+                            assert (release.runtime / "fixture-launches.jsonl").read_bytes() == original_launches
+                            for _ in range(3):
+                                replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                                assert replay["operation_id"] == operation_id and replay["status"] != "SUCCEEDED"
+                                assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "same-pid1-competing"})["status"] == "BUSY"
+                                time.sleep(2.1)
+                            retained = json.loads((release.runtime / "supervisor" / "state.json").read_text())
+                            assert retained["reboot_recovery"] == marker
+                            assert retained["operations"][recovery_id] == record
+                            assert (release.runtime / "fixture-launches.jsonl").read_bytes() == original_launches
+                            assert (release.runtime / "fixture-posts").read_bytes() == original_posts + b"post\n"
+                            beta_after = system.client.inspect_supervisor()
+                            assert beta_after.supervisor_generation == beta_before.supervisor_generation
+                            assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
+                            assert _container_identity(system.worker_name) == beta_identity
+                            assert all(path.read_bytes() == original for path, original in ownership)
+                            assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == refs_before
+                            assert len(system.remote.dispatches) == 1
+                            return
                         restarted_pid1_token = _docker("exec", release.container, "python", "-c", "from pathlib import Path; print(Path('/proc/1/stat').read_text().rsplit(')', 1)[1].split()[19])").stdout.strip()
                         assert restarted_pid1_token and restarted_pid1_token != pid1_token
                         assert restarted.data["status"] in {"RUNNING", "UNKNOWN"}
@@ -1073,7 +1135,9 @@ def _exercise_installed_release_join(
                         assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
                         promoted_refs = system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags")
                         postpone_start["value"] = False
-                        superseded = _wait_for(lambda: status if (status := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
+                        # The lifecycle stage is persisted before the correlated terminal
+                        # journal transition. Wait for both before asserting its reason.
+                        superseded = _wait_for(lambda: status if (status := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" and status["phase"] == OperationPhase.FAILED.value else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
                         assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts
                         assert (release.runtime / "fixture-launches.jsonl").read_bytes() == stopped_launches
@@ -1238,7 +1302,8 @@ def _exercise_installed_release_join(
                         assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
                         promoted_refs = system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags")
                         postpone_drain["value"] = False
-                        superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
+                        # Snapshot stage alone does not establish durable terminal proof.
+                        superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" and result["phase"] == OperationPhase.FAILED.value else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
                         assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts, "superseded selection must not send a replacement effect"
                         assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1

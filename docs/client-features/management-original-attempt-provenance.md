@@ -14,10 +14,14 @@ cannot establish a deployment-wide frontier across earlier or unenrolled calls.
 The initial predecessor is an external boundary, not proof that its missing
 history was empty. `earlier_history` is always `UNAVAILABLE: before prospective
 enrollment`. In particular this profile cannot make the current incident's
-missing failed-generation journal recoverable. Deployment-wide enrollment
-continuity, every possible admission bypass, and authentic earlier history
-remain unverified; do not use this implementation as a recovery completeness
-prerequisite.
+missing failed-generation journal recoverable. The supported host fresh,
+bootstrap-upgrade and continuous-cutover paths preserve the binding of an
+enrolled predecessor before any successor grant. An unrelated unenrolled
+deployment and any pre-enrollment interval remain outside this profile.
+A consumer may independently verify the exact covered frontier while holding
+its current fences; it must separately decide whether that explicitly bounded
+coverage supplies the history its own contract requires. Neither enrollment
+nor a matching evidence object supplies recovery or launch authority.
 
 ## Original producer and lifetime
 
@@ -65,8 +69,12 @@ the producer also checks its complete canonical intent schema and requires
 its request ID to match the anchor event. A rehashed chain with a missing,
 partial or cross-attempt original anchor refuses as unavailable instead of
 throwing an unhandled field lookup; it never creates another intent or grant.
-This schema check does not authenticate rewritten original bytes or fill a
-pre-enrollment historical gap.
+Every historical anchor must also bind the exact enrolled original history
+root and history UUID before the producer admits another original claim or
+opens its host grant. A terminal failed branch with a rehashed foreign-history
+intent is unavailable even when its hash chain and terminal store payload
+remain internally consistent. This schema check does not authenticate
+rewritten original bytes or fill a pre-enrollment historical gap.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
 Protected original regular files, including the history lock, authority,
 frontier, events, intent and native stores, must have exactly one hard link.
@@ -78,10 +86,53 @@ The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
+Before admitting another attempt or entering a host grant, the shared frontier
+reader additionally validates the complete forward graph of covered anchors,
+including failed siblings: each historical predecessor must be the initial
+baseline or a previously claimed target with the matching container ID. Reused
+target names, container identities, state/journal paths or root identities,
+and cycles refuse even if the corrupted anchor's individual intent schema and
+the rehashed frontier are otherwise valid. The reader also re-stats every
+historically anchored state/journal directory against its exact protected
+device/inode identity; changing both the anchor and intent cannot disguise a
+different original inode. A missing or replaced directory is unavailable, and
+no historical byte is repaired.
+This changes refusal eligibility only: it introduces no new trace schema,
+dashboard success state, management process transition or grant event.
+The existing boundary logger records only events actually durably appended,
+while an unavailable graph refuses before another boundary is recorded.
+Before admitting another attempt or entering a host grant, the producer also
+rejects unknown event kinds, impossible per-attempt boundary sequences, and
+terminal facts that contradict the matching original anchor. Every historical
+`claimed` event must retain the exact producer payload shape, a real device/inode
+identity and canonical SHA-256 digest. The admission/grant frontier reader
+reopens each protected claimed intent and matches its original canonical bytes,
+inode and digest to its anchor and event before permitting a later attempt or
+grant. A plausible but incorrect rehashed claim remains unavailable even if
+the frontier checksums are internally consistent; missing or unprotected
+original claim files do not become assumed-successful ancestors.
+It checks every earlier original anchor against its exact producer lifetime,
+fixed expected store paths, original state/journal device-inode identities and
+pristine boolean before advancing the frontier or issuing another grant. A
+claimed original attempt cannot have a non-pristine anchor; an internally
+rehashed chain does not excuse that contradiction. Grant-possible event
+producer lifetimes use the same strict schema in both admission and independent
+derivation. These checks do not authenticate rewritten originals or establish
+coverage before the prospective enrollment. A never-created
+boundary must retain the anchor's exact original producer lifetime and
+expected stores, and it may only terminate an originally pristine target.
+An unresolved boundary must have the original empty payload. Rehashing the
+event chain cannot make such inconsistent history eligible for another
+admission or grant; the original corrupt bytes remain untouched.
 An original target whose own admission ended `never-created`, `unresolved`, or
 only anchored without a durable claim is not a valid predecessor for a new
 covered attempt. Both the original producer and independent evidence consumer
 refuse such a lineage instead of promoting a failed branch into an ancestor.
+The claim must precede every descendant anchor in the original event sequence.
+A later parent claim cannot retroactively validate an earlier descendant even
+if each per-attempt sequence and the rehashed frontier are individually valid.
+Producer admission and grant validation enforce the same chronological rule
+as the independent consumer, preserving the corrupt originals on refusal.
 This check is limited to prospective capture and does not assert that a merely
 claimed predecessor was successfully launched or ready.
 
@@ -93,7 +144,11 @@ grants for that attempt refuse. Interruption before that terminal commit,
 non-pristine roots or a partial intent remains unresolved. No reader creates a
 terminal fact from an absent claim, database, process or row.
 
-A completed claim records the original intent's identity and digest. The host
+A completed claim records the original intent's identity and digest. The original
+admission producer and the host grant boundary independently parse and match
+the exact canonical claimed intent bytes to the anchored intent; a valid
+claim-file digest alone never permits granting a different target. A mismatch
+leaves an unresolved original attempt without issuing an additional grant. The host
 adapter durably records `grant-possible` before entering its existing checks or
 launch callback, and holds the history lock for the entire adapter invocation.
 That conservative boundary does not mean a grant was delivered. A failed or
@@ -176,10 +231,11 @@ Observation resources close on refusal. Neither an earlier verification nor a
 released observation claims current exclusion; consumers still own their actual
 deployment fences and operation-history policy.
 
-## Evidence and remaining limits
+## Verification and supported limits
 
 Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py
 tests/test_management_original_predecessor_guard.py
+tests/test_management_original_event_order.py
 tests/test_management_original_bootstrap_integration.py
 tests/test_management_original_native_process.py
 tests/test_management_fresh_launch_exclusions.py`
@@ -296,3 +352,50 @@ deployment-wide enforcement against an unenrolled sibling origin. The native hos
 upgrade tests can fail in restricted execution environments; unavailable host
 behavior is not a successful acceptance result. No real management host, OAuth,
 workers or controller configuration is changed by this test selection.
+
+### Required acceptance coverage
+
+`scripts/supervisor_ci_profiles.py` makes eight original-history nodes mandatory
+in the existing `fresh-host` CI profile: the `original-lineage` second cutover,
+three original-profile first-launch/contention/crash variants, and four
+`test_original_host_durable_boundaries` variants. The original full test-file
+selectors remain in place. The planner and native evidence aggregate refuse a
+missing required node or an unexplained skip; collecting a smaller successful
+subset cannot establish this profile's acceptance.
+
+Each durable-boundary variant reuses real captured prior Docker identities,
+the pinned namespace, held owner fence, protected configuration and retained
+disposable OAuth. Separate `fresh_host` CLI producers are interrupted before
+event creation, after event durability, after pending-frontier durability,
+after atomic replacement, and after the final directory fsync. A contender
+must observably reach the held kernel history flock. The `never-created` case
+temporarily replaces the disposable OAuth pathname after the durable anchor,
+causing the native claim to refuse; the original directory identity and bytes
+are restored before observation. No producer or verifier success is supplied
+by a test double.
+
+Independent CLI readers inspect the interrupted originals without mutation.
+Terminal cases with a published original boundary verify successfully, then
+refuse a real host grant continuation supplied with current Docker observations
+and a physical `docker start` callback. Incomplete boundaries remain unavailable.
+Docker independently reports each refused candidate as never-started
+`created`, with PID zero, no native stores and no grant socket. Valid states
+that still permit their first grant are not misclassified as terminal refusal.
+Every variant finishes by completing the unchanged authenticated original-profile
+launch, proving that the harness has usable positive host prerequisites.
+SIGKILL observes process interruption; it does not simulate storage power loss.
+
+| Issue acceptance | Authoritative maintained oracle |
+| --- | --- |
+| AS-L01; REQ-301/302/304/306 | `test_real_second_cutover_preserves_all_owner_and_key_exclusions[original-lineage]`: real covered B/C grants and refused D, independent verification, omitted branch, changed source and missing expected journal refusal. |
+| AS-L02; REQ-301/303/305/306 | The four `test_original_host_durable_boundaries` variants: real CLI contention and interruption at five publication boundaries, native terminal refusal, no actual grant/launch; the 24 writer-syscall cases remain complementary. |
+| AS-L03; REQ-302/303/305/306 | `test_missing_legacy_histories_and_new_enrollment_are_unavailable_without_writes`, paired with the actual-host terminal positive above: legacy absence cannot supply a new original fact. |
+| AS-L04; REQ-302/304/305/306 | Real `original-lineage` separate consumers: unheld/released/duplicate owner descriptors, replaced history/owner/receipt inodes, valid foreign deployment, and a genuinely advanced original frontier invalidate the earlier object; fresh correct evidence verifies again. |
+| AS-L05; REQ-305/306 | Original-profile first-launch, contention and after-claim-crash Docker cases plus `test_ordinary_fresh_and_upgrade_refusals_preserve_original_records`: retained OAuth, controllers and old original records remain unchanged. |
+
+The source-order corruption tests are explicitly negative controls: they rehash
+invalid event order to demonstrate producer refusal. Native store and transport
+substitutions in lower-level tests remain component evidence, separate from the
+mandatory physical Docker and CLI origins above. The accepted scope stays the
+selected prospective history; it does not enroll a live deployment, recreate an
+old journal, or complete the independent recovery consumers in #2824/#2825.

@@ -19,8 +19,21 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, _file_identity, _protected, _trusted_ancestors
 from .fresh_host import _evidence
 from .fresh_host_observation import PriorContainer, _supported_prior_command
+from .fresh_initialization import load_fresh_initialization, read_fresh_status
 
 _MAX_DOCKER_BYTES = 8 * 1024 * 1024
+_FRESH_COMMAND = ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"]
+
+
+@dataclass(frozen=True)
+class CompletedFreshInitialization:
+    """Completed first-launch records, distinct from the current container."""
+
+    request_id: str
+    initialized_container_id: str
+    owner_incarnation: str
+    observation_id: str
+    records_sha256: str
 
 
 @dataclass(frozen=True)
@@ -43,6 +56,8 @@ class InstalledBootstrapMountProfile:
     support_mount_manifest_sha256: str = ""
     support_mount_directory_device: int = 0
     support_mount_directory_inode: int = 0
+    proxy_config_sha256: str = ""
+    completed_fresh_initialization: CompletedFreshInitialization | None = None
 
 
 def _digest(value: object) -> str:
@@ -115,13 +130,104 @@ def _support_mount_directory(content: bytes, expected_source: str, *, uid: int =
     return first.st_dev, first.st_ino
 
 
+def _unshadowed_bootstrap_execution(config: dict[str, object], mounts: tuple[tuple[str, str, bool], ...]) -> None:
+    """Keep the module command bound to the reviewed image's Python package."""
+    environment = config.get("Env", [])
+    if not isinstance(environment, list) or len(environment) > 256 or any(not isinstance(item, str) or "=" not in item for item in environment):
+        raise ValueError("original bootstrap environment is ambiguous")
+    names = [item.split("=", 1)[0] for item in environment]
+    if len(set(names)) != len(names):
+        raise ValueError("original bootstrap environment has duplicate names")
+    for item in environment:
+        name, value = item.split("=", 1)
+        if name in ("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE") and value or name == "HOME" and value != "/root" or name == "PATH" and value.split(":")[0] != "/opt/auto-coder/.venv/bin":
+            raise ValueError("original bootstrap Python resolution differs from the reviewed image")
+    protected = tuple(Path(path) for path in ("/opt/auto-coder", "/usr/local", "/usr/lib", "/lib", "/lib64", "/workspace", "/root/.local"))
+    for _, destination, _ in mounts:
+        target = Path(destination)
+        if any(target == root or target in root.parents or root in target.parents for root in protected):
+            raise ValueError("original bootstrap interpreter, package or working directory is shadowed")
+
+
+def _validated_proxy_configuration(record: EnrollmentObservation, proxy: dict[str, object]) -> str:
+    """Bind the actual original Caddy command to its protected file mount."""
+    config = proxy.get("Config")
+    if not isinstance(config, dict) or config.get("Entrypoint") != ["caddy"] or config.get("Cmd") != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"] or config.get("WorkingDir") != "/srv" or config.get("User") != "":
+        raise ValueError("original proxy command/configuration profile is unsupported")
+    path, _, digest = _original_config(record, "proxy-config")
+    mounts = _mounts(proxy)
+    expected = (str(path), "/etc/caddy/Caddyfile", False)
+    if expected not in mounts:
+        raise ValueError("original proxy configuration is not its protected read-only file mount")
+    selected = Path(expected[1])
+    for mount in mounts:
+        target = Path(mount[1])
+        if mount != expected and (target == selected or target in selected.parents or selected in target.parents):
+            raise ValueError("original proxy configuration mount is shadowed")
+    return digest
+
+
+def _completed_fresh_initialization(
+    config: dict[str, object],
+    mounted: dict[str, tuple[str, bool]],
+    bootstrap_digest: str,
+    management_digest: str,
+    *,
+    uid: int = 0,
+) -> CompletedFreshInitialization:
+    """Read completed initialization without equating it to a later lifetime."""
+    state = Path(mounted["/management-child-state"][0])
+    names = ("fresh-initialization.json", "fresh-launch-claimed.json", "fresh-launched.json", "fresh-outcome.json")
+    before = tuple(_protected(state / name, uid=uid, size_limit=65536) for name in names)
+    intent, _ = load_fresh_initialization(state, host=True)
+    status = read_fresh_status(state, host=True)
+    if status.get("status") != "succeeded":
+        raise ValueError("original fresh initialization has no completed authenticated outcome")
+    if (intent.new_instance, intent.state_root, intent.journal_root, intent.oauth_root, intent.runtime_reference) != (config.get("instance_id"), config.get("state_root"), config.get("journal_root"), config.get("oauth_root"), config.get("initial_runtime")):
+        raise ValueError("completed original initialization/configuration identity differs")
+    if intent.bootstrap_config_sha256 != bootstrap_digest or intent.management_config_sha256 != management_digest:
+        raise ValueError("completed original initialization configuration bytes differ")
+    roots = (
+        (intent.state_root, intent.host_state_root, intent.state_device, intent.state_inode),
+        (intent.journal_root, intent.host_journal_root, intent.journal_device, intent.journal_inode),
+        (intent.oauth_root, intent.host_oauth_root, intent.oauth_device, intent.oauth_inode),
+    )
+    for destination, source, device, inode in roots:
+        if mounted.get(destination) != (source, True):
+            raise ValueError("completed original initialization mount mapping differs")
+        path = Path(source)
+        info = path.lstat()
+        if path != path.resolve(strict=True) or not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or (info.st_dev, info.st_ino) != (device, inode):
+            raise ValueError("completed original initialization mounted root identity differs")
+        if any(target.startswith(destination + "/") for target in mounted):
+            raise ValueError("completed original initialization mounted root is shadowed")
+    if config.get("fresh_guard_path") != "/management-initialization/fresh-guard.sock" or config.get("fresh_prior_lock_path") != "/management-prior-owner.lock":
+        raise ValueError("completed original initialization guard/owner mapping differs")
+    for destination, device, inode, directory in (("/management-initialization", intent.guard_device, intent.guard_inode, True), ("/management-prior-owner.lock", intent.owner_lock_device, intent.owner_lock_inode, False)):
+        source, writable = mounted.get(destination, ("", True))
+        if writable or not source or any(target.startswith(destination + "/") for target in mounted):
+            raise ValueError("completed original initialization guard/owner mount differs")
+        path = Path(source)
+        info = path.lstat()
+        if path != path.resolve(strict=True) or info.st_uid != uid or (info.st_dev, info.st_ino) != (device, inode) or (not stat.S_ISDIR(info.st_mode) if directory else not stat.S_ISREG(info.st_mode)):
+            raise ValueError("completed original initialization guard/owner identity differs")
+    after = tuple(_protected(state / name, uid=uid, size_limit=65536) for name in names)
+    if tuple((content, _file_identity(info)) for content, info in before) != tuple((content, _file_identity(info)) for content, info in after):
+        raise ValueError("completed original initialization records changed during readback")
+    incarnation, observation = status.get("owner_incarnation"), status.get("observation_id")
+    if not isinstance(incarnation, str) or not isinstance(observation, str):
+        raise ValueError("completed original initialization launch identity is unavailable")
+    records = tuple((name, hashlib.sha256(content).hexdigest(), _file_identity(info)) for name, (content, info) in zip(names, before))
+    return CompletedFreshInitialization(intent.request_id, intent.new_container_id, incarnation, observation, _digest(records))
+
+
 def _validated_ordinary_profile(
     record: EnrollmentObservation,
     manager: dict[str, object],
     proxy: dict[str, object],
     prior_manager: PriorContainer,
     prior_proxy: PriorContainer,
-) -> tuple[str, str]:
+) -> tuple[str, str, CompletedFreshInitialization | None]:
     """Bind actual Docker paths to original root-owned config and prior mounts."""
     if record.enrollment.profile != "ordinary-v1":
         raise ValueError("this exact ordinary mount/command profile does not cover the quarantined original")
@@ -129,14 +235,18 @@ def _validated_ordinary_profile(
     proxy_host = proxy.get("HostConfig")
     if not isinstance(manager_config, dict) or not isinstance(manager_host, dict) or not isinstance(proxy_host, dict):
         raise ValueError("original effective Docker configuration is unavailable")
-    if not _supported_prior_command(manager_config.get("Entrypoint"), manager_config.get("Cmd")):
+    completed_command = manager_config.get("Entrypoint") == ["python"] and manager_config.get("Cmd") == _FRESH_COMMAND
+    if not completed_command and not _supported_prior_command(manager_config.get("Entrypoint"), manager_config.get("Cmd")):
         raise ValueError("original bootstrap effective command is not reviewed")
+    if manager_config.get("WorkingDir") != "/workspace":
+        raise ValueError("original bootstrap working directory differs from the reviewed image")
     for host in (manager_host, proxy_host):
         if host.get("Privileged") is not False or host.get("PidMode") not in ("", None) or host.get("CapAdd") not in ([], None) or host.get("Devices") not in ([], None) or host.get("SecurityOpt") not in ([], None):
             raise ValueError("original ordinary Docker security configuration differs")
     if proxy_host.get("NetworkMode") != "container:" + record.enrollment.management_id:
         raise ValueError("original proxy network binding differs")
     manager_mounts, proxy_mounts = _mounts(manager), _mounts(proxy)
+    _unshadowed_bootstrap_execution(manager_config, manager_mounts)
     for inspected, prior in ((manager_mounts, prior_manager), (proxy_mounts, prior_proxy)):
         digest = hashlib.sha256(json.dumps(inspected, separators=(",", ":")).encode()).hexdigest()
         if digest != prior.mounts_sha256:
@@ -177,7 +287,8 @@ def _validated_ordinary_profile(
         bound = True
     if not bound:
         raise ValueError("original runtime management configuration is not referenced")
-    return bootstrap_digest, management_digest
+    completed = _completed_fresh_initialization(config, mapped, bootstrap_digest, management_digest) if completed_command else None
+    return bootstrap_digest, management_digest, completed
 
 
 def _validated_quarantined_profile(
@@ -194,7 +305,7 @@ def _validated_quarantined_profile(
     if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(proxy_host, dict):
         raise ValueError("quarantined original effective Docker configuration is unavailable")
     entrypoint, command = config.get("Entrypoint"), config.get("Cmd")
-    if entrypoint != ["python"] or command != ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"]:
+    if entrypoint != ["python"] or command != _FRESH_COMMAND:
         raise ValueError("quarantined original bootstrap command differs from reviewed fresh entrypoint")
     if config.get("WorkingDir") != "/workspace" or config.get("User") != "" or config.get("Healthcheck") is not None or "/management-source" in json.dumps(config, sort_keys=True):
         raise ValueError("quarantined original support mount execution configuration is unsupported")
@@ -209,6 +320,7 @@ def _validated_quarantined_profile(
     if proxy_host.get("NetworkMode") != prior_proxy.network_mode:
         raise ValueError("quarantined original proxy captured network differs")
     management_mounts, proxy_mounts = _mounts(manager), _mounts(proxy)
+    _unshadowed_bootstrap_execution(config, management_mounts)
     for inspected, prior in ((management_mounts, prior_manager), (proxy_mounts, prior_proxy)):
         if hashlib.sha256(json.dumps(inspected, separators=(",", ":")).encode()).hexdigest() != prior.mounts_sha256:
             raise ValueError("quarantined original mounts differ from captured Docker provenance")
@@ -285,8 +397,10 @@ def inspect_installed_bootstrap_mount_profile(record: EnrollmentObservation, sel
         if _digest([inspected]) != selected_inspections.get(identifier):
             raise ValueError("original profile Docker inspection changed since complete inventory")
     support_sha, support_device, support_inode = "", 0, 0
+    completed = None
+    proxy_digest = _validated_proxy_configuration(record, first[1])
     if enrollment.profile == "ordinary-v1":
-        bootstrap_digest, management_digest = _validated_ordinary_profile(record, first[0], first[1], prior_manager, prior_proxy)
+        bootstrap_digest, management_digest, completed = _validated_ordinary_profile(record, first[0], first[1], prior_manager, prior_proxy)
         management_config_in_container = "/bootstrap/" + next(item for item in enrollment.original_files if item.purpose == "management-config").path.rsplit("/", 1)[-1]
     else:
         bootstrap_digest, management_digest, support_sha, support_device, support_inode = _validated_quarantined_profile(record, first[0], first[1], prior_manager, prior_proxy)
@@ -295,6 +409,10 @@ def inspect_installed_bootstrap_mount_profile(record: EnrollmentObservation, sel
         raise ValueError("original profile Docker configuration changed during observation")
     if _original_config(record, "bootstrap-config")[2] != bootstrap_digest or _original_config(record, "management-config")[2] != management_digest:
         raise ValueError("original protected configuration changed during profile readback")
+    if _validated_proxy_configuration(record, first[1]) != proxy_digest:
+        raise ValueError("original protected proxy configuration changed during profile readback")
+    if completed is not None and _validated_ordinary_profile(record, first[0], first[1], prior_manager, prior_proxy)[2] != completed:
+        raise ValueError("original completed initialization changed during profile readback")
     if enrollment.profile == "quarantined-original-v1" and _original_config(record, "support-source")[2] != support_sha:
         raise ValueError("quarantined original support manifest changed during profile readback")
     final_prior, final_identity = _protected(Path(enrollment.original_prior_evidence_path), uid=0, size_limit=65536)
@@ -317,4 +435,6 @@ def inspect_installed_bootstrap_mount_profile(record: EnrollmentObservation, sel
         support_sha,
         support_device,
         support_inode,
+        proxy_digest,
+        completed,
     )

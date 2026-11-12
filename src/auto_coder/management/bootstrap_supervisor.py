@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -201,6 +202,9 @@ class BootstrapConfig:
     restart_after_clean_shutdown: bool = False
     archived_exclusions: tuple[ArchivedExclusion, ...] = ()
     fresh_runtime_binding: FreshRuntimeBinding | None = None
+    new_instance_initialization: bool = False
+    new_docker_network: str | None = None
+    new_docker_host_port: int | None = None
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
@@ -225,6 +229,9 @@ class BootstrapConfig:
             "restart_after_clean_shutdown",
             "archived_exclusions",
             "fresh_runtime_binding",
+            "new_instance_initialization",
+            "new_docker_network",
+            "new_docker_host_port",
         }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
@@ -263,6 +270,9 @@ class BootstrapConfig:
             raw.get("restart_after_clean_shutdown", False),
             parse_exclusions(raw.get("archived_exclusions", [])),
             parse_fresh_runtime_binding(raw.get("fresh_runtime_binding")),
+            raw.get("new_instance_initialization", False),
+            raw.get("new_docker_network"),
+            raw.get("new_docker_host_port"),
         )
         config.validate()
         return config
@@ -283,8 +293,22 @@ class BootstrapConfig:
                 raise ValueError("clean restart requires a fixed drain receipt path")
         if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
             raise ValueError("invalid management self-update bootstrap profile")
-        if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
-            raise ValueError("fresh initialization paths must be paired and absolute")
+        if type(self.new_instance_initialization) is not bool:
+            raise ValueError("NEW initialization selector must be a boolean")
+        if (self.new_docker_network is None) != (self.new_docker_host_port is None):
+            raise ValueError("NEW Docker loopback network and port must be selected together")
+        if self.new_docker_network is not None:
+            if not self.new_instance_initialization or not isinstance(self.new_docker_network, str) or re.fullmatch(r"ac-new-[a-z0-9][a-z0-9-]{7,58}", self.new_docker_network) is None:
+                raise ValueError("NEW Docker network must be a dedicated exact-name profile")
+            if type(self.new_docker_host_port) is not int or not 1024 <= self.new_docker_host_port <= 65535:
+                raise ValueError("NEW Docker loopback host port is invalid")
+        if self.new_instance_initialization:
+            if self.fresh_guard_path is None or self.fresh_prior_lock_path is not None or self.restart_after_clean_shutdown or self.archived_exclusions or self.fresh_runtime_binding is not None:
+                raise ValueError("NEW initialization cannot claim a prior ownership lineage")
+        elif (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None):
+            raise ValueError("fresh initialization paths must be paired")
+        if any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
+            raise ValueError("fresh initialization paths must be absolute")
         if self.fresh_runtime_binding is not None:
             self.fresh_runtime_binding.validate()
             initial = next(item for item in self.runtimes if item.reference == self.initial_runtime)
@@ -343,8 +367,10 @@ class Observation:
 class ManagementBootstrapSupervisor:
     """Own one child; all executable data comes from immutable local config."""
 
-    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False, source_authority: TestedSourcePublisher | None = None) -> None:
+    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False, new_initialization_request: Path | None = None, source_authority: TestedSourcePublisher | None = None) -> None:
         config.validate()
+        if bool(new_initialization_request) != config.new_instance_initialization or (fresh_initialization and new_initialization_request is not None):
+            raise ValueError("NEW bootstrap must select only its dedicated first-launch path")
         from .worker_network_client import configured_worker_bridge_environment
 
         # Validate the complete trusted bootstrap environment before recording
@@ -353,6 +379,7 @@ class ManagementBootstrapSupervisor:
         self.config = config
         self.bootstrap_config_path = bootstrap_config_path
         self.fresh_initialization = fresh_initialization
+        self.new_initialization_request = new_initialization_request
         self.source_authority = source_authority
         self._container_shutdown_requested = False
         self._archived_owner_fences: tuple[int, ...] = ()
@@ -374,6 +401,21 @@ class ManagementBootstrapSupervisor:
         unenrolled Supervisor profiles keep their existing opening behavior.
         """
         path = self.config.state_root / ".supervisor-owner.lock"
+        if self.new_initialization_request is not None:
+            # O_EXCL is a durable fail-closed lifetime gate. A crashed or
+            # partially published NEW owner cannot acquire a second owner.
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "a+b") as owner:
+                info = os.fstat(owner.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+                    raise PermissionError("NEW first owner lock is not protected")
+                directory = os.open(self.config.state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+                yield owner
+            return
         if self.fresh_initialization and (self.config.state_root / "fresh-initialization.json").is_file():
             from .fresh_initialization import load_fresh_initialization
 
@@ -788,6 +830,9 @@ class ManagementBootstrapSupervisor:
 
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
+        if self.config.new_instance_initialization and (self.new_initialization_request is None or not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
+            logger.error("NEW initialization requires an explicit original request and protected state root")
+            return 1
         if self.fresh_initialization and (not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
             logger.error("Fresh initialization state root is unavailable")
             return 1
@@ -852,6 +897,10 @@ class ManagementBootstrapSupervisor:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
         owner_start_token = self._await_owner_start_token()
+        if self.new_initialization_request is not None:
+            if not self._start_new_initialization():
+                return 1
+            self.new_initialization_request = None
         if self.fresh_initialization:
             # The explicit one-shot command is safe to reconstruct only after
             # its own authenticated initial outcome was durably confirmed.
@@ -1002,6 +1051,129 @@ class ManagementBootstrapSupervisor:
             if recovery_consumer is not None:
                 recovery_consumer.tick(allow_admission=self._fresh_observer is None or self._fresh_observer.succeeded)
             time.sleep(0.2)
+
+    def _start_new_initialization(self) -> bool:
+        """Consume a genuinely NEW Docker origin without inventing a prior owner.
+
+        The one-shot host grants only after validating the real launched Docker
+        scope. Any partial owner, store or claim remains intact and is never
+        interpreted as permission to start a second child.
+        """
+        from urllib.parse import urlsplit
+
+        import auto_coder
+
+        from .fresh_host_observation import assert_host_listener_absent
+        from .fresh_new_first_launch import (
+            CHILD_FIRST_CLAIM,
+            SOCKET,
+            claim_new_child_first_launch,
+            load_new_first_start,
+            new_readiness_intent,
+            record_new_child_launch,
+            record_new_child_outcome,
+        )
+        from .fresh_oauth import validate_retained_oauth
+        from .fresh_readiness import FreshReadinessObserver
+        from .oauth_config import load_management_settings
+        from .operation_store import ManagementOperationStore
+        from .recovery_mailbox import RecoveryMailbox
+        from .self_update_handoff import HandoffStore
+
+        launch_may_exist = False
+        request_file = self.new_initialization_request
+        if request_file is None:
+            return False
+        try:
+            if self.bootstrap_config_path is None or self.config.fresh_guard_path is None or self.config.fresh_prior_lock_path is not None:
+                raise ValueError("NEW bootstrap cannot select a prior-cutover owner")
+            original = json.loads(request_file.read_bytes())
+            if not isinstance(original, dict):
+                raise ValueError("NEW original request is unavailable")
+            if (
+                original.get("new_instance") != self.config.instance_id
+                or original.get("state_root") != str(self.config.state_root)
+                or original.get("operation_root") != str(self.config.journal_root)
+                or original.get("oauth_root") != str(self.config.oauth_root)
+                or original.get("bootstrap_config") != str(self.bootstrap_config_path)
+                or self.config.fresh_guard_path != Path(original.get("guard_root", "")) / SOCKET
+            ):
+                raise ValueError("NEW selected bootstrap and original request differ")
+            permitted = frozenset({".supervisor-owner.lock"})
+            entries = frozenset(item.name for item in self.config.state_root.iterdir())
+            if entries not in (permitted, permitted | {"logs"}):
+                raise ValueError("NEW first-launch state contains prior or unowned entries")
+            if "logs" in entries:
+                logs = self.config.state_root / "logs"
+                if logs.is_symlink() or not logs.is_dir() or any(item.is_symlink() or not item.is_file() for item in logs.iterdir()):
+                    raise ValueError("NEW Supervisor log directory differs")
+            start = load_new_first_start(request_file, state_entries=entries)
+            if start.origin.request_id != original["request_id"] or start.profile.instance_id != self.config.instance_id or self.config.initial_runtime != start.profile.runtime_reference:
+                raise ValueError("NEW origin, instance or selected runtime differs")
+            runtime = self._runtime(start.profile.runtime_reference)
+            if runtime is None or runtime.reference != self.config.initial_runtime or runtime.executable != Path(original["executable"]) or runtime.source_root != Path(original["application_root"]) or not runtime.verify(initial=True):
+                raise ValueError("NEW selected runtime differs")
+            if auto_coder.__file__ is None or Path(auto_coder.__file__).resolve(strict=True).parent != runtime.source_root:
+                raise ValueError("NEW actual bootstrap application differs from original")
+            management_path = Path(original["management_config"])
+            settings = load_management_settings(management_path)
+            if settings.bootstrap_config_path != self.bootstrap_config_path or settings.state_root != self.config.oauth_root or settings.operation_state_root != self.config.journal_root:
+                raise ValueError("NEW selected management service state differs")
+            validate_retained_oauth(settings.oauth)
+            endpoint = urlsplit(self.config.listener_url)
+            from .oauth_config import management_listener_binding_matches
+
+            if endpoint.port is None or not management_listener_binding_matches(self.config, settings):
+                raise ValueError("NEW selected protected endpoint differs")
+            if any(self.config.journal_root.iterdir()) or (self.config.state_root / CHILD_FIRST_CLAIM).exists():
+                raise ValueError("NEW first launch is already claimed or partially initialized")
+            # The native ledger precedes the host challenge so the host can
+            # verify this actual owner's incarnation and locked kernel inode.
+            previous_umask = os.umask(0o077)
+            try:
+                self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+                self.store.require_existing = True
+                claim_new_child_first_launch(start, self.incarnation, self.config.state_root)
+                with closing(ManagementOperationStore(self.config.journal_root)._connect()):
+                    pass
+                with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
+                    pass
+                RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
+            finally:
+                os.umask(previous_umask)
+            # After native writes, the source/guard reader still verifies the
+            # immutable original inputs and every protected root identity.
+            reread = load_new_first_start(request_file, state_entries=None, operation_entries=None)
+            if reread != start or new_readiness_intent(start).application_sha256 != new_readiness_intent(reread).application_sha256:
+                raise ValueError("NEW original source changed across native initialization")
+            validate_retained_oauth(settings.oauth)
+            if not runtime.verify(initial=True):
+                raise ValueError("NEW runtime changed before first launch")
+            assert_host_listener_absent(endpoint.port)
+            if self._container_shutdown_requested:
+                raise ValueError("NEW first launch was cancelled")
+            launch_may_exist = True
+            self._fresh_launch_may_exist = True
+            result = self.start_selected("new-" + start.origin.request_id, str(uuid.uuid4()), runtime.reference, allow_safety_return=False)
+            if result.status is not ResultStatus.OBSERVED_RUNNING:
+                raise ValueError("NEW child first launch is unresolved")
+            observation = record_new_child_launch(start, self.incarnation, self.config.state_root, child_identity=self._identity(result.record), verification_timeout=self.config.verification_timeout)
+            self._fresh_observer = FreshReadinessObserver(
+                self,
+                new_readiness_intent(start),
+                observation,
+                settings.oauth.canonical_issuer,
+                runtime.source_root,
+                record_outcome=record_new_child_outcome,
+            )
+            logger.info("NEW first management child launched request={} identity={}", start.origin.request_id, self._identity(result.record))
+            self._fresh_launch_may_exist = False
+            return True
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            if not launch_may_exist:
+                self._release_prior_fences()
+            logger.error("NEW original initialization is unavailable or unresolved; first launch cannot be retried")
+            return False
 
     def _start_fresh_initialization(self) -> bool:
         """One explicit fresh first launch; any partial transition is refused."""
@@ -1303,10 +1475,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Auto-Coder immutable management child supervisor")
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--fresh-initialization", action="store_true")
+    parser.add_argument("--new-initialization", action="store_true")
+    parser.add_argument("--request-file", type=Path)
     args = parser.parse_args()
     config = BootstrapConfig.read(args.config)
+    if config.new_instance_initialization:
+        if not args.new_initialization or args.fresh_initialization or args.request_file is None:
+            parser.exit(1, "NEW initialization requires a separately admitted first-launch controller\n")
+        # Refuse before logger/store/owner creation if the original and exact
+        # host-start receipt are not independently available at this moment.
+        from .fresh_new_first_launch import load_new_first_start
+
+        try:
+            load_new_first_start(args.request_file)
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            parser.exit(1, f"NEW first-launch original unavailable: {error}\n")
+    elif args.new_initialization or args.request_file is not None:
+        parser.exit(1, "NEW initialization flags require a selected NEW profile\n")
     setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
-    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())
+    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization, new_initialization_request=args.request_file).run())
 
 
 if __name__ == "__main__":

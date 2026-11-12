@@ -9,9 +9,14 @@ Neither result retains its own FD or establishes a full closed-profile verdict.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import select
+import sqlite3
 import stat
+import subprocess
+import tarfile
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -25,12 +30,23 @@ from .fresh_host_observation import (
     HostObservationUnavailable,
     PriorContainer,
     _assert_pid_flock,
+    _capture_prior_kernel,
+    _capture_supervisor_identity,
+    _engine_id,
     _inspect,
+    _validate_host_proc_profile,
     assert_host_listener_absent,
     assert_known_prior_stack_stopped,
     assert_prior_network_pin,
     assert_prior_network_unreferenced,
+    assert_prior_processes_absent,
 )
+from .installed_bootstrap_mount_profile import InstalledBootstrapMountProfile
+from .installed_bootstrap_mount_profile import _digest as _profile_digest
+from .installed_bootstrap_mount_profile import _inspect as _profile_inspect
+from .installed_bootstrap_mount_profile import _mounts as _profile_mounts
+from .installed_bootstrap_mount_profile import _unshadowed_bootstrap_execution
+from .installed_bootstrap_source import _REVIEWED_QUARANTINED_SOURCE_SHA256, _copy_source
 
 
 @dataclass(frozen=True)
@@ -63,6 +79,9 @@ class KernelSubObservation:
     owner_fence_holder_pid: int = 0
     owner_fence_holder_start_token: str = ""
     owner_fence_holder_fd: int = -1
+    installed_profile: str = ""
+    management_inspection_sha256: str = ""
+    proxy_inspection_sha256: str = ""
 
 
 def _holder_start_token(pid: int) -> str:
@@ -192,7 +211,181 @@ def _owner_lock(prior: PriorContainer) -> tuple[int, int, int, int]:
         os.close(fd)
 
 
-def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObservation:
+def _require_capture_host() -> None:
+    if os.geteuid() != 0 or any(os.readlink("/proc/self/ns/" + name) != os.readlink("/proc/1/ns/" + name) for name in ("pid", "user", "mnt", "net")):
+        raise ValueError("initial-namespace host-root capture is required")
+    _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(encoding="ascii"), Path("/proc/self/mountinfo").read_text(encoding="ascii"))
+
+
+def capture_original_caddy_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...]) -> PriorContainer:
+    """Capture the actual original Caddy, without broadening fresh admission."""
+    try:
+        _require_capture_host()
+        engine = _engine_id()
+        current = _profile_inspect(container_id)
+        state, host, config = current.get("State"), current.get("HostConfig"), current.get("Config")
+        if current.get("Image") != image_id or not isinstance(state, dict) or state.get("Running") is not True or type(state.get("Pid")) is not int or state["Pid"] <= 0 or state.get("Status") != "running" or not isinstance(host, dict) or not isinstance(config, dict):
+            raise ValueError("original Caddy is not the exact live instance")
+        network = host.get("NetworkMode")
+        if (
+            host.get("Privileged") is not False
+            or host.get("PidMode") not in ("", None)
+            or host.get("CapAdd") not in (None, [])
+            or host.get("SecurityOpt") not in (None, [])
+            or host.get("Devices") not in (None, [])
+            or not isinstance(network, str)
+            or not network.startswith("container:")
+            or len(network.removeprefix("container:")) != 64
+            or any(char not in "0123456789abcdef" for char in network.removeprefix("container:"))
+            or config.get("Entrypoint") != ["caddy"]
+            or config.get("Cmd") != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+            or config.get("WorkingDir") != "/srv"
+            or config.get("User") != ""
+            or config.get("Healthcheck") is not None
+        ):
+            raise ValueError("original Caddy live command or security profile differs")
+        mounts = _profile_mounts(current)
+        if mounts != tuple(sorted(expected_mounts)) or {destination: writable for _, destination, writable in mounts} != {"/etc/caddy/Caddyfile": False, "/data": True, "/config": True}:
+            raise ValueError("original Caddy config or writable data mount effects differ")
+        for source, _, _ in mounts:
+            path = Path(source)
+            if path != path.resolve(strict=True) or source in {"/", "/proc", "/sys", "/dev", "/run", "/var/run"} or source.startswith(("/proc/", "/sys/", "/dev/", "/run/", "/var/run/")):
+                raise ValueError("original Caddy mount source is unsupported")
+        config_path = Path(next(source for source, destination, _ in mounts if destination == "/etc/caddy/Caddyfile"))
+        config_bytes, config_identity = _protected(config_path, uid=0, size_limit=1024 * 1024)
+        values = _inspect(container_id)
+        if values[1:5] != [image_id, True, state["Pid"], "running"] or values[9] != network or values[13:15] != [state.get("StartedAt"), current.get("RestartCount")]:
+            raise ValueError("original Caddy live Docker lifetime changed")
+        prior = _capture_prior_kernel(container_id, image_id, engine, values, mounts, require_owner_lock=False)
+        prior.validate()
+        final_config, final_identity = _protected(config_path, uid=0, size_limit=1024 * 1024)
+        if final_config != config_bytes or _file_identity(final_identity) != _file_identity(config_identity) or _profile_inspect(container_id) != current or _inspect(container_id) != values or _engine_id() != engine:
+            raise ValueError("original Caddy config or Docker identity changed during live capture")
+        return prior
+    except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, subprocess.SubprocessError) as exc:
+        raise HostObservationUnavailable("original Caddy live capture unavailable: " + str(exc)) from exc
+
+
+def capture_quarantined_original_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...], bootstrap_config: Path) -> PriorContainer:
+    """Capture actual live original identities for a later, separate enrollment.
+
+    This observation-only reader admits the reviewed original's individual
+    bootstrap file mounts and no-new-privileges setting. It neither enrolls nor
+    contains the deployment, and its output is never replacement admission.
+    The full observer must subsequently validate the approved source/config
+    and support-mount profile against this independently captured lifetime.
+    """
+    try:
+        _require_capture_host()
+        engine = _engine_id()
+        current = _profile_inspect(container_id)
+        state, host, config = current.get("State"), current.get("HostConfig"), current.get("Config")
+        if current.get("Image") != image_id or not isinstance(state, dict) or state.get("Running") is not True or type(state.get("Pid")) is not int or state["Pid"] <= 0 or state.get("Status") != "running" or not isinstance(host, dict) or not isinstance(config, dict):
+            raise ValueError("quarantined original is not the exact live instance")
+        if (
+            host.get("Privileged") is not False
+            or host.get("PidMode") not in ("", None)
+            or host.get("CapAdd") not in (None, [])
+            or host.get("SecurityOpt") != ["no-new-privileges"]
+            or host.get("ReadonlyRootfs") is not True
+            or host.get("Devices") not in (None, [])
+            or host.get("NetworkMode") in ("host", None, "")
+            or config.get("Entrypoint") != ["python"]
+            or config.get("Cmd") != ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"]
+            or config.get("WorkingDir") != "/workspace"
+            or config.get("User") != ""
+            or config.get("Healthcheck") is not None
+            or "/management-source" in json.dumps(config, sort_keys=True)
+        ):
+            raise ValueError("quarantined original live command or security profile differs")
+        mounts = _profile_mounts(current)
+        _unshadowed_bootstrap_execution(config, mounts)
+        if mounts != tuple(sorted(expected_mounts)) or any(source in {"/", "/proc", "/sys", "/dev", "/run", "/var/run"} or source.startswith(("/proc/", "/sys/", "/dev/", "/run/", "/var/run/")) for source, _, _ in mounts):
+            raise ValueError("quarantined original live mounts differ from the selected profile")
+        mapped = {destination: (source, writable) for source, destination, writable in mounts}
+        effects = {"/bootstrap/config.json": False, "/bootstrap/management.yml": False, "/management-source": False, "/management-versions": False, "/management-child-state": True, "/management-oauth": True}
+        if any(destination not in mapped or mapped[destination][1] != writable for destination, writable in effects.items()) or mapped["/bootstrap/config.json"][0] != str(bootstrap_config):
+            raise ValueError("quarantined original live file/state/OAuth mount effect differs")
+        if any(destination == "/bootstrap" or destination.startswith(("/bootstrap/", "/management-source/", "/management-versions/", "/management-child-state/", "/management-oauth/")) and destination not in effects for _, destination, _ in mounts):
+            raise ValueError("quarantined original live mount paths are shadowed")
+        config_bytes, config_identity = _protected(bootstrap_config, uid=0, size_limit=65536)
+        source = _copy_source(container_id)
+        if hashlib.sha256(source).hexdigest() != _REVIEWED_QUARANTINED_SOURCE_SHA256:
+            raise ValueError("quarantined original bootstrap source is not reviewed")
+        values = _inspect(container_id)
+        if values[1:5] != [image_id, True, state["Pid"], "running"] or values[9] != host["NetworkMode"] or values[13:15] != [state.get("StartedAt"), current.get("RestartCount")]:
+            raise ValueError("quarantined original live Docker lifetime changed")
+        prior = _capture_prior_kernel(container_id, image_id, engine, values, mounts, require_owner_lock=True)
+        prior = _capture_supervisor_identity(prior, values, mounts, bootstrap_config)
+        prior.validate()
+        final_config, final_identity = _protected(bootstrap_config, uid=0, size_limit=65536)
+        if final_config != config_bytes or _file_identity(final_identity) != _file_identity(config_identity) or hashlib.sha256(config_bytes).hexdigest() != prior.bootstrap_sha256:
+            raise ValueError("quarantined original config changed during live capture")
+        if _copy_source(container_id) != source or _profile_inspect(container_id) != current or _inspect(container_id) != values or _engine_id() != engine:
+            raise ValueError("quarantined original source or Docker identity changed during live capture")
+        return prior
+    except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError, sqlite3.Error, subprocess.SubprocessError, tarfile.TarError) as exc:
+        raise HostObservationUnavailable("quarantined original live capture unavailable: " + str(exc)) from exc
+
+
+def _assert_profile_stack_stopped(enrolled: EnrollmentObservation, profile: InstalledBootstrapMountProfile, management: PriorContainer, proxy: PriorContainer) -> None:
+    """Recheck an observation-only original profile without replacement admission.
+
+    The caller has independently validated the installed source and effective
+    mount/configuration profile. Bind that exact complete Docker snapshot to
+    each captured original lifetime before sharing the kernel absence checks.
+    Neither this reader nor the mount profile changes fresh replacement rules.
+    """
+    approval = enrolled.enrollment
+    if (
+        profile.profile != approval.profile
+        or profile.profile not in ("ordinary-v1", "quarantined-original-v1")
+        or (profile.management_id, profile.proxy_id) != (approval.management_id, approval.proxy_id)
+        or (management.container_id, proxy.container_id) != (profile.management_id, profile.proxy_id)
+        or management.engine_id != approval.engine_id
+        or proxy.engine_id != approval.engine_id
+        or proxy.network_mode != "container:" + management.container_id
+        or proxy.net_namespace != management.net_namespace
+        or (profile.management_original_mounts_sha256, profile.proxy_original_mounts_sha256) != (management.mounts_sha256, proxy.mounts_sha256)
+        or (profile.original_owner_lock_device, profile.original_owner_lock_inode) != (management.owner_lock_device, management.owner_lock_inode)
+        or profile.bootstrap_config_sha256 != management.bootstrap_sha256
+    ):
+        raise HostObservationUnavailable("installed original profile and captured lifetime scope differ")
+    if _engine_id() != approval.engine_id:
+        raise HostObservationUnavailable("Docker engine identity changed")
+    for prior, digest, enrolled_image in (
+        (management, profile.management_inspection_sha256, approval.management_image_id),
+        (proxy, profile.proxy_inspection_sha256, approval.proxy_image_id),
+    ):
+        try:
+            prior.validate()
+        except (ValueError, TypeError) as exc:
+            raise HostObservationUnavailable("prior containment identity is invalid") from exc
+        current = _profile_inspect(prior.container_id)
+        if _profile_digest([current]) != digest:
+            raise HostObservationUnavailable("installed original Docker profile changed during kernel observation")
+        state, host = current.get("State"), current.get("HostConfig")
+        if (
+            not isinstance(state, dict)
+            or not isinstance(host, dict)
+            or current.get("Image") != prior.image_id
+            or prior.image_id != enrolled_image
+            or state.get("Running") is not False
+            or type(state.get("Pid")) is not int
+            or state["Pid"] != 0
+            or state.get("Status") != "exited"
+            or state.get("StartedAt") != prior.started_at
+            or current.get("RestartCount") != prior.restart_count
+            or type(current.get("RestartCount")) is not int
+            or host.get("NetworkMode") != prior.network_mode
+        ):
+            raise HostObservationUnavailable("original container is not the exact stopped lifetime")
+        assert_prior_processes_absent(prior)
+    if _engine_id() != approval.engine_id:
+        raise HostObservationUnavailable("Docker engine changed during original lifetime observation")
+
+
+def observe_kernel_subcomponent(enrolled: EnrollmentObservation, *, installed_profile: InstalledBootstrapMountProfile | None = None) -> KernelSubObservation:
     """Inspect original-current facts without treating historical netns IDs as pins."""
     approval = enrolled.enrollment
     if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
@@ -214,12 +407,18 @@ def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObs
     owner_pin = approval.original_owner_fence
     with _external_owner_fence(owner_pin, management) if owner_pin is not None else nullcontext(), _external_namespace_pin(pin, management.net_namespace) if pin is not None else nullcontext():
         first_owner = _owner_lock(management)
-        assert_known_prior_stack_stopped(management, proxy)
+        if installed_profile is None:
+            assert_known_prior_stack_stopped(management, proxy)
+        else:
+            _assert_profile_stack_stopped(enrolled, installed_profile, management, proxy)
         assert_prior_network_unreferenced(management.net_namespace)
         if management.published_port <= 0:
             raise HostObservationUnavailable("original published listener is unavailable")
         assert_host_listener_absent(management.published_port)
-        assert_known_prior_stack_stopped(management, proxy)
+        if installed_profile is None:
+            assert_known_prior_stack_stopped(management, proxy)
+        else:
+            _assert_profile_stack_stopped(enrolled, installed_profile, management, proxy)
         if _owner_lock(management) != first_owner:
             raise HostObservationUnavailable("original owner file changed during kernel checks")
         final, after = _protected(prior_path, uid=0, size_limit=65536)
@@ -252,4 +451,7 @@ def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObs
             owner_fence_holder_pid=owner_pin.holder_pid if owner_pin is not None else 0,
             owner_fence_holder_start_token=owner_pin.holder_start_token if owner_pin is not None else "",
             owner_fence_holder_fd=owner_pin.holder_fd if owner_pin is not None else -1,
+            installed_profile=installed_profile.profile if installed_profile is not None else "",
+            management_inspection_sha256=installed_profile.management_inspection_sha256 if installed_profile is not None else "",
+            proxy_inspection_sha256=installed_profile.proxy_inspection_sha256 if installed_profile is not None else "",
         )

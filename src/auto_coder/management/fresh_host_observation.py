@@ -18,7 +18,7 @@ import struct
 import subprocess
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -163,7 +163,6 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
     engine = _engine_id()
     values = _inspect(container_id)
     _, image, running, pid, status, privileged, pid_mode, caps, security, network, devices, mounts = values[:12]
-    started_at, restart_count = values[13:15]
     if image != image_id or running is not True or type(pid) is not int or pid <= 0 or status != "running":
         raise HostObservationUnavailable("prior container is not the expected live instance")
     if privileged is not False or pid_mode not in ("", None) or caps not in (None, []) or security not in (None, []) or network in ("host", None, "") or devices not in (None, []):
@@ -187,139 +186,165 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
     if observed_mounts != tuple(sorted(expected_mounts)) or any(source in {"/", "/proc", "/sys", "/dev", "/run", "/var/run"} or source.startswith(("/proc/", "/sys/", "/dev/", "/run/", "/var/run/")) for source, _, _ in observed_mounts):
         raise HostObservationUnavailable("prior container mounts differ from the approved profile")
     try:
-        proc = Path("/proc") / str(pid)
-        fields = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-        token = fields[19]
-        if not token.isdecimal() or int(token) <= 0:
-            raise ValueError("invalid process start token")
-        pid_namespace = os.readlink(proc / "ns/pid")
-        net_namespace = os.readlink(proc / "ns/net")
-        cgroup = (proc / "cgroup").read_text(encoding="utf-8").splitlines()
-        expected = "/system.slice/docker-" + container_id + ".scope"
-        if cgroup != ["0::" + expected]:
-            raise ValueError("unsupported cgroup layout")
-        cgroup_mounts = []
-        for line in (proc / "mountinfo").read_text(encoding="utf-8").splitlines():
-            halves = line.split(" - ", 1)
-            if len(halves) != 2:
-                raise ValueError("prior mount evidence is malformed")
-            left, right = halves[0].split(), halves[1].split()
-            if len(left) < 6 or len(right) < 3:
-                raise ValueError("prior mount evidence is incomplete")
-            if right[0] in {"cgroup", "cgroup2"}:
-                cgroup_mounts.append((left[3], left[4], left[5].split(","), right[0]))
-        if len(cgroup_mounts) != 1 or cgroup_mounts[0][0] != expected or cgroup_mounts[0][1] != "/sys/fs/cgroup" or "ro" not in cgroup_mounts[0][2] or cgroup_mounts[0][3] != "cgroup2":
-            raise ValueError("prior cgroup mount is not confined and read-only")
-        root = Path("/sys/fs/cgroup") / expected.lstrip("/")
-        info = root.stat()
-        tasks = _cgroup_tasks(root)
-        if pid not in tasks:
-            raise ValueError("cgroup task evidence unavailable")
-        lifetimes = []
-        for task in sorted(tasks):
-            task_proc = Path("/proc") / str(task)
-            task_fields = (task_proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-            if len(task_fields) < 20 or not task_fields[19].isdecimal() or os.readlink(task_proc / "ns/pid") != pid_namespace or os.readlink(task_proc / "ns/net") != net_namespace:
-                raise ValueError("prior cgroup task lifetime differs")
-            lifetimes.append(PriorTask(task, task_fields[19]))
-        if _cgroup_tasks(root) != tasks:
-            raise ValueError("prior cgroup tasks changed during observation")
-        final = _inspect(container_id)
-        if final[2:5] != [True, pid, "running"] or final[13:15] != [started_at, restart_count] or _engine_id() != engine:
-            raise ValueError("prior container changed during observation")
-        if not isinstance(network, str):
-            raise ValueError("network mode unavailable")
-        lock_device, lock_inode = 0, 0
-        if require_owner_lock:
-            sources = [source for source, destination, _ in observed_mounts if destination == "/management-child-state"]
-            if len(sources) != 1:
-                raise ValueError("prior supervisor state mount unavailable")
-            lock = Path(sources[0]) / ".supervisor-owner.lock"
-            descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                lock_info = os.fstat(descriptor)
-                if not stat.S_ISREG(lock_info.st_mode):
-                    raise ValueError("prior owner lock is not regular")
-                _assert_pid_flock(pid, descriptor, "WRITE")
-                lock_device, lock_inode = lock_info.st_dev, lock_info.st_ino
-            finally:
-                os.close(descriptor)
-        mount_digest = hashlib.sha256(json.dumps(observed_mounts, separators=(",", ":")).encode()).hexdigest()
-        if not isinstance(started_at, str) or type(restart_count) is not int:
-            raise ValueError("prior container start identity is unavailable")
-        instance_id, bootstrap_source, bootstrap_sha256, published_port = "", "", "", 0
-        oauth_source, oauth_device, oauth_inode = "", 0, 0
-        if require_deployment_identity:
-            if not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh):
-                raise ValueError("prior supervisor entrypoint differs")
-            sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
-            if len(sources) != 1:
-                raise ValueError("prior bootstrap config mount differs")
-            config_path = Path(sources[0]) / "config.json"
-            descriptor = os.open(config_path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(descriptor, "rb") as stream:
-                config_bytes = stream.read(65537)
-            if len(config_bytes) > 65536:
-                raise ValueError("prior bootstrap config is too large")
-            config = json.loads(config_bytes)
-            instance_id = config.get("instance_id")
-            state_sources = [source for source, destination, _ in observed_mounts if destination == "/management-child-state"]
-            oauth_sources = [source for source, destination, _ in observed_mounts if destination == "/management-oauth"]
-            if config.get("state_root") != "/management-child-state" or config.get("oauth_root") != "/management-oauth" or len(state_sources) != 1 or len(oauth_sources) != 1:
-                raise ValueError("prior state or OAuth mount differs")
-            ledger = Path(state_sources[0]) / "management-child.sqlite3"
-            if ledger.is_symlink() or not ledger.is_file():
-                raise ValueError("prior supervisor ledger unavailable")
-            with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
-                rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
-            if len(rows) != 1 or rows[0][0] != instance_id or rows[0][2:] != (1, token) or not isinstance(rows[0][1], str) or str(uuid.UUID(rows[0][1])) != rows[0][1]:
-                raise ValueError("prior live supervisor identity differs")
-            oauth_source = oauth_sources[0]
-            descriptor = os.open(oauth_source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                oauth_stat = os.fstat(descriptor)
-                oauth_device, oauth_inode = oauth_stat.st_dev, oauth_stat.st_ino
-            finally:
-                os.close(descriptor)
-            final = _inspect(container_id)
-            current_fields = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-            if final[2:5] != [True, pid, "running"] or final[13:15] != [started_at, restart_count] or len(current_fields) < 20 or current_fields[19] != token:
-                raise ValueError("prior supervisor changed during identity observation")
-            bindings = values[17]
-            if not isinstance(instance_id, str) or not instance_id or not isinstance(bindings, dict) or set(bindings) != {"8080/tcp"}:
-                raise ValueError("prior instance or port binding unavailable")
-            binding = bindings["8080/tcp"]
-            if not isinstance(binding, list) or len(binding) != 1 or not isinstance(binding[0], dict) or binding[0].get("HostIp") != "127.0.0.1" or not isinstance(binding[0].get("HostPort"), str) or not binding[0]["HostPort"].isdecimal() or not 0 < int(binding[0]["HostPort"]) <= 65535:
-                raise ValueError("prior published endpoint differs")
-            bootstrap_source, bootstrap_sha256, published_port = str(config_path), hashlib.sha256(config_bytes).hexdigest(), int(binding[0]["HostPort"])
-        return PriorContainer(
-            engine,
-            container_id,
-            image_id,
-            started_at,
-            restart_count,
-            pid,
-            token,
-            pid_namespace,
-            net_namespace,
-            network,
-            mount_digest,
-            expected,
-            info.st_dev,
-            info.st_ino,
-            tuple(lifetimes),
-            lock_device,
-            lock_inode,
-            instance_id,
-            bootstrap_source,
-            bootstrap_sha256,
-            published_port,
-            oauth_source,
-            oauth_device,
-            oauth_inode,
-        )
+        prior = _capture_prior_kernel(container_id, image_id, engine, values, observed_mounts, require_owner_lock=require_owner_lock)
+        if not require_deployment_identity:
+            return prior
+        if not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh):
+            raise ValueError("prior supervisor entrypoint differs")
+        sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
+        if len(sources) != 1:
+            raise ValueError("prior bootstrap config mount differs")
+        return _capture_supervisor_identity(prior, values, observed_mounts, Path(sources[0]) / "config.json")
     except (OSError, sqlite3.Error, ValueError, IndexError, UnicodeError) as exc:
         raise HostObservationUnavailable("prior kernel containment unavailable") from exc
+
+
+def _capture_prior_kernel(
+    container_id: str,
+    image_id: str,
+    engine: str,
+    values: list[object],
+    observed_mounts: tuple[tuple[str, str, bool], ...],
+    *,
+    require_owner_lock: bool,
+) -> PriorContainer:
+    """Capture live kernel identities after a caller validates its own profile."""
+    pid, network = values[3], values[9]
+    started_at, restart_count = values[13:15]
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("prior container PID is unavailable")
+    proc = Path("/proc") / str(pid)
+    fields = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+    token = fields[19]
+    if not token.isdecimal() or int(token) <= 0:
+        raise ValueError("invalid process start token")
+    pid_namespace = os.readlink(proc / "ns/pid")
+    net_namespace = os.readlink(proc / "ns/net")
+    cgroup = (proc / "cgroup").read_text(encoding="utf-8").splitlines()
+    expected = "/system.slice/docker-" + container_id + ".scope"
+    if cgroup != ["0::" + expected]:
+        raise ValueError("unsupported cgroup layout")
+    cgroup_mounts = []
+    for line in (proc / "mountinfo").read_text(encoding="utf-8").splitlines():
+        halves = line.split(" - ", 1)
+        if len(halves) != 2:
+            raise ValueError("prior mount evidence is malformed")
+        left, right = halves[0].split(), halves[1].split()
+        if len(left) < 6 or len(right) < 3:
+            raise ValueError("prior mount evidence is incomplete")
+        if right[0] in {"cgroup", "cgroup2"}:
+            cgroup_mounts.append((left[3], left[4], left[5].split(","), right[0]))
+    if len(cgroup_mounts) != 1 or cgroup_mounts[0][0] != expected or cgroup_mounts[0][1] != "/sys/fs/cgroup" or "ro" not in cgroup_mounts[0][2] or cgroup_mounts[0][3] != "cgroup2":
+        raise ValueError("prior cgroup mount is not confined and read-only")
+    root = Path("/sys/fs/cgroup") / expected.lstrip("/")
+    info = root.stat()
+    tasks = _cgroup_tasks(root)
+    if pid not in tasks:
+        raise ValueError("cgroup task evidence unavailable")
+    lifetimes = []
+    for task in sorted(tasks):
+        task_proc = Path("/proc") / str(task)
+        task_fields = (task_proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        if len(task_fields) < 20 or not task_fields[19].isdecimal() or os.readlink(task_proc / "ns/pid") != pid_namespace or os.readlink(task_proc / "ns/net") != net_namespace:
+            raise ValueError("prior cgroup task lifetime differs")
+        lifetimes.append(PriorTask(task, task_fields[19]))
+    if _cgroup_tasks(root) != tasks:
+        raise ValueError("prior cgroup tasks changed during observation")
+    final = _inspect(container_id)
+    if final[2:5] != [True, pid, "running"] or final[13:15] != [started_at, restart_count] or _engine_id() != engine:
+        raise ValueError("prior container changed during observation")
+    if not isinstance(network, str):
+        raise ValueError("network mode unavailable")
+    lock_device, lock_inode = 0, 0
+    if require_owner_lock:
+        sources = [source for source, destination, _ in observed_mounts if destination == "/management-child-state"]
+        if len(sources) != 1:
+            raise ValueError("prior supervisor state mount unavailable")
+        lock = Path(sources[0]) / ".supervisor-owner.lock"
+        descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            lock_info = os.fstat(descriptor)
+            if not stat.S_ISREG(lock_info.st_mode):
+                raise ValueError("prior owner lock is not regular")
+            _assert_pid_flock(pid, descriptor, "WRITE")
+            lock_device, lock_inode = lock_info.st_dev, lock_info.st_ino
+        finally:
+            os.close(descriptor)
+    mount_digest = hashlib.sha256(json.dumps(observed_mounts, separators=(",", ":")).encode()).hexdigest()
+    if not isinstance(started_at, str) or type(restart_count) is not int:
+        raise ValueError("prior container start identity is unavailable")
+    return PriorContainer(
+        engine,
+        container_id,
+        image_id,
+        started_at,
+        restart_count,
+        pid,
+        token,
+        pid_namespace,
+        net_namespace,
+        network,
+        mount_digest,
+        expected,
+        info.st_dev,
+        info.st_ino,
+        tuple(lifetimes),
+        lock_device,
+        lock_inode,
+    )
+
+
+def _capture_supervisor_identity(prior: PriorContainer, values: list[object], observed_mounts: tuple[tuple[str, str, bool], ...], config_path: Path) -> PriorContainer:
+    """Bind a captured live owner to its actual config and supervisor ledger."""
+    pid, token = prior.pid, prior.start_token
+    container_id, started_at, restart_count = prior.container_id, prior.started_at, prior.restart_count
+    proc = Path("/proc") / str(pid)
+    descriptor = os.open(config_path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        config_bytes = stream.read(65537)
+    if len(config_bytes) > 65536:
+        raise ValueError("prior bootstrap config is too large")
+    config = json.loads(config_bytes)
+    instance_id = config.get("instance_id")
+    state_sources = [source for source, destination, _ in observed_mounts if destination == "/management-child-state"]
+    oauth_sources = [source for source, destination, _ in observed_mounts if destination == "/management-oauth"]
+    if config.get("state_root") != "/management-child-state" or config.get("oauth_root") != "/management-oauth" or len(state_sources) != 1 or len(oauth_sources) != 1:
+        raise ValueError("prior state or OAuth mount differs")
+    ledger = Path(state_sources[0]) / "management-child.sqlite3"
+    if ledger.is_symlink() or not ledger.is_file():
+        raise ValueError("prior supervisor ledger unavailable")
+    with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
+    if len(rows) != 1 or rows[0][0] != instance_id or rows[0][2:] != (1, token) or not isinstance(rows[0][1], str) or str(uuid.UUID(rows[0][1])) != rows[0][1]:
+        raise ValueError("prior live supervisor identity differs")
+    oauth_source = oauth_sources[0]
+    descriptor = os.open(oauth_source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        oauth_stat = os.fstat(descriptor)
+        oauth_device, oauth_inode = oauth_stat.st_dev, oauth_stat.st_ino
+    finally:
+        os.close(descriptor)
+    final = _inspect(container_id)
+    current_fields = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+    if final[2:5] != [True, pid, "running"] or final[13:15] != [started_at, restart_count] or len(current_fields) < 20 or current_fields[19] != token:
+        raise ValueError("prior supervisor changed during identity observation")
+    bindings = values[17]
+    if not isinstance(instance_id, str) or not instance_id or not isinstance(bindings, dict) or set(bindings) != {"8080/tcp"}:
+        raise ValueError("prior instance or port binding unavailable")
+    binding = bindings["8080/tcp"]
+    if not isinstance(binding, list) or len(binding) != 1 or not isinstance(binding[0], dict) or binding[0].get("HostIp") != "127.0.0.1" or not isinstance(binding[0].get("HostPort"), str) or not binding[0]["HostPort"].isdecimal() or not 0 < int(binding[0]["HostPort"]) <= 65535:
+        raise ValueError("prior published endpoint differs")
+    bootstrap_source, bootstrap_sha256, published_port = str(config_path), hashlib.sha256(config_bytes).hexdigest(), int(binding[0]["HostPort"])
+    return replace(
+        prior,
+        instance_id=instance_id,
+        bootstrap_source=bootstrap_source,
+        bootstrap_sha256=bootstrap_sha256,
+        published_port=published_port,
+        oauth_source=oauth_source,
+        oauth_device=oauth_device,
+        oauth_inode=oauth_inode,
+    )
 
 
 def assert_prior_container_stopped(prior: PriorContainer) -> None:
@@ -370,6 +395,16 @@ def assert_prior_container_stopped(prior: PriorContainer) -> None:
             raise ValueError("prior mounts changed")
     except (KeyError, TypeError, ValueError) as exc:
         raise HostObservationUnavailable("prior mount evidence unavailable") from exc
+    assert_prior_processes_absent(prior)
+
+
+def assert_prior_processes_absent(prior: PriorContainer) -> None:
+    """Check captured task lifetimes and cgroup absence without admitting a profile.
+
+    Callers must separately verify the current Docker/source/mount profile.
+    Keeping this kernel observation separate does not relax the replacement
+    profile enforced by ``assert_prior_container_stopped``.
+    """
     try:
         if not prior.tasks or PriorTask(prior.pid, prior.start_token) not in prior.tasks:
             raise ValueError("prior task evidence is incomplete")

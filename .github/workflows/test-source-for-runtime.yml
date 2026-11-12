@@ -107,7 +107,8 @@ jobs:
       fail-fast: false
       max-parallel: 12
       matrix: ${{ fromJSON(needs.source-plan.outputs.matrix) }}
-    runs-on: ubuntu-latest
+    # Keep Chromium's tested Ubuntu ABI stable during the 26.04 rollout.
+    runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_BROWSERS_PATH: /tmp/auto-coder-playwright-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       AUTO_CODER_REQUIRE_BROWSER: "1"
@@ -134,7 +135,13 @@ jobs:
       - name: Prepare Python-only management test fixture
         run: uv run python scripts/prepare_management_test_image.py
       - name: Install Chromium
-        run: uv run playwright install --with-deps chromium
+        run: |
+          # Keep the full browser and its hard preflight; install OS packages
+          # only when the real runner cannot already launch Chromium.
+          uv run playwright install chromium
+          if ! uv run python scripts/browser_preflight.py; then
+            uv run playwright install-deps chromium
+          fi
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
       - name: Run complete required source selection

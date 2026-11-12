@@ -358,3 +358,339 @@ def test_manifest_file_requires_private_root_file_and_original_enrollment(monkey
         fixture.root.chmod(0o755)
         with pytest.raises(EnrollmentUnavailable):
             fixture.observe()
+
+
+class _closed_v2_routes(_closed_routes):
+    def __init__(self, monkeypatch: pytest.MonkeyPatch):
+        from auto_coder.management.containment_user_routes import UserAccountObservation, UserControllerInventory
+
+        super().__init__(monkeypatch)
+        info = self.base.stat()
+        self.binding = routes.DeploymentRootBinding(self.ids[0], "/bootstrap", str(self.base), False, info.st_dev, info.st_ino, info.st_mode)
+        self.bindings = (self.binding,)
+        self.approval.enrollment.management_id, self.approval.enrollment.proxy_id = self.ids
+        self.approval.enrollment.original_files = (SimpleNamespace(path=str(self.script)),)
+        account = UserAccountObservation(os.geteuid(), os.getegid(), "fixture-user", str(self.base), "/bin/sh", True, True, 321, "555", (str(self.base),), ())
+        self.users = UserControllerInventory((account,), (), (), (os.geteuid(),), ())
+        self.user_facts = (
+            routes.UserSystemdRouteFact(os.geteuid(), "fixture-user", routes.SystemdRouteFact("desktop.service", "1" * 64, "enabled", "active", 123, False)),
+            routes.UserSystemdRouteFact(os.geteuid(), "fixture-user", routes.SystemdRouteFact("manager-user.service", "2" * 64, "masked", "inactive", 0, True, True)),
+        )
+        monkeypatch.setattr(routes, "_deployment_root_bindings", lambda *args, **kwargs: self.bindings)
+        monkeypatch.setattr(routes, "_user_controllers", lambda *args, **kwargs: (self.users, self.user_facts))
+        self.manifest = replace(
+            self.manifest,
+            schema="approved-management-ordinary-routes-v2",
+            deployment_roots=self.bindings,
+            user_controller_catalog_sha256=routes._digest(asdict(self.users)),
+            user_systemd_routes=tuple(routes.UserSystemdRoute(item.uid, item.fact.unit, item.fact.sha256, "restarter" if item.fact.management_candidate else "unrelated") for item in self.user_facts),
+        )
+        self.save()
+
+
+def test_v2_closes_only_an_independently_matching_user_and_root_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_routes(monkeypatch) as legacy:
+        assert legacy.observe().closed_profile is False
+    with _closed_v2_routes(monkeypatch) as fixture:
+        observation = fixture.observe()
+        assert observation.closed_profile is True
+        assert observation.deployment_roots == fixture.bindings
+        assert observation.user_controller_inventory == fixture.users
+        assert observation.user_systemd == fixture.user_facts
+        assert fixture.observe() == observation
+
+
+@pytest.mark.parametrize("mutation", ("root-inode", "root-source", "user-lifetime", "user-account", "new-user-unit", "user-config", "user-restarter-enabled", "user-restarter-hidden", "system-pending-reload"))
+def test_v2_refuses_actual_changed_or_uninhibited_user_and_root_scope(monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    with _closed_v2_routes(monkeypatch) as fixture:
+        assert fixture.observe().closed_profile
+        if mutation == "root-inode":
+            fixture.bindings = (replace(fixture.binding, inode=fixture.binding.inode + 1),)
+        elif mutation == "root-source":
+            fixture.bindings = (replace(fixture.binding, source=str(fixture.base / "alternate")),)
+        elif mutation in ("user-lifetime", "user-account"):
+            account = fixture.users.accounts[0]
+            account = replace(account, manager_start_token="556") if mutation == "user-lifetime" else replace(account, home=str(fixture.base / "other-home"))
+            fixture.users = replace(fixture.users, accounts=(account,))
+        elif mutation == "new-user-unit":
+            fixture.user_facts += (routes.UserSystemdRouteFact(os.geteuid(), "fixture-user", routes.SystemdRouteFact("unknown.timer", "3" * 64, "enabled", "active", 0, False)),)
+        elif mutation == "user-config":
+            fixture.user_facts = (replace(fixture.user_facts[0], fact=replace(fixture.user_facts[0].fact, sha256="4" * 64)), fixture.user_facts[1])
+        elif mutation == "user-restarter-enabled":
+            fixture.user_facts = (fixture.user_facts[0], replace(fixture.user_facts[1], fact=replace(fixture.user_facts[1].fact, inhibited=False)))
+        elif mutation == "user-restarter-hidden":
+            fixture.manifest = replace(fixture.manifest, user_systemd_routes=tuple(replace(item, role="unrelated") for item in fixture.manifest.user_systemd_routes))
+            fixture.save()
+        elif mutation == "system-pending-reload":
+            fixture.facts[fixture.unrelated] = replace(fixture.facts[fixture.unrelated], needs_daemon_reload=True)
+        with pytest.raises(routes.RouteManifestUnavailable):
+            fixture.observe()
+
+
+def test_v2_refuses_a_user_controller_change_during_second_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_v2_routes(monkeypatch) as fixture:
+        calls = 0
+
+        def concurrent_user_change(*args: object, **kwargs: object):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                fixture.users = replace(fixture.users, runtime_uids=())
+            return fixture.users, fixture.user_facts
+
+        monkeypatch.setattr(routes, "_user_controllers", concurrent_user_change)
+        with pytest.raises(routes.RouteManifestUnavailable, match="changed during observation"):
+            fixture.observe()
+
+
+def test_v2_draft_is_not_self_approval_and_includes_observed_user_and_root_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_v2_routes(monkeypatch) as fixture:
+        monkeypatch.setattr(routes, "_CRON_ROOTS", fixture.cron_roots)
+        original = fixture.path.read_bytes()
+        draft = routes.propose_unapproved_route_draft(fixture.approval, fixture.docker, closed_profile=True)
+        assert draft["schema"] == "approved-management-ordinary-routes-v2"
+        assert draft["complete_ordinary_routes_attested"] is False
+        assert draft["deployment_roots"] == [asdict(fixture.binding)]
+        assert draft["user_controller_catalog_sha256"] == routes._digest(asdict(fixture.users))
+        assert len(draft["user_systemd_routes"]) == 2
+        with pytest.raises(routes.RouteManifestUnavailable, match="completeness attestation"):
+            routes.ApprovedRouteManifest.parse(draft)
+        assert fixture.path.read_bytes() == original
+
+
+def test_user_systemctl_reads_target_the_exact_local_user_bus(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+
+    def command(*args: str, **kwargs: object) -> str:
+        commands.append(args)
+        if "--property=UnitPath" in args:
+            return "/home/fixture-user/.config/systemd/user /usr/lib/systemd/user\n"
+        field = "unit_file" if "list-unit-files" in args else "unit"
+        return json.dumps([{field: "desktop.service"}])
+
+    monkeypatch.setattr(routes, "_command", command)
+    assert routes._systemd_catalog(user="fixture-user") == ("desktop.service",)
+    assert routes._user_unit_paths("fixture-user") == ("/home/fixture-user/.config/systemd/user", "/usr/lib/systemd/user")
+    assert all(call[:3] == ("systemctl", "--user", "--machine=fixture-user@.host") for call in commands)
+    with pytest.raises(routes.RouteManifestUnavailable, match="account name"):
+        routes._systemctl_prefix("another@remote-host")
+
+
+def test_user_unit_candidate_detection_includes_original_deployment_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=innocent.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=running\nFragmentPath=/home/fixture/.config/systemd/user/innocent.service\nNeedDaemonReload=no\nMainPID=123\n"
+    source = "[Service]\nExecStart=/usr/local/bin/recreate --config /srv/original-state/config.json\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if "show" in args else source)
+    fact = routes._systemd_unit("innocent.service", user="fixture", trusted_uid=1000, extra_cues=("/srv/original-state",))
+    assert fact.management_candidate is True
+    assert fact.inhibited is False
+
+
+def test_user_source_tree_tracks_real_masks_links_and_source_substitution(tmp_path: Path) -> None:
+    from auto_coder.management import containment_user_routes as users
+
+    root = tmp_path / "user"
+    root.mkdir()
+    unit = root / "example.service"
+    unit.write_text("[Service]\nExecStart=/usr/bin/true\n")
+    mask = root / "blocked.service"
+    mask.symlink_to("/dev/null")
+    linked = root / "linked.service"
+    linked.symlink_to(unit)
+    first = users.observe_user_sources((root,), uid=os.geteuid(), cues=("/srv/original-state",))
+    assert next(item for item in first if item.path == str(mask)).kind == "mask"
+    assert next(item for item in first if item.path == str(linked)).target_inode == unit.stat().st_ino
+    unit.write_text("[Service]\nExecStart=/usr/local/bin/recreate --config /srv/original-state/config.json\n")
+    second = users.observe_user_sources((root,), uid=os.geteuid(), cues=("/srv/original-state",))
+    assert second != first
+    assert next(item for item in second if item.path == str(linked)).management_candidate is True
+    unit.chmod(0o666)
+    with pytest.raises(users.UserControllerUnavailable, match="writable|permissions"):
+        users.observe_user_sources((root,), uid=os.geteuid(), cues=())
+
+
+def test_user_source_tree_refuses_opaque_linked_unit_directories(tmp_path: Path) -> None:
+    from auto_coder.management import containment_user_routes as users
+
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    link = tmp_path / "user"
+    link.symlink_to(target)
+    with pytest.raises(users.UserControllerUnavailable, match="unsupported"):
+        users.observe_user_sources((link,), uid=os.geteuid(), cues=())
+
+
+def _user_inventory_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from auto_coder.management import containment_user_routes as users
+
+    home = tmp_path / "account"
+    home.mkdir()
+    global_units = tmp_path / "system-user"
+    global_units.mkdir()
+    runtime = tmp_path / "run-user"
+    runtime.mkdir()
+    linger = tmp_path / "linger"
+    linger.mkdir()
+    account = SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid(), pw_name="fixture-user", pw_dir=str(home), pw_shell="/bin/sh")
+    monkeypatch.setattr(users.pwd, "getpwall", lambda: (account,))
+    monkeypatch.setattr(users, "observe_user_manager_lifetimes", lambda: ())
+
+    def read():
+        return users.observe_user_controller_inventory({}, lambda user: (), cues=("/srv/original-state",), global_roots=(global_units,), runtime_root=runtime, linger_root=linger, trusted_uid=os.geteuid())
+
+    return users, account, home, global_units, runtime, linger, read
+
+
+def test_inactive_user_inventory_reads_every_installed_home_and_refuses_unknown_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    users, account, home, global_units, runtime, linger, read = _user_inventory_fixture(tmp_path, monkeypatch)
+    first = read()
+    assert len(first.accounts) == 1
+    assert first.accounts[0].manager_pid == 0
+    assert any(item.path == str(home / ".config/systemd/user") and item.kind == "missing" for item in first.accounts[0].sources)
+    (runtime / str(os.geteuid() + 1)).mkdir()
+    with pytest.raises(users.UserControllerUnavailable, match="unknown user runtime"):
+        read()
+
+
+def test_inactive_user_with_installed_management_route_requires_real_inhibition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    users, account, home, global_units, runtime, linger, read = _user_inventory_fixture(tmp_path, monkeypatch)
+    unit_root = home / ".config/systemd/user"
+    unit_root.mkdir(parents=True)
+    (unit_root / "renamed.service").write_text("[Service]\nExecStart=/usr/local/bin/recreate --config /srv/original-state/config.json\n")
+    with pytest.raises(users.UserControllerUnavailable, match="inactive user"):
+        read()
+
+
+def test_live_user_manager_must_match_independent_systemd_process_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    users, account, home, global_units, runtime, linger, read = _user_inventory_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(users, "observe_user_manager_lifetimes", lambda: (users.UserManagerLifetime(os.geteuid(), 8765, "999"),))
+    with pytest.raises(users.UserControllerUnavailable, match="unlisted or contradictory"):
+        read()
+
+
+def test_user_manager_discovery_reads_proc_lifetimes_independently_of_unit_names(tmp_path: Path) -> None:
+    from auto_coder.management import containment_user_routes as users
+
+    process = tmp_path / "4321"
+    process.mkdir()
+    (process / "stat").write_text("4321 (systemd) S " + "0 " * 18 + "987654 0\n")
+    (process / "cmdline").write_bytes(b"/usr/lib/systemd/systemd\x00--user\x00")
+    (process / "exe").symlink_to("/usr/lib/systemd/systemd")
+    (process / "status").write_text("Uid:\t1000\t1000\t1000\t1000\n")
+    assert users.observe_user_manager_lifetimes(proc=tmp_path) == (users.UserManagerLifetime(1000, 4321, "987654"),)
+    (process / "exe").unlink()
+    with pytest.raises(users.UserControllerUnavailable, match="inaccessible"):
+        users.observe_user_manager_lifetimes(proc=tmp_path)
+
+
+def test_active_user_inventory_binds_actual_manager_load_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    users, account, home, global_units, runtime, linger, read = _user_inventory_fixture(tmp_path, monkeypatch)
+    manager = users.UserManagerLifetime(os.geteuid(), 8765, "999")
+    monkeypatch.setattr(users, "observe_user_manager_lifetimes", lambda: (manager,))
+    custom_root = home / "custom-user-units"
+    custom_root.mkdir()
+    source = custom_root / "desktop.service"
+    source.write_text("[Service]\nExecStart=/usr/bin/true\n")
+    actual_paths = (str(custom_root), str(global_units))
+    first = users.observe_user_controller_inventory({os.geteuid(): 8765}, lambda user: actual_paths, cues=(), global_roots=(global_units,), runtime_root=runtime, linger_root=linger, trusted_uid=os.geteuid())
+    assert first.accounts[0].unit_paths == actual_paths
+    assert first.accounts[0].manager_start_token == "999"
+    assert any(item.path == str(source) for item in first.accounts[0].sources)
+    source.write_text("[Service]\nExecStart=/usr/bin/false\n")
+    second = users.observe_user_controller_inventory({os.geteuid(): 8765}, lambda user: actual_paths, cues=(), global_roots=(global_units,), runtime_root=runtime, linger_root=linger, trusted_uid=os.geteuid())
+    assert first != second
+
+
+def test_unchanged_unit_does_not_hide_changed_external_local_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wrapper = tmp_path / "launcher.sh"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
+    shown = "Id=desktop.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=running\nFragmentPath=/home/fixture/.config/systemd/user/desktop.service\nNeedDaemonReload=no\nMainPID=123\nExecStart=" + str(wrapper) + "\n"
+    source = "[Service]\nExecStart=" + str(wrapper) + "\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if "show" in args else source)
+    first = routes._systemd_unit("desktop.service", user="fixture", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+    assert first.management_candidate is False
+    assert len(first.command_sources) == 1
+    assert first.command_sources[0].path == str(wrapper)
+    wrapper.write_text("#!/bin/sh\nexec /usr/local/bin/recreate --config /srv/original-state/config.json\n")
+    second = routes._systemd_unit("desktop.service", user="fixture", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+    assert second.sha256 != first.sha256
+    assert second.management_candidate is True
+    assert second.command_sources != first.command_sources
+
+
+def test_v2_route_observer_refuses_mutated_external_cron_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_v2_routes(monkeypatch) as fixture:
+        wrapper = tmp_path / "ordinary-job.sh"
+        wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
+        (fixture.cron_roots[0] / "system-cron").write_text("* * * * * root " + str(wrapper) + "\n")
+        cues = routes._deployment_cues(fixture.approval, fixture.bindings)
+        fixture.manifest = replace(fixture.manifest, cron_entries=routes._cron_catalog(roots=fixture.cron_roots, trusted_uid=os.geteuid(), extra_cues=cues, inspect_local_inputs=True))
+        fixture.save()
+        assert fixture.observe().closed_profile
+        wrapper.write_text("#!/bin/sh\nexec /usr/bin/false\n")
+        with pytest.raises(routes.RouteManifestUnavailable, match="changed cron/at route"):
+            fixture.observe()
+
+
+def test_explicit_nested_local_script_inputs_are_bound_but_distro_programs_stay_trusted(tmp_path: Path) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    helper = tmp_path / "helper.sh"
+    helper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text("#!/bin/sh\n. " + str(helper) + "\n")
+    facts, candidate = sources.observe_command_sources(str(wrapper), uid=os.geteuid(), cues=("/srv/original-state",))
+    assert {item.path for item in facts} == {str(wrapper), str(helper)}
+    assert candidate is False
+    assert sources.observe_command_sources("/usr/bin/true", uid=os.geteuid(), cues=()) == ((), False)
+    helper.write_text("#!/bin/sh\nexec /usr/local/bin/recreate --config /srv/original-state/config.json\n")
+    changed, candidate = sources.observe_command_sources(str(wrapper), uid=os.geteuid(), cues=("/srv/original-state",))
+    assert changed != facts
+    assert candidate is True
+
+
+@pytest.mark.parametrize("command", ('/bin/bash -c "$RUN"', "/usr/bin/python3 -c 'run_selected_module()'", "/bin/sh ./unknown.sh", "/usr/bin/python3 -m mutable_local_package"))
+def test_opaque_local_script_dispatch_cannot_inherit_an_unrelated_classification(command: str) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch|source binding"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=())
+
+
+def test_known_isolated_watcher_module_requires_approved_current_source(tmp_path: Path) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    watcher = tmp_path / "proxy_watch_cli.py"
+    watcher.write_text("def main():\n    return 0\n")
+    command = "/usr/bin/python3 -I -B -m auto_coder.management.proxy_watch_cli --config /etc/fixture-watcher.json"
+    with pytest.raises(sources.CommandSourceUnavailable, match="source binding"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=())
+    facts, _ = sources.observe_command_sources(command, uid=os.geteuid(), cues=(), known_modules=(("auto_coder.management.proxy_watch_cli", str(watcher)),))
+    assert next(item for item in facts if item.path == str(watcher)).sha256 == hashlib.sha256(watcher.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "exec ./unbound-launcher",
+        "exec relative/launcher",
+        "exec $LOCAL_ROOT/launcher",
+        "/bin/sh /opt/${JOB}/launcher.sh",
+        '/bin/sh "/opt/local job/launcher.sh"',
+        "/bin/sh /opt/local,job/launcher.sh",
+        "/bin/sh /opt/非ASCII/launcher.sh",
+    ),
+)
+def test_nonliteral_local_dispatch_is_refused_without_prefix_truncation(command: str) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    with pytest.raises(sources.CommandSourceUnavailable, match="unsupported"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=())
+
+
+def test_nested_local_wrapper_cannot_hide_unbound_module_dispatch(tmp_path: Path) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    wrapper = tmp_path / "module-wrapper.sh"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/python3 -I -B -m unknown_local_module\n")
+    with pytest.raises(sources.CommandSourceUnavailable, match="source binding"):
+        sources.observe_command_sources(str(wrapper), uid=os.geteuid(), cues=())
