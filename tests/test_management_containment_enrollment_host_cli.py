@@ -84,7 +84,7 @@ def test_reviewed_source_requires_actual_image_readback() -> None:
 def test_host_verifier_retries_only_transient_global_docker_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
     reports = [
         {"route_manifest": None, "unavailable": [{"authority": "approved-route-manifest", "reason": "whole-engine Docker inventory differs from approved routes"}]},
-        {"route_manifest": {"manifest": "reobserved"}, "unavailable": []},
+        {"route_manifest": {"manifest": "reobserved"}, "kernel_subobservation": {"pinned": True}, "unavailable": []},
     ]
     observed: list[tuple[str, Path, Path]] = []
 
@@ -111,3 +111,17 @@ def test_host_verifier_does_not_retry_unrelated_route_refusal(monkeypatch: pytes
     scope, previous = Path("/test/fixture/scope"), Path("/test/fixture/previous")
     assert fixture._verify_after_transient_docker_inventory(scope, previous) is report
     assert observed == [("verify", scope, previous)]
+
+
+def test_host_verifier_does_not_accept_a_route_without_kernel_readback(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = {"route_manifest": {"manifest": "reobserved"}, "kernel_subobservation": None, "unavailable": [{"authority": "kernel-subcomponent", "reason": "missing"}]}
+    called = 0
+
+    def verify(*_: object) -> dict[str, object]:
+        nonlocal called
+        called += 1
+        return report
+
+    monkeypatch.setattr(fixture, "_call_cli", verify)
+    assert fixture._verify_after_transient_docker_inventory(Path("/fixture/scope"), Path("/fixture/previous")) is report
+    assert called == 1

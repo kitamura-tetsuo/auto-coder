@@ -151,7 +151,15 @@ def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool, pin
     component = report.get("kernel_subobservation")
     authorities = _authorities(report)
     if (component is not None) != present:
-        details = [item for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") == "kernel-subcomponent"]
+        diagnostics = {
+            "kernel-subcomponent",
+            "docker",
+            "approved-route-manifest",
+            "saved-report:docker",
+            "saved-report:route_manifest",
+            "saved-report:kernel_subobservation",
+        }
+        details = [item for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") in diagnostics]
         raise AssertionError("real kernel sub-observation presence differs: " + repr(details))
     if present:
         if not isinstance(component, dict) or component.get("retained_original_network_pin") is not False:
@@ -182,18 +190,22 @@ def _assert_route_component(report: dict[str, object]) -> None:
 def _verify_after_transient_docker_inventory(scope: Path, previous: Path) -> dict[str, object]:
     """Retry only observed Docker inventory races; never revise an approved route."""
     report: dict[str, object] = {}
-    for attempt in range(5):
+    for attempt in range(10):
         report = _call_cli("verify", scope, previous)
-        if isinstance(report.get("route_manifest"), dict):
+        authorities = _authorities(report)
+        if isinstance(report.get("route_manifest"), dict) and isinstance(report.get("kernel_subobservation"), dict) and not {"saved-report:docker", "saved-report:route_manifest", "saved-report:kernel_subobservation"} & authorities:
             return report
         reasons = report.get("unavailable", [])
-        transient = any(
-            isinstance(item, dict)
-            and isinstance(item.get("reason"), str)
-            and ((item.get("authority") == "docker" and item.get("reason") == "Docker configuration or lifetime changed during observation") or (item.get("authority") == "approved-route-manifest" and "whole-engine Docker inventory differs from approved routes" in item.get("reason", "")))
-            for item in reasons
+        transient = (
+            any(
+                isinstance(item, dict)
+                and isinstance(item.get("reason"), str)
+                and ((item.get("authority") == "docker" and item.get("reason") == "Docker configuration or lifetime changed during observation") or (item.get("authority") == "approved-route-manifest" and "whole-engine Docker inventory differs from approved routes" in item.get("reason", "")))
+                for item in reasons
+            )
+            or "saved-report:docker" in authorities
         )
-        if not transient or attempt == 4:
+        if not transient or attempt == 9:
             break
         logger.warning("Independent verifier observed a transient Docker inventory change; retrying the unchanged approval")
         time.sleep(0.3)
