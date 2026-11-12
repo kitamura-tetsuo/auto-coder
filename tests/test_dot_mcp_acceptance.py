@@ -274,3 +274,85 @@ def test_reevaluation_journal_only_accepts_original_confirmed_receipt():
 def test_unsettled_reevaluation_does_not_fabricate_acceptance():
     pending = {**_confirmed_reevaluation_projection(), "status": "NEEDS_ATTENTION", "phase": "needs_attention", "effect_state": "sent_unknown", "receipt": None}
     assert not accept.verified_reevaluation_receipt(pending, operation_id="original-req-001", target_id=fixture().target_ids["beta"], process_run_id="original-process-123")
+
+
+@pytest.mark.parametrize(
+    "original_state,original_id,raises",
+    [
+        ("", "", ConnectionError),
+        ("ADMISSION_UNKNOWN", "", ConnectionError),
+        ("ADMITTED", "original-op-123", ConnectionError),
+        ("SUCCEEDED", "original-op-123", RuntimeError),
+        ("ADMITTED", "original-op-123", Exception),
+        ("ADMITTED", "original-op-123", accept.Failed),
+    ],
+)
+def test_cli_transport_exception_preserves_original_send_uncertainty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    original_state: str,
+    original_id: str,
+    raises: type[Exception],
+) -> None:
+    """Distinguish a pre-send refusal from a lost response after a durable send ticket."""
+    test_fixture = fixture()
+    original = checkpoint()
+    ticket = tmp_path / "original-send.json"
+    calls = 0
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dot_mcp_acceptance.py",
+            "--fixture-manifest",
+            str(tmp_path / "fixture.json"),
+            "--checkpoint",
+            str(tmp_path / "checkpoint.json"),
+            "--scenario",
+            "reevaluate",
+            "--enable-fixture-mutation",
+            "--operator-stage",
+            "beta",
+            "--operator-stage-revision",
+            "operator-v1",
+        ],
+    )
+    monkeypatch.setattr(accept.Fixture, "load", staticmethod(lambda _path: test_fixture))
+    monkeypatch.setattr(accept, "bound_local_fixture", lambda *_args: None)
+    monkeypatch.setattr(accept.smoke, "load_checkpoint", lambda _path: original)
+    monkeypatch.setattr(accept, "original_stage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+
+    async def lost_response(*_args: object, **_kwargs: object) -> accept.Result:
+        nonlocal calls
+        calls += 1
+        if original_state:
+            arguments = {"target_id": test_fixture.target_ids["beta"], "idempotency_key": original.idempotency_key}
+            accept.persist_original_ticket(ticket, test_fixture, original, "auto_coder_reevaluate_target", arguments)
+            if original_id:
+                accept.update_original_ticket(ticket, test_fixture, original_id, original_state)
+        raise raises("Original producer response lost")
+
+    monkeypatch.setattr(accept, "run_authenticated", lost_response)
+    assert accept.main() == (1 if raises is accept.Failed else 2)
+    result = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result["verdict"] == ("FAIL" if raises is accept.Failed else "BLOCKED")
+    assert result["effect_dispatched"] is (None if original_state else False)
+    assert result["operation_id"] == original_id
+    assert result["original_ticket_state"] == original_state
+    assert calls == 1
+    if original_state:
+        assert json.loads(ticket.read_text())["effect_state"] == original_state
+
+
+def test_corrupt_or_replaced_original_send_ticket_never_reports_no_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = tmp_path / "original-send.json"
+    path.write_text("{unreadable", encoding="utf-8")
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: path)
+    outcome = accept.exception_result("reevaluate", "Transport failed", mutation=True)
+    assert outcome.effect_dispatched is None
+    assert outcome.operation_id == ""
+    assert outcome.original_ticket_state == "UNKNOWN"

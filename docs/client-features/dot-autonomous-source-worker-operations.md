@@ -242,8 +242,12 @@ Its default path only reads current authenticated MCP observations. The explicit
 reevaluation or beta-source selection and requires current selected stage,
 revision, original Git/Actions proof and an immutable fsynced pre-send ticket.
 Unknown, interrupted or conflicting sends remain `BLOCKED`; the original
-idempotency key is never reissued. Live producer observations are hashed for
-origin tracking. A real reevaluation journal projects terminal acceptance as
+idempotency key is never reissued. A transport exception after a durable
+original send ticket cannot report `effect_dispatched=false`: the report
+carries `effect_dispatched=null`, the original ticket state and verified original
+operation ID when available. Pre-send refusal without a ticket reports false;
+corrupt, replaced or unreadable tickets report UNKNOWN, not a guessed absence.
+Live producer observations are hashed for origin tracking. A real reevaluation journal projects terminal acceptance as
 `status=accepted_for_reevaluation`, `phase=succeeded` and
 `effect_state=confirmed` with a JSON-encoded
 `worker-uds-invalidation-receipt`. The consumer verifies that receipt's

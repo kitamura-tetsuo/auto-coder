@@ -120,6 +120,7 @@ class Result:
     operation_id: str = ""
     positive_deployment_proven: bool = False
     effect_dispatched: bool | None = False
+    original_ticket_state: str = ""
 
 
 def bound_local_fixture(fixture: Fixture, *, environ: dict[str, str] | None = None, docker_socket: Path = Path("/var/run/docker.sock")) -> None:
@@ -238,6 +239,51 @@ def persist_original_ticket(path: Path, fixture: Fixture, checkpoint: smoke.DotC
             os.close(directory)
     except FileExistsError as error:
         raise Blocked("Original admission ticket already exists; never allocate a new key") from error
+
+
+def exception_result(
+    scenario: str,
+    reason: str,
+    *,
+    mutation: bool,
+    verdict: str = "BLOCKED",
+    fixture: Fixture | None = None,
+) -> Result:
+    """Use the immutable original ticket when an attempted MCP response is lost.
+
+    No exception handler may claim 'not dispatched' once a durable admission
+    ticket could have been sent. Ticket inspection is local and never retries.
+    """
+    if not mutation or scenario not in MUTATIONS:
+        return Result(verdict, scenario, reason)
+    path = ticket_path(scenario)
+    try:
+        exists = path.exists() or path.is_symlink()
+    except OSError:
+        return Result(verdict, scenario, reason, effect_dispatched=None, original_ticket_state="UNKNOWN")
+    if not exists:
+        return Result(verdict, scenario, reason)
+    # Never follow a replaced original ticket symlink, even in the fixture.
+    if path.is_symlink():
+        return Result(verdict, scenario, reason, effect_dispatched=None, original_ticket_state="UNKNOWN")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        record = None
+    if (
+        not isinstance(record, dict)
+        or record.get("schema") != 1
+        or record.get("action") != MUTATIONS[scenario]
+        or not isinstance(record.get("fixture_nonce"), str)
+        or (fixture is not None and record["fixture_nonce"] != fixture.fixture_nonce)
+        or record.get("effect_state") not in {"ADMISSION_UNKNOWN", "ADMITTED", "SUCCEEDED"}
+    ):
+        return Result(verdict, scenario, reason, effect_dispatched=None, original_ticket_state="UNKNOWN")
+    state = record["effect_state"]
+    operation_id = record.get("operation_id")
+    if not isinstance(operation_id, str) or (operation_id and smoke.SAFE_ID.fullmatch(operation_id) is None) or (state != "ADMISSION_UNKNOWN" and not operation_id):
+        return Result(verdict, scenario, reason, effect_dispatched=None, original_ticket_state="UNKNOWN")
+    return Result(verdict, scenario, reason, operation_id=operation_id, effect_dispatched=None, original_ticket_state=state)
 
 
 def update_original_ticket(path: Path, fixture: Fixture, operation_id: str, state: str) -> None:
@@ -546,6 +592,7 @@ def main() -> int:
     if args.fixture_manifest is None:
         report = Result("NOT_RUN", args.scenario, "No disposable fixture selected; no network or mutation")
     else:
+        fixture: Fixture | None = None
         try:
             fixture = Fixture.load(args.fixture_manifest)
             bound_local_fixture(fixture)
@@ -555,16 +602,15 @@ def main() -> int:
                 raise Blocked("Mutation source must be the immutable test-only Git fixture")
             report = asyncio.run(run_authenticated(fixture, checkpoint, args.scenario, mutate=args.enable_fixture_mutation, item_number=args.fixture_issue_number))
         except Blocked as error:
-            ticket_unknown = args.enable_fixture_mutation and args.scenario in MUTATIONS and ticket_path(args.scenario).exists()
-            report = Result("BLOCKED", args.scenario, str(error), effect_dispatched=None if ticket_unknown else False)
+            report = exception_result(args.scenario, str(error), mutation=args.enable_fixture_mutation, fixture=fixture)
         except Failed as error:
-            report = Result("FAIL", args.scenario, str(error))
+            report = exception_result(args.scenario, str(error), mutation=args.enable_fixture_mutation, verdict="FAIL", fixture=fixture)
         except (OSError, ValueError, TypeError, RuntimeError) as error:
             logger.warning("Fixture acceptance unavailable due to {}", type(error).__name__)
-            report = Result("BLOCKED", args.scenario, "Original fixture, authority or producer evidence unavailable")
+            report = exception_result(args.scenario, "Original fixture, authority or producer evidence unavailable", mutation=args.enable_fixture_mutation, fixture=fixture)
         except Exception as error:
             logger.warning("Untrusted transport failure classified as {}", type(error).__name__)
-            report = Result("BLOCKED", args.scenario, "Authenticated fixture transport unavailable; retain any original send ticket")
+            report = exception_result(args.scenario, "Authenticated fixture transport unavailable; retain any original send ticket", mutation=args.enable_fixture_mutation, fixture=fixture)
     logger.info("Disposable MCP acceptance scenario={} verdict={} effect_dispatched={}", report.scenario, report.verdict, report.effect_dispatched)
     print(json.dumps(asdict(report), sort_keys=True))
     return {"PASS": 0, "FAIL": 1, "BLOCKED": 2, "NOT_RUN": 3}[report.verdict]
