@@ -533,6 +533,10 @@ class Chain:
                 return {"http_status": error.code}
             raise ValueError("synthetic authenticated proxy HTTP unavailable") from None
 
+    def fresh_status(self, generation: Generation) -> dict[str, object]:
+        code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
+        return json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
+
     def ready(self, generation: Generation, *, fresh: bool) -> None:
         self.ensure_proxy(generation)
         deadline = time.monotonic() + 60
@@ -541,8 +545,7 @@ class Chain:
             try:
                 observation = ""
                 if fresh:
-                    code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
-                    status = json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
+                    status = self.fresh_status(generation)
                     last = "fresh initialization status=" + str(status["status"])
                     if status["status"] not in {"launched", "succeeded"}:
                         time.sleep(0.1)
@@ -554,7 +557,16 @@ class Chain:
                     continue
                 last = "authenticated Caddy whoami"
                 result = self.call(generation, "auto_coder_whoami", {"observation_id": observation})
-                if result["uid"] == "operator" and (not fresh or status["status"] == "succeeded"):
+                confirmed = result["uid"] == "operator"
+                if confirmed and fresh:
+                    # Authenticated I/O can complete readiness after the initial
+                    # sample. Require a current terminal result for that same launch.
+                    terminal = self.fresh_status(generation)
+                    last = "fresh initialization terminal status=" + str(terminal["status"])
+                    if {key: value for key, value in terminal.items() if key != "status"} != {key: value for key, value in status.items() if key != "status"}:
+                        raise ValueError("fresh initialization launch changed during authenticated readback")
+                    confirmed = terminal["status"] == "succeeded"
+                if confirmed:
                     if self.worker_baseline is not None:
                         last = "authenticated worker identity readback"
                         self.assert_worker_reads(generation)
