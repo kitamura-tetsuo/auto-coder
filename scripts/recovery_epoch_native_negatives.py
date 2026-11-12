@@ -565,7 +565,8 @@ def _unmasked_restarter(context: NativeNegativeContext) -> Iterator[None]:
     identity = _projection(path)
     try:
         _systemctl("daemon-reload")
-        actual = _systemd_unit(name)
+        # Match the enrolled container identity, as the production route scan does.
+        actual = _systemd_unit(name, extra_cues=(context.enrollment.originals[0].management_id,))
         if actual.inhibited or not actual.management_candidate or actual.main_pid != 0 or actual.active_state != "inactive" or name not in _systemd_catalog():
             raise AssertionError("the actual installed restarter is not the intended unmasked inactive route")
         yield

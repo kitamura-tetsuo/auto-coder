@@ -43,7 +43,7 @@ from auto_coder.management.fresh_initialization import FreshInitializationIntent
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.original_attempt_evidence import derive_lineage, observe, verify_lineage
-from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, canonical, source_identity
+from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, canonical, read_original, source_identity
 from auto_coder.management.recovery_containment_model import RecoveryWatcher
 from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, AUTHORIZATION_ROOT, AUTHORIZATION_SCHEMA, PEER_ROOT, PEER_SOCKET, EpochAuthorization, validate_uv_version
 from auto_coder.management.recovery_epoch_consumer import GRANT_SCHEMA, ConsumerConfiguration, OriginalFence, TargetOwner, TransferredResource
@@ -245,6 +245,61 @@ def _checkpoint_stopped(generation: Generation) -> None:
     for directory in (generation.path("state"), generation.path("journal")):
         for database in directory.glob("*.sqlite3"):
             Chain.checkpoint(database)
+
+
+def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, ...]) -> None:
+    """Finish known stopped fixture producers before any recovery baseline."""
+    if set(os.listdir(EPOCH_ROOT)) != {"epoch.lock"} or AUTHORIZATION_FILE.exists() or AUTHORIZATION_FILE.is_symlink() or (chain.root / "target").exists():
+        raise AssertionError("original fixture finalization is only permitted before recovery preparation")
+    if chain.root != chain.root.resolve(strict=True) or len(captures) != 3 or {captured.original.generation_id for captured in captures} != {"A", "B", "C"}:
+        raise AssertionError("only the three explicitly captured original generations may be finalized")
+    if any(process.poll() != 0 for process in chain.processes):
+        raise AssertionError("an original cutover reader has not completed before finalization")
+    originals: list[tuple[Path, bytes, os.stat_result]] = []
+    for captured in captures:
+        original = captured.original
+        selected = [generation for generation in chain.generations if generation.name == original.generation_id]
+        if len(selected) != 1 or original.state != "started" or original.instance_id != original.generation_id:
+            raise AssertionError("the selected original fixture generation is missing or ambiguous")
+        generation = selected[0]
+        if generation.root != chain.root / original.generation_id or (generation.container, generation.proxy) != (original.management_id, original.proxy_id):
+            raise AssertionError("the selected original fixture differs from its captured Docker objects")
+        for identifier in (original.management_id, original.proxy_id):
+            state = json.loads(chain.docker("inspect", "--format", "{{json .State}}", identifier))
+            if state.get("Status") != "exited" or state.get("Running") is not False or state.get("Pid") != 0 or state.get("Restarting") is not False:
+                raise AssertionError("an original manager or proxy is not concretely stopped before finalization")
+        for directory, name in (("state", "management-child.sqlite3"), ("journal", "management-operations.sqlite3")):
+            parent = generation.path(directory)
+            known = {name, *(name + suffix for suffix in ("-wal", "-shm", "-journal"))}
+            if not stat.S_ISDIR(parent.lstat().st_mode) or {path.name for path in parent.glob("*.sqlite3*")} - known:
+                raise AssertionError("original fixture finalization found an unknown store or directory")
+            database = parent / name
+            encoded, _ = read_original(database)
+            before = database.lstat()
+            for suffix in ("-wal", "-shm", "-journal"):
+                sidecar = database.with_name(name + suffix)
+                try:
+                    info = sidecar.lstat()
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+                    raise AssertionError("an original fixture sidecar is not its private regular object")
+                if suffix != "-shm" and info.st_size:
+                    raise AssertionError("an original fixture still has nonempty transaction state")
+            originals.append((database, encoded, before))
+    # A later archived read may have recreated SQLite's derived SHM index
+    # after an earlier producer checkpoint. Every actual reader is now gone;
+    # the existing checkpoint may close that index, never apply new records.
+    for database, encoded, before in originals:
+        Chain.checkpoint(database)
+        current, _ = read_original(database)
+        after = database.lstat()
+        fields = ("st_dev", "st_ino", "st_ctime_ns", "st_mtime_ns", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size")
+        if current != encoded or any(getattr(before, field) != getattr(after, field) for field in fields):
+            raise AssertionError("finalizing a stopped fixture changed original database bytes or identity")
+        if any(database.with_name(database.name + suffix).exists() or database.with_name(database.name + suffix).is_symlink() for suffix in ("-wal", "-shm", "-journal")):
+            raise AssertionError("original fixture sidecars remain after all tracked readers completed")
+    logger.info("Finalized six unchanged original A/B/C stores after all cutover readers stopped, before recovery preparation")
 
 
 def _no_target_child(target: Generation, *, running: bool) -> None:
@@ -1042,6 +1097,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         watchers.append(watcher)
         chain.stop(third)
         _checkpoint_stopped(third)
+        _finalize_original_stores(chain, tuple(captures))
         for captured in captures:
             assert captured.original.namespace_pin is not None
             assert os.readlink(f"/proc/self/fd/{captured.namespace_fd}") == captured.original.namespace_pin.namespace

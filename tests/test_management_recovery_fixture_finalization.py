@@ -1,0 +1,161 @@
+"""Real original SQLite chronology with explicit component Docker state inputs.
+
+Only the separate native VM proves actual stopped Docker/host producers. These
+regressions exercise their bounded fixture finalization against real SQLite,
+RetainedJournal and QuarantineHistory without changing those production readers.
+"""
+
+from __future__ import annotations
+
+import gc
+import json
+import sqlite3
+import subprocess
+import sys
+from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from scripts import test_management_recovery_epoch_host as fixture
+
+from auto_coder.management.operations import OperationPhase
+from auto_coder.management.quarantine_history import QuarantineHistory, QuarantineUnavailable
+from auto_coder.management.retained_journal import RetainedJournal
+from tests.test_management_archived_cutover_container import Chain, Generation
+from tests.test_management_quarantine_history import _store
+
+
+@pytest.fixture
+def originals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    epoch = tmp_path / "epoch"
+    epoch.mkdir()
+    (epoch / "epoch.lock").touch()
+    monkeypatch.setattr(fixture, "EPOCH_ROOT", epoch)
+    monkeypatch.setattr(fixture, "AUTHORIZATION_FILE", tmp_path / "authorization.json")
+    chain = Chain.__new__(Chain)
+    chain.root = tmp_path / "deployment"
+    chain.root.mkdir()
+    chain.generations = []
+    cutover = subprocess.Popen([sys.executable, "-I", "-B", "-c", "pass"])
+    assert cutover.wait(timeout=10) == 0
+    chain.processes = [cutover]
+    chain.docker = lambda *_args: json.dumps({"Status": "exited", "Running": False, "Pid": 0, "Restarting": False})
+    journals, captures = {}, []
+    for name in ("A", "B", "C"):
+        root = chain.root / name
+        root.mkdir()
+        journal, _ = _store(root / "journal", name, management=True, phase=OperationPhase.NEEDS_ATTENTION if name == "C" else OperationPhase.SUCCEEDED)
+        journals[name] = journal
+        state = root / "state"
+        state.mkdir()
+        ledger = state / "management-child.sqlite3"
+        with closing(sqlite3.connect(ledger)) as connection:
+            assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            connection.execute("CREATE TABLE child_state (value TEXT)")
+            connection.commit()
+        ledger.chmod(0o600)
+        generation = Generation(name, root, "manager-" + name, [], proxy="proxy-" + name)
+        chain.generations.append(generation)
+        original = SimpleNamespace(generation_id=name, instance_id=name, state="started", management_id=generation.container, proxy_id=generation.proxy)
+        captures.append(SimpleNamespace(original=original))
+    failed = Generation("D", chain.root / "D", "never-created-manager", [], proxy="never-created-proxy")
+    failed.root.mkdir()
+    (failed.root / "retained-never-created").write_bytes(b"original failed branch")
+    chain.generations.append(failed)
+    return chain, tuple(captures), journals
+
+
+def _late_archived_read(journal) -> None:
+    # This earlier checkpoint precedes the genuine later archived read.
+    Chain.checkpoint(journal.database)
+    assert not Path(str(journal.database) + "-shm").exists()
+    with RetainedJournal(journal.database, journal.fence, database_identity=(journal.database_device, journal.database_inode), fence_identity=(journal.fence_device, journal.fence_inode), prior_management_instance="A") as reader:
+        assert len(reader.read()) == 1
+    assert Path(str(journal.database) + "-wal").stat().st_size == 0
+    assert Path(str(journal.database) + "-shm").stat().st_size > 0
+
+
+def _retained_bytes(chain) -> dict[str, tuple[bytes, int, int, int]]:
+    result = {}
+    for path in sorted(chain.root.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            info = path.stat()
+            result[str(path)] = (path.read_bytes(), info.st_dev, info.st_ino, info.st_ctime_ns)
+    return result
+
+
+def test_final_checkpoint_follows_last_archived_read_and_preserves_original_authority(originals) -> None:
+    chain, captures, journals = originals
+    collection = gc.isenabled()
+    gc.disable()
+    try:
+        _late_archived_read(journals["A"])
+        before = _retained_bytes(chain)
+        with pytest.raises(QuarantineUnavailable, match="nonempty transaction sidecar"):
+            QuarantineHistory((journals["A"],))
+        fixture._finalize_original_stores(chain, captures)
+        after = _retained_bytes(chain)
+        assert {name: value for name, value in before.items() if not name.endswith(("-wal", "-shm", "-journal"))} == after
+        assert (chain.root / "D" / "retained-never-created").read_bytes() == b"original failed branch"
+        for name, journal in journals.items():
+            with QuarantineHistory((journal,)) as history:
+                report = history.inspect()
+                assert report.historical_keys == 1
+                assert report.unresolved_targets == (1 if name == "C" else 0)
+                assert report.launch_authority is False
+        assert _retained_bytes(chain) == after
+    finally:
+        if collection:
+            gc.enable()
+
+
+@pytest.mark.parametrize("fault", ["nonempty-wal", "hot-journal", "missing-store", "unknown-store", "linked-sidecar", "running-manager", "running-proxy", "live-cutover", "published-inventory", "installed-authorization", "target-prepared", "wrong-capture", "missing-capture"])
+def test_finalization_refuses_uncertain_scope_before_any_checkpoint(originals, fault: str) -> None:
+    chain, captures, journals = originals
+    _late_archived_read(journals["A"])
+    stopped = chain.docker
+    if fault in {"nonempty-wal", "hot-journal"}:
+        path = Path(str(journals["B"].database) + ("-wal" if fault == "nonempty-wal" else "-journal"))
+        path.write_bytes(b"retained transaction uncertainty")
+        path.chmod(0o600)
+    elif fault == "missing-store":
+        journals["B"].database.unlink()
+    elif fault == "unknown-store":
+        (journals["B"].database.parent / "unknown.sqlite3").write_bytes(b"unknown original store")
+    elif fault == "linked-sidecar":
+        Path(str(journals["B"].database) + "-shm").symlink_to(journals["A"].database)
+    elif fault in {"running-manager", "running-proxy"}:
+        selected = "manager-B" if fault == "running-manager" else "proxy-B"
+        chain.docker = lambda *args: json.dumps({"Status": "running", "Running": True, "Pid": 123, "Restarting": False}) if args[-1] == selected else stopped(*args)
+    elif fault == "live-cutover":
+        chain.processes = [SimpleNamespace(poll=lambda: None)]
+    elif fault == "published-inventory":
+        (fixture.EPOCH_ROOT / "inventory.json").write_bytes(b"already selected recovery epoch")
+    elif fault == "installed-authorization":
+        fixture.AUTHORIZATION_FILE.write_bytes(b"already authorized recovery")
+    elif fault == "target-prepared":
+        (chain.root / "target").mkdir()
+    elif fault == "wrong-capture":
+        captures[1].original.management_id = "another-manager"
+    else:
+        captures = captures[:-1]
+    before = _retained_bytes(chain)
+    with pytest.raises((AssertionError, ValueError, FileNotFoundError)):
+        fixture._finalize_original_stores(chain, captures)
+    assert _retained_bytes(chain) == before
+    assert Path(str(journals["A"].database) + "-shm").stat().st_size > 0
+
+
+def test_finalization_rejects_any_database_change_even_if_checkpoint_returns(originals, monkeypatch: pytest.MonkeyPatch) -> None:
+    chain, captures, _ = originals
+    actual = Chain.checkpoint
+
+    def changed(database: Path) -> None:
+        actual(database)
+        with database.open("ab") as stream:
+            stream.write(b"unexpected original database change")
+
+    monkeypatch.setattr(Chain, "checkpoint", changed)
+    with pytest.raises(AssertionError, match="changed original database bytes or identity"):
+        fixture._finalize_original_stores(chain, captures)
