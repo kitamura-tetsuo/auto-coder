@@ -56,6 +56,7 @@ from tests.test_management_archived_cutover_container import Chain, Generation, 
 logger = get_logger(__name__)
 FIXTURE_ROOT = Path("/var/lib/auto-coder/recovery-epoch-fixtures")
 RESULT_SCHEMA = "auto-coder-native-recovery-epoch-result-v1"
+ORIGINAL_FIXTURE_DATABASES = (("state", "management-child.sqlite3"), ("state", "management-self-update.sqlite3"), ("state", "management-recovery.sqlite3"), ("journal", "management-operations.sqlite3"))
 ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "changed-installed-ready-refused", "changed-target-management-config-refused"})
 LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused", "cross-deployment-original-lineage-refused"})
 FACTORY_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES if case.startswith("factory-"))
@@ -206,7 +207,7 @@ def _original_sidecar_diagnostics(root: Path, generations: tuple[Generation, ...
         selected = [generation for generation in generations if generation.name == label]
         if not selected:
             continue
-        for directory, database in (("state", "management-child.sqlite3"), ("journal", "management-operations.sqlite3")):
+        for directory, database in ORIGINAL_FIXTURE_DATABASES:
             for suffix in ("-wal", "-shm", "-journal"):
                 row: dict[str, object] = {"generation": label, "database": database, "suffix": suffix}
                 try:
@@ -268,9 +269,9 @@ def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, 
             state = json.loads(chain.docker("inspect", "--format", "{{json .State}}", identifier))
             if state.get("Status") != "exited" or state.get("Running") is not False or state.get("Pid") != 0 or state.get("Restarting") is not False:
                 raise AssertionError("an original manager or proxy is not concretely stopped before finalization")
-        for directory, name in (("state", "management-child.sqlite3"), ("journal", "management-operations.sqlite3")):
+        for directory, name in ORIGINAL_FIXTURE_DATABASES:
             parent = generation.path(directory)
-            known = {name, *(name + suffix for suffix in ("-wal", "-shm", "-journal"))}
+            known = {database + suffix for selected_directory, database in ORIGINAL_FIXTURE_DATABASES if selected_directory == directory for suffix in ("", "-wal", "-shm", "-journal")}
             if not stat.S_ISDIR(parent.lstat().st_mode) or {path.name for path in parent.glob("*.sqlite3*")} - known:
                 raise AssertionError("original fixture finalization found an unknown store or directory")
             database = parent / name
@@ -299,7 +300,7 @@ def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, 
             raise AssertionError("finalizing a stopped fixture changed original database bytes or identity")
         if any(database.with_name(database.name + suffix).exists() or database.with_name(database.name + suffix).is_symlink() for suffix in ("-wal", "-shm", "-journal")):
             raise AssertionError("original fixture sidecars remain after all tracked readers completed")
-    logger.info("Finalized six unchanged original A/B/C stores after all cutover readers stopped, before recovery preparation")
+    logger.info("Finalized twelve unchanged original A/B/C stores after all cutover readers stopped, before recovery preparation")
 
 
 def _no_target_child(target: Generation, *, running: bool) -> None:

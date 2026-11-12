@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import gc
 import json
-import sqlite3
+import os
 import subprocess
 import sys
 from contextlib import closing
@@ -19,9 +19,12 @@ from types import SimpleNamespace
 import pytest
 from scripts import test_management_recovery_epoch_host as fixture
 
+from auto_coder.management.bootstrap_store import BootstrapStore
 from auto_coder.management.operations import OperationPhase
 from auto_coder.management.quarantine_history import QuarantineHistory, QuarantineUnavailable
+from auto_coder.management.recovery_mailbox import RecoveryMailbox
 from auto_coder.management.retained_journal import RetainedJournal
+from auto_coder.management.self_update_handoff import HandoffStore
 from tests.test_management_archived_cutover_container import Chain, Generation
 from tests.test_management_quarantine_history import _store
 
@@ -48,13 +51,19 @@ def originals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         journal, _ = _store(root / "journal", name, management=True, phase=OperationPhase.NEEDS_ATTENTION if name == "C" else OperationPhase.SUCCEEDED)
         journals[name] = journal
         state = root / "state"
-        state.mkdir()
-        ledger = state / "management-child.sqlite3"
-        with closing(sqlite3.connect(ledger)) as connection:
-            assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
-            connection.execute("CREATE TABLE child_state (value TEXT)")
-            connection.commit()
-        ledger.chmod(0o600)
+        state.mkdir(mode=0o700)
+        previous_umask = os.umask(0o077)
+        try:
+            with closing(BootstrapStore(state, name)._connect()):
+                pass
+            with closing(HandoffStore(state, name)._connect()):
+                pass
+            RecoveryMailbox(state, name).initialize()
+        finally:
+            os.umask(previous_umask)
+        assert {path.name for path in state.glob("*.sqlite3")} == {"management-child.sqlite3", "management-self-update.sqlite3", "management-recovery.sqlite3"}
+        for path in state.glob("*.sqlite3"):
+            Chain.checkpoint(path)
         generation = Generation(name, root, "manager-" + name, [], proxy="proxy-" + name)
         chain.generations.append(generation)
         original = SimpleNamespace(generation_id=name, instance_id=name, state="started", management_id=generation.container, proxy_id=generation.proxy)
@@ -108,6 +117,17 @@ def test_final_checkpoint_follows_last_archived_read_and_preserves_original_auth
     finally:
         if collection:
             gc.enable()
+
+
+@pytest.mark.parametrize("name", ["management-self-update.sqlite3", "management-recovery.sqlite3"])
+def test_all_real_original_mailboxes_are_required_and_never_reconstructed(originals, name: str) -> None:
+    chain, captures, _ = originals
+    missing = chain.root / "B" / "state" / name
+    missing.unlink()
+    before = _retained_bytes(chain)
+    with pytest.raises(FileNotFoundError):
+        fixture._finalize_original_stores(chain, captures)
+    assert not missing.exists() and _retained_bytes(chain) == before
 
 
 @pytest.mark.parametrize("fault", ["nonempty-wal", "hot-journal", "missing-store", "unknown-store", "linked-sidecar", "running-manager", "running-proxy", "live-cutover", "published-inventory", "installed-authorization", "target-prepared", "wrong-capture", "missing-capture"])
