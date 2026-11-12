@@ -687,6 +687,29 @@ def test_shell_embedded_management_command_is_not_an_unrelated_worker(scope: Sco
         recovery.observe_recovery_custody("fixture")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["auto-coder", "management", "serve", "--config", "/etc/auto-coder/management.yml"],
+        ["/opt/auto-coder/.venv/bin/auto-coder", "management", "serve"],
+        ["/bin/sh", "-c", "exec auto-coder management serve --config /bootstrap/config.json"],
+    ],
+)
+def test_installed_management_cli_cannot_hide_as_unrelated_worker(scope: ScopeFixture, command: list[str]):
+    # The supported console-script entrypoint is equivalent to python -m auto_coder.cli.
+    worker = _unrelated_worker(scope)
+    worker["Config"]["Cmd"] = command
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management/proxy candidate"):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_unrelated_command_with_management_words_is_not_cli(scope: ScopeFixture):
+    worker = _unrelated_worker(scope)
+    worker["Config"]["Cmd"] = ["auto-coder-metrics", "management", "serve"]
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+
+
 @pytest.mark.parametrize("mutation", ["disappear", "swap", "state", "command", "mount"])
 def test_worker_changes_between_producer_and_consumer_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)

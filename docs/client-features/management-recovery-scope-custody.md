@@ -258,3 +258,5 @@ Legacy ordinary/quarantined-original source allowlists, their exclusive owner
 fence acceptance, and NEW/private-engine admission remain unchanged. In
 particular, accepting a shared owner flock in this separate component does not
 allow it to satisfy the legacy exclusive-fence profile.
+
+The bounded unrelated-container classifier treats both `python -m auto_coder.cli management serve` and the installed `auto-coder management serve` console script (including shell-wrapped invocations) as management candidates. A different helper executable containing `auto-coder` as a name prefix does not by itself establish a management server. This is only candidate detection; it does not establish current source, controller, or namespace closure.

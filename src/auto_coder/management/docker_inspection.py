@@ -71,7 +71,10 @@ def management_candidate_roles(obj: dict[str, object], container_id: str, manage
     # argument. Inspect the complete effective command, not only argv tokens.
     command_text = " ".join(arguments)
     management_module = re.search(r"(?<![\w.])auto_coder\.management\.", command_text) is not None
-    management_cli = re.search(r"(?<![\w.])auto_coder\.cli\b", command_text) is not None and re.search(r"\bmanagement\b", command_text) is not None and re.search(r"\bserve\b", command_text) is not None
+    # Both the module and the installed console script invoke the same
+    # management server. An unselected copy is still a management candidate.
+    management_entrypoint = re.search(r"(?<![\w.-])(?:auto_coder\.cli|auto-coder)(?![\w.-])", command_text) is not None
+    management_cli = management_entrypoint and re.search(r"\bmanagement\b", command_text) is not None and re.search(r"\bserve\b", command_text) is not None
     if management_module or management_cli:
         roles.append("management-command")
     if network_mode == "container:" + management_id:
