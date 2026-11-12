@@ -311,6 +311,18 @@ read scope and time window. Only then does the protected one-use
 `new-first-outcome.json` record `succeeded`. An exit, timeout or unverifiable
 proof records or remains `unknown`; neither state permits a second first start.
 
+`auto-coder management fresh-status --config PATH` is a separate read-only
+operator diagnostic for the selected NEW management configuration. It reopens
+the original 0600 request and guard record, validates the selected instance,
+config and protected one-use host/child receipt chain, and returns
+`origin-recorded-only` before a host claim, `unknown` after a consumed claim
+without an independently recorded launch or outcome, `launched` before the
+authenticated reader's result, and the protected `succeeded` or `unknown`
+outcome afterward. It never creates missing records or changes launch
+eligibility. Malformed, partial, changed or contradictory originals refuse
+instead of reporting success. A historical `succeeded` receipt is not an
+assertion that the child is still running at the moment of this diagnostic.
+
 All original files and consumed claims must be preserved. No cleanup, manual
 Docker restart, fresh grant creation, legacy `--fresh-initialization` fallback,
 automatic repair or rollback is authorized by these commands. A new attempt

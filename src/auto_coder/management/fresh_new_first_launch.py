@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -17,7 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .fresh_begin import NewOriginReceipt, _canonical, inspect_new_instance_origin
+from .fresh_begin import RECORD, NewOriginReceipt, _canonical, inspect_new_instance_origin
 from .fresh_initialization import _read_record, _write_once, application_tree_sha256, request_fresh_host_grant
 from .fresh_new_docker import CreatedNewDockerSnapshot
 from .fresh_new_profile import NewProfileReceipt, inspect_new_instance_profile
@@ -213,3 +214,95 @@ def record_new_child_outcome(state_root: Path, observation: dict[str, object], *
     if status not in {"unknown", "succeeded"} or _read_record(state_root, CHILD_LAUNCHED) != observation:
         raise ValueError("NEW child outcome does not match its original launch")
     _write_once(state_root, CHILD_OUTCOME, {"status": status, "request_id": observation.get("request_id"), "observation_id": observation.get("observation_id")})
+
+
+def read_new_first_status(state_root: Path, guard_root: Path, instance_id: str) -> dict[str, object]:
+    """Observe the original NEW lifetime without reconstructing launch authority.
+
+    An absent host claim is only an origin observation. Once a first-start
+    claim exists, missing child or outcome records mean unknown, never retry.
+    The original protected records remain untouched by this diagnostic.
+    """
+    _, origin_encoded = _file(guard_root / RECORD, private=True, limit=1024 * 1024)
+    origin_record = json.loads(origin_encoded)
+    if not isinstance(origin_record, dict) or origin_encoded != _canonical(origin_record):
+        raise ValueError("NEW status origin is not canonical")
+    assessment = origin_record.get("assessment")
+    original_request = assessment.get("original_request") if isinstance(assessment, dict) else None
+    request_name = original_request.get("path") if isinstance(original_request, dict) else None
+    if not isinstance(request_name, str):
+        raise ValueError("NEW status original request path is missing")
+    request_file = Path(request_name)
+    _, request_encoded = _file(request_file, private=True, limit=65536)
+    request = json.loads(request_encoded)
+    if not isinstance(request, dict) or (request.get("state_root"), request.get("guard_root"), request.get("new_instance")) != (str(state_root), str(guard_root), instance_id):
+        raise ValueError("NEW status requested instance and selected roots differ")
+    guard_names = frozenset(path.name for path in guard_root.iterdir())
+    claim_present = HOST_FIRST_START in guard_names
+    if not claim_present:
+        origin = inspect_new_instance_origin(request_file)
+        if frozenset(path.name for path in guard_root.iterdir()) != {RECORD}:
+            raise ValueError("NEW status origin was changed while reading")
+        return {"request_id": origin.request_id, "status": "origin-recorded-only", "launch_authorized": False}
+
+    start = load_new_first_start(request_file, state_entries=None, operation_entries=None)
+    if start.origin.request_id != request.get("request_id") or start.profile.instance_id != instance_id:
+        raise ValueError("NEW status source and instance differ")
+    claim_path = state_root / CHILD_FIRST_CLAIM
+    launch_path = state_root / CHILD_LAUNCHED
+    outcome_path = state_root / CHILD_OUTCOME
+
+    def has_record(path: Path) -> bool:
+        return path.exists() or path.is_symlink()
+
+    if not has_record(claim_path):
+        if has_record(launch_path) or has_record(outcome_path):
+            raise ValueError("NEW status contains an unclaimed child launch")
+        return {"request_id": start.origin.request_id, "status": "unknown", "launch_authorized": False}
+    claim = _read_record(state_root, CHILD_FIRST_CLAIM)
+    owner = claim.get("owner_incarnation")
+    challenge = claim.get("challenge")
+    try:
+        canonical_owner = str(uuid.UUID(owner)) if isinstance(owner, str) else ""
+    except ValueError as error:
+        raise ValueError("NEW status owner incarnation is invalid") from error
+    if (
+        set(claim) != {"schema_version", "host_claim_sha256", "host_launch_nonce", "request_id", "intent_sha256", "owner_incarnation", "new_container_id", "challenge"}
+        or claim.get("schema_version") != 1
+        or (claim.get("host_claim_sha256"), claim.get("host_launch_nonce"), claim.get("request_id"), claim.get("intent_sha256"), claim.get("new_container_id")) != (start.host_claim_sha256, start.launch_nonce, start.origin.request_id, start.origin.record_sha256, start.created.container_id)
+        or owner != canonical_owner
+        or not isinstance(challenge, str)
+        or re.fullmatch(r"[0-9a-f]{64}", challenge) is None
+    ):
+        raise ValueError("NEW status original child claim differs")
+    if not has_record(launch_path):
+        if has_record(outcome_path):
+            raise ValueError("NEW status has an outcome without a launch")
+        return {"request_id": start.origin.request_id, "status": "unknown", "launch_authorized": False}
+    launch = _read_record(state_root, CHILD_LAUNCHED)
+    identity = launch.get("child_identity")
+    observation_id = launch.get("observation_id")
+    started, deadline = launch.get("started"), launch.get("deadline")
+    if (
+        set(launch) != {"request_id", "owner_incarnation", "child_identity", "observation_id", "started", "deadline", "host_claim_sha256"}
+        or (launch.get("request_id"), launch.get("owner_incarnation"), launch.get("host_claim_sha256")) != (start.origin.request_id, owner, start.host_claim_sha256)
+        or not isinstance(identity, str)
+        or not 0 < len(identity) <= 512
+        or "\x00" in identity
+        or not isinstance(observation_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", observation_id) is None
+        or not isinstance(started, (int, float))
+        or isinstance(started, bool)
+        or not isinstance(deadline, (int, float))
+        or isinstance(deadline, bool)
+        or not math.isfinite(started)
+        or not math.isfinite(deadline)
+        or not 0 < deadline - started <= 3600
+    ):
+        raise ValueError("NEW status child observation differs")
+    if not has_record(outcome_path):
+        return {**launch, "status": "launched", "launch_authorized": False}
+    outcome = _read_record(state_root, CHILD_OUTCOME)
+    if set(outcome) != {"status", "request_id", "observation_id"} or outcome.get("status") not in {"unknown", "succeeded"} or (outcome.get("request_id"), outcome.get("observation_id")) != (start.origin.request_id, observation_id):
+        raise ValueError("NEW status authenticated outcome differs")
+    return {**launch, "status": outcome["status"], "launch_authorized": False}

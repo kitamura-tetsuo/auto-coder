@@ -88,6 +88,20 @@ def _original_private_child_requires_bearer(container_id: str) -> bool:
     return probe.returncode == 0
 
 
+def _new_management_status(request_file: Path) -> dict[str, object]:
+    """Read the original NEW outcome through the real operator-facing CLI."""
+    request = json.loads(request_file.read_bytes())
+    response = subprocess.run(
+        [sys.executable, "-B", "-m", "auto_coder.cli", "management", "fresh-status", "--config", request["management_config"]],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_environment(),
+    )
+    assert response.returncode == 0, response.stderr
+    return json.loads(response.stdout)
+
+
 def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused() -> None:
     """Use real Linux socket tables for an unaccepted cross-netns client."""
     outer = ["docker", "--host", "unix:///var/run/docker.sock"]
@@ -626,6 +640,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 assert suspended.stdout.readline() == "new-host-claim-fsynced\n"
                 claim_bytes = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
                 assert not (request_file.parent / "state/physical-child-invocations").exists()
+                assert _new_management_status(request_file)["status"] == "unknown"
                 if race == "killed-first-claim":
                     os.kill(suspended.pid, signal.SIGKILL)
                     assert suspended.wait(timeout=10) == -signal.SIGKILL
@@ -743,6 +758,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             else:
                 raise AssertionError("private retained-grant negative readback did not reach the real child: " + refused.stderr[-1200:])
             assert _wait_for_new_outcome(request_file.parent, timeout=35)["status"] == "unknown"
+            assert _new_management_status(request_file)["status"] == "unknown"
             assert len((request_file.parent / "state/physical-child-invocations").read_text().splitlines()) == 1
             assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
             assert _run_host(*arguments, timeout=15).returncode != 0
@@ -756,6 +772,10 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
         else:
             raise AssertionError("NEW private source never produced fresh authorized readback: " + readback.stderr[-1200:])
         assert _wait_for_new_outcome(request_file.parent)["status"] == "succeeded"
+        current_status = _new_management_status(request_file)
+        assert current_status["status"] == "succeeded"
+        assert current_status["observation_id"] == observation_id
+        assert current_status["launch_authorized"] is False
         assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
         assert len((request_file.parent / "state/physical-child-invocations").read_text().splitlines()) == 1
         # A second CREATED child must poison this same source's live exclusion.

@@ -116,6 +116,14 @@ def management_fresh_status(config_path: Path) -> None:
         bootstrap = BootstrapConfig.read(settings.bootstrap_config_path)
         if bootstrap.oauth_root != settings.state_root or bootstrap.journal_root != settings.operation_state_root or (bootstrap.management_config is not None and bootstrap.management_config != settings.config_path):
             raise ValueError("management and bootstrap configuration differ")
-        click.echo(json.dumps(read_fresh_status(bootstrap.state_root), sort_keys=True))
+        if bootstrap.new_instance_initialization:
+            if bootstrap.fresh_guard_path is None:
+                raise ValueError("NEW status guard is not configured")
+            from .management.fresh_new_first_launch import read_new_first_status
+
+            result = read_new_first_status(bootstrap.state_root, bootstrap.fresh_guard_path.parent, bootstrap.instance_id)
+        else:
+            result = read_fresh_status(bootstrap.state_root)
+        click.echo(json.dumps(result, sort_keys=True))
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
         raise click.ClickException(f"fresh status unavailable: {exc}") from exc
