@@ -108,6 +108,8 @@ def validate_container_facts(obj: dict[str, object]) -> tuple[str, dict, dict, l
         raise ValueError("Docker lifetime state unavailable or unsupported")
     if (state["Pid"] > 0) != state["Running"]:
         raise ValueError("Docker running/PID relationship is contradictory")
+    if (state["Status"] in ("running", "paused") and not state["Running"]) or (state["Status"] in ("created", "exited", "dead") and state["Running"]):
+        raise ValueError("Docker status and running lifetime are contradictory")
     restart_count = obj.get("RestartCount")
     if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(restart_count) is not int or restart_count < 0:
         raise ValueError("Docker lifetime identity unavailable")

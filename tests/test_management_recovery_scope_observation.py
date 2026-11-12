@@ -730,6 +730,32 @@ def test_worker_changes_during_sampling_refuse(scope: ScopeFixture, monkeypatch:
         recovery.observe_recovery_custody("fixture")
 
 
+@pytest.mark.parametrize(
+    "status,running,pid",
+    [
+        ("running", False, 0),
+        ("paused", False, 0),
+        ("created", True, 12345),
+        ("exited", True, 12345),
+        ("dead", True, 12345),
+    ],
+)
+def test_unrelated_worker_refuses_contradictory_docker_lifetime(scope: ScopeFixture, status: str, running: bool, pid: int):
+    worker = _unrelated_worker(scope)
+    worker["State"].update(Status=status, Running=running, Pid=pid)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="contradictory"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize("status,running,pid", [("paused", True, 12345), ("exited", False, 0)])
+def test_unrelated_worker_accepts_consistent_docker_lifetime(scope: ScopeFixture, status: str, running: bool, pid: int):
+    worker = _unrelated_worker(scope)
+    worker["State"].update(Status=status, Running=running, Pid=pid)
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+    assert observed.unrelated_inspections[0][0] == worker["Id"]
+
+
 @pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
 def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)

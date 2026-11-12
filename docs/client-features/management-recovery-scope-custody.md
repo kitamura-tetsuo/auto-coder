@@ -91,7 +91,12 @@ management-serve command, selected manager/proxy network namespace, or bind-sour
 overlap with **any** original or target. Candidate discovery is shared with the
 existing single-pair observer; its existing refusal behavior is preserved.
 Unselected inspections require unambiguous image, effective command, network,
-lifetime and restart facts. Candidate detection inspects module/management-serve
+lifetime and restart facts. Docker `State.Status`, `State.Running`, and `State.Pid`
+must agree: an exited/created/dead object cannot also claim to be running, and
+a running/paused object cannot simultaneously claim to be stopped. Consistent
+stopped workers remain permitted when otherwise unrelated. This check does not
+establish continuous process lifetime or authorize recovery.
+Candidate detection inspects module/management-serve
 tokens even when embedded in a shell `-c` or Python `-c` argument; splitting
 only on Docker's argv array would otherwise classify an explicit management
 invocation as an unrelated worker. This conservative command-text check does
