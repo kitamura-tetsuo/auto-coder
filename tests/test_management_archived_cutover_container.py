@@ -367,7 +367,7 @@ class Chain:
         for source, target, writable in mounts:
             args += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
         if self.original_genesis:
-            args += ["--env", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]
+            args += ["--workdir", "/workspace", "--env", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]
         else:
             args += [self.image, "--config", "/bootstrap/config.json"]
         if prior is not None:

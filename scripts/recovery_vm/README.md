@@ -21,6 +21,13 @@ The outer QEMU container has a read-only root, no capabilities, no new privilege
 disk and bounded output are mounted. Each scenario gets a new directory and new
 32 GiB sparse guest disk; an existing disk or original epoch is never reset.
 
+Preparation also binds the actual source Docker image store (`overlay2` or the
+`overlayfs` containerd snapshotter). The fresh guest configures the same store
+before its first daemon start and verifies both imported images retain their
+exact approved IDs. Importing between these stores can change the meaning of
+Docker's image ID; a changed ID is a preparation failure, not a reason to select
+another image or weaken the production source checks.
+
 ## Reproduce a reviewed scenario
 
 Use a clean, committed checkout with the locked test dependencies installed. The
@@ -49,15 +56,31 @@ that would discard this selection. The VM-only authorization marker binds the
 actual new machine, boot and engine. The driver verifies it before provisioning
 any management fixture. It refuses a populated engine or earlier fixture roots.
 
-`SCENARIOS` and `required_cases()` in
-`scripts/test_management_recovery_epoch_host.py` define the finite scenario
-oracle. All before/after publication cases run on independent fresh VMs. They
+`ACCEPTANCE_SCENARIOS` and `required_cases()` in
+`scripts/test_management_recovery_epoch_host.py` define the complete finite
+scenario oracle. CI derives its matrix directly from this list and requires
+every matrix job to pass. The two `kill-after-*` debug aliases select boundaries
+already present in the matrix and do not add independent cases. All before/after
+publication cases and all ten mutations after the original intent head run on
+independent fresh VMs. They
 use real ptrace syscall stops around the actual exclusive record/head creation
 and successful file/directory fsync, with a pinned SIGKILL and no syscall-result
 replacement. The native process oracles also inspect real peer custody, original
 store preservation, unrelated worker lifetimes and effect requests, and absence
 of a replacement child/admission. Component guard tests cannot substitute for
 these executions.
+
+The `grant` scenario first requires all four actual protocol refusals implemented
+in `scripts/recovery_epoch_native_peer.py`: queued rights without a receipt,
+received rights without a receipt, a replaced target lifetime, and an SH lock
+whose acquiring process differs from the target. Each must preserve an entirely
+unreserved epoch before a later independent invocation can grant. Its successful
+path also holds the original issuer at the durable reservation head while an
+overlapping contender is refused. The separate `lost-reply` scenario requires an
+actual successful grant send while the receiver is stopped, then verifies the
+issuer's pidfd is dead before resuming the receiver; consumption must remain and
+the receiver must refuse current custody. The companion helper tests validate
+the fixture's native message parsing and guards; they are not VM acceptance.
 
 The guest read credential is deleted on exit. The outer input credential must
 also be deleted after the run; the CI workflow does this even on failure.

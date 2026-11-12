@@ -42,14 +42,34 @@ fi
 for selected in "$manager_image" "$proxy_image"; do
     test "$(docker image inspect --format '{{.Id}}' "$selected")" = "$selected"
 done
+fixture_driver=$(docker info --format '{{.Driver}}')
+fixture_driver_status=$(docker info --format '{{json .DriverStatus}}')
+if [[ "$fixture_driver" == overlayfs && "$fixture_driver_status" == *'io.containerd.snapshotter.v1'* ]]; then
+    fixture_image_store=containerd
+elif [[ "$fixture_driver" == overlay2 && "$fixture_driver_status" != *'io.containerd.snapshotter.v1'* ]]; then
+    fixture_image_store=overlay2
+else
+    echo 'The recovery VM requires a supported, explicitly matched Docker image store.' >&2
+    exit 2
+fi
 mkdir -m 700 "$fixture_root" "$fixture_root/input" "$fixture_root/output" "$fixture_root/disk"
 exec > >(tee -a "$fixture_root/output/preparation.log") 2>&1
+printf 'Exporting exact fixture IDs from Docker image store %s.\n' "$fixture_image_store"
+if [[ "$fixture_image_store" == overlay2 ]]; then
+    tee "$fixture_root/input/docker-daemon.json" > /dev/null <<'JSON'
+{"features":{"containerd-snapshotter":false},"storage-driver":"overlay2"}
+JSON
+else
+    tee "$fixture_root/input/docker-daemon.json" > /dev/null <<'JSON'
+{"features":{"containerd-snapshotter":true},"storage-driver":"overlayfs"}
+JSON
+fi
 git -C "$repo_root" archive --format=tar.gz HEAD | tee "$fixture_root/input/source.tar.gz" > /dev/null
 docker image save "$manager_image" "$proxy_image" | tee "$fixture_root/input/images.tar" > /dev/null
 cp "$tooling_root/guest.sh" "$fixture_root/input/guest.sh"
 install -m 600 "$source_token_file" "$fixture_root/input/source-token"
 fixture_commit=$(git -C "$repo_root" rev-parse HEAD)
-python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" "$fixture_accelerator" <<'PY'
+python3 - "$fixture_root" "$fixture_authorization" "$fixture_commit" "$manager_image" "$proxy_image" "$fixture_scenario" "$fixture_accelerator" "$fixture_image_store" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -57,11 +77,11 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 inputs = root / "input"
-manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario", "accelerator"), sys.argv[2:]))
+manifest = dict(zip(("authorization_id", "commit", "manager_image", "proxy_image", "scenario", "accelerator", "image_store"), sys.argv[2:]))
 manifest["schema"] = "auto-coder-recovery-vm-input-v1"
 manifest["ready_source_sha"] = "e742338b3f311e6d30a22a8f5341b8072513d813"
 manifest["inputs_sha256"] = {}
-for name in ("source.tar.gz", "images.tar", "guest.sh"):
+for name in ("source.tar.gz", "images.tar", "guest.sh", "docker-daemon.json"):
     with (inputs / name).open("rb") as stream:
         manifest["inputs_sha256"][name] = hashlib.file_digest(stream, "sha256").hexdigest()
 (inputs / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

@@ -61,6 +61,22 @@ its exact protected configuration bind mount, and the manager's network
 namespace. All original files are owner-only regular files with one link;
 protected original directories have mode `0700`.
 
+Capture parses the effective management settings, rather than accepting only a
+configuration hash. Its OAuth root, operation journal root, bootstrap path and
+listener must select those same original objects. The mounted bootstrap repeats
+that check before diagnostics can create a missing original directory and before
+any native store or launch record. It also verifies the selected initial
+executable receipt, the installed management console wrapper and its supported
+environment. A missing original root or an executable environment hook refuses
+without reconstructing the missing state.
+
+The ordinary proxy may use its explicit owner-only writable `/data` and `/config`
+bind roots as a pair. The ordinary predecessor capture checks their exact
+canonical host directories; anonymous volumes or a lone additional data mount
+do not meet this profile. A genesis predecessor carries the same read-only
+`/management-original-history` mount into the existing successor capture, whose
+host reader verifies that binding against the original root authority.
+
 Root authorization JSON contains exactly the fields of
 `GenesisRootAuthorization`: `profile` (`ordinary-original-roots-v1`), `purpose`
 (`separately-authorized-new-deployment`), `deployment_id`, canonical UUID
@@ -168,6 +184,13 @@ exclusive owner flock, shared-fence independent derivation, preserved unknown
 outcomes, complete failed branches, and missing-original refusal. Docker
 observations and container bind mapping are explicit component substitutes;
 these tests are not real-Docker, first-child or recovery-epoch acceptance.
+
+`tests/test_management_original_genesis_cli.py` invokes the actual bootstrap CLI
+against a missing original state root and proves that logger setup does not
+recreate it. The component selection also checks effective configuration mismatches
+and executable/environment failures before native publication. The additive
+predecessor and explicit proxy-data capture checks are exercised in
+`tests/test_management_original_genesis_capture.py`.
 
 The production interfaces are suitable for isolated real-Docker and host-root
 acceptance. Full #2824 acceptance additionally requires the actual complete

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -70,6 +71,22 @@ def test_linked_credential_stops_before_host_authorization(tmp_path: Path, monke
     monkeypatch.setattr(fixture, "require_disposable_host", lambda _: pytest.fail("host authorization must not be reached"))
     with pytest.raises(ValueError, match="canonical absolute"):
         fixture.run_fixture(**inputs)
+
+
+def test_command_failure_exports_bounded_diagnostics_without_inputs_or_credentials() -> None:
+    error = subprocess.CalledProcessError(
+        1,
+        ["docker", "compose", "--private-command-value"],
+        output="Network selected Created\nError response from daemon: AppArmor profile could not be loaded\nAuthorization: Bearer secret-value\n",
+        stderr="stderr boundary\n" + "safe line\n" * 100,
+    )
+    result = fixture._command_failure(error)
+    assert result["type"] == "CalledProcessError" and result["returncode"] == 1
+    assert len(result["diagnostics"]) <= 60
+    assert "private-command-value" not in json.dumps(result) and "secret-value" not in json.dumps(result)
+    short = fixture._command_failure(subprocess.CalledProcessError(1, ["docker", "compose"], output=b"Error response from daemon: AppArmor profile could not be loaded\n"))
+    assert "AppArmor profile could not be loaded" in "".join(short["diagnostics"])
+    assert fixture._command_failure(ValueError("unrelated error")) is None
 
 
 def test_no_child_or_admission_oracle_rejects_any_native_store(tmp_path: Path) -> None:
@@ -185,6 +202,10 @@ def _result() -> dict[str, object]:
         "preserved_workers": True,
         "original_outcomes": {"C": "launched", "D": "never-created"},
         "durable": {"record_sha256": {name: "a" * 64 for name in ("reserved", "intent", "consumed", "receipt")}},
+        "peer_observations": {
+            "schema": "actual-recovery-native-peer-faults-v1",
+            "cases": [{"case": case, "issuer_returncode": 2, "epoch_unreserved": True, "issuer_endpoint_removed_by_original": True, "consumer_grant_accepted": False, "no_child_or_admission": True, "issuer_syscall": {"bytes_observed": 10}} for case in sorted(fixture.REQUIRED_PEER_CASES)],
+        },
     }
 
 
@@ -208,7 +229,7 @@ def test_native_result_cannot_claim_success_without_preservation(field: str) -> 
 @pytest.mark.parametrize("scenario,phase", [("kill-after-intent", "intent"), ("kill-after-consume", "consumed"), ("lost-reply", "receipt")])
 def test_interruption_result_requires_the_actual_boundary_and_no_grant(scenario: str, phase: str) -> None:
     result = _result()
-    result.update(scenario=scenario, cases=sorted(fixture.required_cases(scenario)), durable={"phase": phase, "consumer_grant_acknowledged": False})
+    result.update(scenario=scenario, cases=sorted(fixture.required_cases(scenario)), durable={"phase": phase, "consumer_grant_acknowledged": False, "grant_send_completed": scenario == "lost-reply", "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True})
     fixture.validate_result(result)
     result["durable"]["consumer_grant_acknowledged"] = True
     with pytest.raises(AssertionError):
@@ -221,6 +242,54 @@ def test_interruption_result_requires_the_actual_boundary_and_no_grant(scenario:
 def test_unknown_native_scenario_is_not_a_success_alias() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         fixture.required_cases("unreviewed-boundary")
+
+
+def test_canonical_acceptance_contains_all_distinct_publication_and_late_faults() -> None:
+    assert len(set(fixture.ACCEPTANCE_SCENARIOS)) == len(fixture.ACCEPTANCE_SCENARIOS)
+    assert set(fixture.ACCEPTANCE_SCENARIOS) == {"grant", "lost-reply", "retarget-after-reservation", *fixture.BOUNDARY_SCENARIOS, *fixture.LATE_MUTATION_SCENARIOS}
+    assert set(fixture.SCENARIOS) - set(fixture.ACCEPTANCE_SCENARIOS) == {"kill-after-intent", "kill-after-consume"}
+    assert fixture._selected_boundary("kill-after-intent") == fixture._selected_boundary("after-intent-head") == ("intent-head.json", "after")
+    assert fixture._selected_boundary("kill-after-consume") == fixture._selected_boundary("after-consumed-head") == ("consumed-head.json", "after")
+    assert fixture._selected_boundary("lost-reply") == ("receipt-head.json", "after")
+
+
+@pytest.mark.parametrize("field", ["grant_send_completed", "receiver_paused_before_send", "issuer_died_before_receiver_resumed"])
+def test_lost_reply_requires_actual_send_before_issuer_death(field: str) -> None:
+    result = _result()
+    result.update(scenario="lost-reply", cases=sorted(fixture.required_cases("lost-reply")), durable={"phase": "receipt", "consumer_grant_acknowledged": False, "grant_send_completed": True, "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True})
+    fixture.validate_result(result)
+    result["durable"][field] = False
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("case", sorted(fixture.REQUIRED_PEER_CASES))
+def test_grant_result_requires_the_actual_peer_evidence_inventory(case: str) -> None:
+    result = _result()
+    fixture.validate_result(result)
+    result["peer_observations"]["cases"] = [item for item in result["peer_observations"]["cases"] if item["case"] != case]
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("scenario", fixture.LATE_MUTATION_SCENARIOS)
+def test_late_mutation_result_names_its_deliberate_preservation_boundary(scenario: str) -> None:
+    result = _result()
+    result.update(
+        scenario=scenario,
+        cases=sorted(fixture.required_cases(scenario)),
+        preservation_baseline="after-deliberate-fixture-mutation",
+        preserved_originals_sha256="c" * 64,
+        durable={"phase": "intent", "consumer_grant_acknowledged": False, "grant_send_completed": False, "mutation": {"scenario": scenario, "boundary": "after-intent-head", "preservation_baseline": "after-deliberate-fixture-mutation"}, "originals_after_injection_sha256": "c" * 64},
+    )
+    fixture.validate_result(result)
+    result["preservation_baseline"] = "before-deliberate-fixture-mutation"
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+    result["preservation_baseline"] = "after-deliberate-fixture-mutation"
+    result["durable"]["originals_after_injection_sha256"] = "d" * 64
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
 
 
 @pytest.mark.parametrize("scenario", fixture.BOUNDARY_SCENARIOS)

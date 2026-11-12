@@ -31,6 +31,7 @@ from typing import Callable
 from scripts.recovery_epoch_containment_fixture import CapturedGeneration, capture_generation, enroll_recovery_scope, selected_file, start_watcher, target_from_container
 from scripts.recovery_epoch_fault_tracer import BOUNDARY_SCENARIOS, PUBLICATIONS, KernelPublicationBarrier, PublicationObservation, parse_boundary
 from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
+from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_intent, pause_target_before_grant, run_native_peer_cases
 from scripts.test_management_containment_closed_host import InhibitedStockRoutes, WatcherFixture, require_disposable_host
 from scripts.test_management_containment_enrollment_host import DisposableSystemdRoutes, _private_directory, _write_private
 
@@ -56,7 +57,8 @@ FIXTURE_ROOT = Path("/var/lib/auto-coder/recovery-epoch-fixtures")
 RESULT_SCHEMA = "auto-coder-native-recovery-epoch-result-v1"
 ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "changed-installed-ready-refused", "changed-target-management-config-refused"})
 LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused"})
-SCENARIOS = ("grant", "kill-after-intent", "kill-after-consume", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS)
+ACCEPTANCE_SCENARIOS = ("grant", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS)
+SCENARIOS = (*ACCEPTANCE_SCENARIOS, "kill-after-intent", "kill-after-consume")
 REQUIRED_CASES = frozenset(
     {
         "affirmative-original-genesis",
@@ -81,7 +83,7 @@ def required_cases(scenario: str) -> frozenset[str]:
     if scenario not in SCENARIOS:
         raise ValueError("unsupported native recovery fixture scenario")
     if scenario == "grant":
-        return REQUIRED_CASES | REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES | ORIGINAL_NEGATIVE_CASES | LINEAGE_REPORT_CASES
+        return REQUIRED_CASES | REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES | REQUIRED_PEER_CASES | ORIGINAL_NEGATIVE_CASES | LINEAGE_REPORT_CASES
     return (REQUIRED_CASES - {"complete-native-epoch-granted", "old-owner-and-controller-contenders-refused", "issuer-death-ended-current-custody", "consumed-epoch-replay-refused", "reservation-barrier-contender-refused"}) | {"native-" + scenario, "interrupted-epoch-replay-refused"}
 
 
@@ -168,6 +170,21 @@ def _wait(predicate: Callable[[], bool], description: str, *, timeout: float = 9
         if time.monotonic() >= deadline:
             raise AssertionError(description + ": the bounded native barrier timed out")
         time.sleep(0.05)
+
+
+def _command_failure(error: BaseException) -> dict[str, object] | None:
+    """Retain bounded child stderr/stdout without exporting command inputs."""
+    if not isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        return None
+    lines = []
+    for value in (error.output, error.stderr):
+        if isinstance(value, bytes):
+            value = value.decode(errors="replace")
+        if isinstance(value, str):
+            # The prefix keeps plain Compose diagnostics in the same existing
+            # credential/header/body filter used for all exported fixture logs.
+            lines.extend(diagnostic_log_lines("\n".join("RuntimeError: " + line for line in value.splitlines()[-60:])))
+    return {"type": type(error).__name__, "returncode": getattr(error, "returncode", None), "diagnostics": lines[-60:]}
 
 
 def _checkpoint_stopped(generation: Generation) -> None:
@@ -396,7 +413,7 @@ def _target(
         published_port = reservation.getsockname()[1]
     if published_port == chain.port:
         raise AssertionError("new target endpoint must differ from every old endpoint")
-    command = ["create", "--name", name, "--read-only", "--network", "bridge", "--publish", f"127.0.0.1:{published_port}:8080", "--env", "PYTHONDONTWRITEBYTECODE=1"]
+    command = ["create", "--name", name, "--read-only", "--workdir", "/workspace", "--network", "bridge", "--publish", f"127.0.0.1:{published_port}:8080", "--env", "PYTHONDONTWRITEBYTECODE=1"]
     for source, destination, writable in mounts:
         command.extend(("--mount", f"type=bind,src={source},dst={destination}" + ("" if writable else ",readonly")))
     command.extend(("--entrypoint", "python", chain.image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--recovery-epoch"))
@@ -505,6 +522,13 @@ def validate_result(value: dict[str, object]) -> None:
     assert isinstance(value.get("durable"), dict)
     if scenario == "grant":
         assert set(value["durable"]["record_sha256"]) == {"reserved", "intent", "consumed", "receipt"}
+        peer = value.get("peer_observations", {})
+        assert peer.get("schema") == "actual-recovery-native-peer-faults-v1"
+        assert {item.get("case") for item in peer.get("cases", ())} == REQUIRED_PEER_CASES
+        for item in peer["cases"]:
+            assert item.get("issuer_returncode") == 2 and item.get("epoch_unreserved") is True and item.get("issuer_endpoint_removed_by_original") is True
+            assert item.get("consumer_grant_accepted") is False and item.get("no_child_or_admission") is True
+            assert item.get("issuer_syscall", {}).get("bytes_observed", 0) > 0
     elif scenario in BOUNDARY_SCENARIOS:
         publication, when = parse_boundary(scenario)
         assert value["durable"]["publication"] == publication and value["durable"]["when"] == when
@@ -513,40 +537,58 @@ def validate_result(value: dict[str, object]) -> None:
     elif scenario == "retarget-after-reservation":
         assert value["durable"]["phase"] == "reserved" and value["durable"]["consumer_grant_acknowledged"] is False
         assert value["durable"]["inventory_sha256"] != value["durable"]["retargeted_inventory_sha256"]
+    elif scenario in LATE_MUTATION_SCENARIOS:
+        assert value["durable"]["phase"] == "intent" and value["durable"]["consumer_grant_acknowledged"] is False and value["durable"]["grant_send_completed"] is False
+        assert value["durable"]["mutation"]["scenario"] == scenario and value["durable"]["mutation"]["boundary"] == "after-intent-head"
+        assert value.get("preservation_baseline") == "after-deliberate-fixture-mutation"
+        assert value["durable"]["mutation"]["preservation_baseline"] == value["preservation_baseline"]
+        assert value["preserved_originals_sha256"] == value["durable"]["originals_after_injection_sha256"]
     else:
         assert value["durable"]["phase"] == ("intent" if scenario == "kill-after-intent" else "consumed" if scenario == "kill-after-consume" else "receipt")
         assert value["durable"]["consumer_grant_acknowledged"] is False
+        assert value["durable"]["grant_send_completed"] is (scenario == "lost-reply")
+        if scenario == "lost-reply":
+            assert value["durable"]["receiver_paused_before_send"] is True and value["durable"]["issuer_died_before_receiver_resumed"] is True
 
 
-def _interrupted_issuer(scenario: str, issuer: subprocess.Popen, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
-    """Signal real post-fsync publications; reject a race beyond the boundary."""
-    phase = "intent" if scenario == "kill-after-intent" else "consumed" if scenario == "kill-after-consume" else "receipt"
-    selected_pid = issuer.pid if scenario != "lost-reply" else int(Chain.docker("inspect", "--format", "{{.State.Pid}}", target.generation.container))
-    descriptor = os.pidfd_open(selected_pid, 0)
+def _selected_boundary(scenario: str) -> tuple[str, str]:
+    if scenario in BOUNDARY_SCENARIOS:
+        return parse_boundary(scenario)
+    if scenario in LATE_MUTATION_SCENARIOS or scenario == "kill-after-intent":
+        return "intent-head.json", "after"
+    if scenario == "kill-after-consume":
+        return "consumed-head.json", "after"
+    if scenario == "lost-reply":
+        return "receipt-head.json", "after"
+    if scenario in {"grant", "retarget-after-reservation"}:
+        return "reserved-head.json", "after"
+    raise ValueError("unsupported native recovery publication barrier")
+
+
+def _lost_reply(context: NativeNegativeContext, barrier: KernelPublicationBarrier, issuer: subprocess.Popen, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
+    """Observe successful delivery to the socket before the pinned issuer dies."""
+    original_epoch = _snapshot((EPOCH_ROOT,))
+    descriptor = os.pidfd_open(issuer.pid, 0)
     try:
-        _wait(lambda: f"Recovery epoch {phase} durably recorded" in issuer_log.read_text(), "actual durable " + phase + " publication", timeout=600, process=issuer)
-        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+        with pause_target_before_grant(context, issuer.pid) as observation:
+            assert "Recovery custody acknowledged" not in consumer_log.read_text()
+            barrier.release()
+            _wait(lambda: "One consumed recovery epoch grant send completed" in issuer_log.read_text(), "actual grant send while its receiver remains kernel-stopped", timeout=1800, process=issuer)
+            assert "Recovery custody acknowledged" not in consumer_log.read_text(), "the stopped receiver observed the grant"
+            assert _snapshot((EPOCH_ROOT,)) == original_epoch
+            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            assert issuer.wait(timeout=30) == -signal.SIGKILL
+            assert "Recovery custody acknowledged" not in consumer_log.read_text()
     finally:
         os.close(descriptor)
-    if scenario == "lost-reply":
-        issuer.wait(timeout=120)
-        assert issuer.returncode == 2, "issuer accepted a dead consumer after durable consumption"
-    else:
-        issuer.wait(timeout=30)
-        assert issuer.returncode == -signal.SIGKILL
-    _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "interrupted real peer lifetime ends", timeout=90)
+    _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "queued grant cannot survive the actual issuer lifetime", timeout=120)
+    assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
     _no_target_child(target.generation, running=False)
-    assert "Recovery custody acknowledged" not in consumer_log.read_text(), "signal raced beyond the required pregrant boundary"
-    assert "One consumed recovery epoch grant send completed" not in issuer_log.read_text(), "signal raced beyond actual grant dispatch"
-    encoded = (EPOCH_ROOT / (phase + ".json")).read_bytes()
-    head = json.loads((EPOCH_ROOT / (phase + "-head.json")).read_bytes())
-    assert head["phase"] == phase and head["record_sha256"] == hashlib.sha256(encoded).hexdigest()
-    if scenario == "kill-after-intent":
-        assert not (EPOCH_ROOT / "consumed.json").exists(), "intent interruption raced beyond consumption"
-    before = _snapshot((EPOCH_ROOT,))
+    assert "Recovery custody acknowledged" not in consumer_log.read_text()
+    assert _snapshot((EPOCH_ROOT,)) == original_epoch
     replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
-    assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == before, "an interrupted original epoch was repaired or reissued"
-    return {"phase": phase, "record_sha256": hashlib.sha256(encoded).hexdigest(), "consumer_grant_acknowledged": False, "grant_send_completed": False}
+    assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == original_epoch, "a consumed epoch was reissued after its reply was lost"
+    return {"phase": "receipt", "consumer_grant_acknowledged": False, "grant_send_completed": True, "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True, "native_observation": observation, "epoch_sha256": original_epoch}
 
 
 def _publication_interruption(scenario: str, observed: PublicationObservation, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
@@ -679,6 +721,48 @@ def _retarget_reserved(barrier: KernelPublicationBarrier, issuer: subprocess.Pop
     return {"phase": "reserved", "consumer_grant_acknowledged": False, "inventory_sha256": original_digest, "retargeted_inventory_sha256": _digest(inventory), "retained_publications": ["reserved.json", "reserved-head.json"]}
 
 
+def _late_mutation(
+    context: NativeNegativeContext,
+    scenario: str,
+    barrier: KernelPublicationBarrier,
+    issuer: subprocess.Popen,
+    issuer_log: Path,
+    consumer_log: Path,
+    target: PreparedTarget,
+    retained_roots: tuple[Path, ...],
+    check_workers: Callable[[], None],
+) -> tuple[dict[str, object], str]:
+    """Require an actual late refusal while retaining the injected uncertainty."""
+    original = _snapshot(retained_roots)
+    with mutate_after_intent(context, scenario, issuer.pid) as observation:
+        injected = _snapshot(retained_roots)
+        epoch = _snapshot((EPOCH_ROOT,))
+        check_workers()
+        barrier.release()
+        assert issuer.wait(timeout=1800) == 2, "the actual issuer did not refuse the changed post-intent authority"
+        _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "late refusal ends the exact current consumer lifetime", timeout=120)
+        assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
+        _no_target_child(target.generation, running=False)
+        assert "Recovery custody acknowledged" not in consumer_log.read_text() and "One consumed recovery epoch grant send completed" not in issuer_log.read_text()
+        assert _snapshot((EPOCH_ROOT,)) == epoch, "late mutation reached consumption or rewrote original epoch evidence"
+        assert _snapshot(retained_roots) == injected, "production refusal changed the deliberately injected original state"
+        check_workers()
+        replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
+        assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == epoch, "the uncertain original intent was repaired or reissued"
+        assert _snapshot(retained_roots) == injected
+        check_workers()
+        result = {
+            "phase": "intent",
+            "consumer_grant_acknowledged": False,
+            "grant_send_completed": False,
+            "mutation": observation,
+            "originals_before_injection_sha256": original,
+            "originals_after_injection_sha256": injected,
+            "epoch_sha256": epoch,
+        }
+    return result, injected
+
+
 def run_fixture(*, authorization_id: str, source_repository: Path, source_token_file: Path, source_sha: str, uv: Path, uv_version: str, output: Path, scenario: str = "grant") -> dict[str, object]:
     required_cases(scenario)
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", uv_version):
@@ -783,6 +867,8 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
             cases.extend(LINEAGE_REPORT_CASES)
             cases.extend(run_native_negatives(native_context, lambda label: _issuer_refusal(native_context, target, label), preservation))
             cases.extend(_original_negatives(native_context, target, chain, preservation))
+            cases.extend(run_native_peer_cases(native_context, preservation))
+            result["peer_observations"] = json.loads((root / "native-peer-observations.json").read_bytes())
             # Only the intentional reversible fixture injections changed path
             # metadata. This fresh strict baseline precedes actual issuance.
             preserved = _snapshot(retained_roots)
@@ -793,15 +879,11 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         contender = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
         assert contender.returncode == 2 and not (EPOCH_ROOT / "reserved.json").exists(), "a second issuer acquired the same current epoch"
         cases.append("independent-issuer-contender-refused")
-        # A real SIGSTOP barrier lets the exact target execute its installed
-        # interpreter probe before T takes its current process observations.
-        if scenario in BOUNDARY_SCENARIOS or scenario in ("grant", "retarget-after-reservation"):
-            publication, when = parse_boundary(scenario) if scenario in BOUNDARY_SCENARIOS else ("reserved-head.json", "after")
-            barrier = KernelPublicationBarrier(issuer, root=EPOCH_ROOT, name=publication, when=when)
-            barrier.start()
-        else:
-            issuer.send_signal(signal.SIGSTOP)
-            _wait(lambda: Path(f"/proc/{issuer.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T", "issuer kernel stop barrier", process=issuer)
+        # The actual ptrace stop lets the target finish its interpreter probe
+        # before T samples current tasks, then observes the chosen publication.
+        publication, when = _selected_boundary(scenario)
+        barrier = KernelPublicationBarrier(issuer, root=EPOCH_ROOT, name=publication, when=when)
+        barrier.start()
         chain.docker("start", target.generation.container)
         probe = json.loads(chain.docker("exec", target.generation.container, target.receipt.interpreter_path, "-I", "-B", "-m", "auto_coder.build_provenance", timeout=60).splitlines()[-1])
         assert probe["source_revision"]["available"] is True and probe["source_revision"]["value"] == source_sha
@@ -815,29 +897,27 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
             workers.preserved(*worker_before)
         consumer_log = target.generation.path("state") / "logs" / "recovery-epoch-bootstrap.log"
         result["source_proof"] = {name: getattr(target.receipt, name) for name in ("source_sha", "tested_source_ref", "tested_source_object", "test_run_id", "test_run_attempt", "lock_sha256", "distribution_version", "receipt_identity")}
-        if barrier is not None:
-            barrier.resume_initial()
-            observed_boundary = barrier.wait(timeout=1800)
-            if scenario == "grant":
-                _reserved_contender()
-                cases.append("reservation-barrier-contender-refused")
-                result["reservation_barrier"] = asdict(observed_boundary)
-                barrier.release()
-            else:
-                if scenario == "retarget-after-reservation":
-                    result["durable"] = _retarget_reserved(barrier, issuer, issuer_log, consumer_log, target)
-                else:
-                    barrier.kill()
-                    result["durable"] = _publication_interruption(scenario, observed_boundary, issuer_log, consumer_log, target)
-                cases.extend(("native-" + scenario, "interrupted-epoch-replay-refused"))
-                assert _snapshot(retained_roots) == preserved
-                workers.preserved(*worker_before)
-                _passed(result, cases, preserved, worker_claims, worker_baseline, worker_posts)
-                return result
+        barrier.resume_initial()
+        observed_boundary = barrier.wait(timeout=1800)
+        if scenario == "grant":
+            _reserved_contender()
+            cases.append("reservation-barrier-contender-refused")
+            result["reservation_barrier"] = asdict(observed_boundary)
+            barrier.release()
         else:
-            issuer.send_signal(signal.SIGCONT)
-        if scenario != "grant":
-            result["durable"] = _interrupted_issuer(scenario, issuer, issuer_log, consumer_log, target)
+            if scenario == "retarget-after-reservation":
+                result["durable"] = _retarget_reserved(barrier, issuer, issuer_log, consumer_log, target)
+            elif scenario == "lost-reply":
+                result["durable"] = _lost_reply(native_context, barrier, issuer, issuer_log, consumer_log, target)
+            elif scenario in LATE_MUTATION_SCENARIOS:
+                result["durable"], preserved = _late_mutation(native_context, scenario, barrier, issuer, issuer_log, consumer_log, target, retained_roots, lambda: workers.preserved(*worker_before))
+                result["preservation_baseline"] = "after-deliberate-fixture-mutation"
+            else:
+                barrier.kill()
+                actual = scenario if scenario in BOUNDARY_SCENARIOS else "after-" + publication.removesuffix(".json")
+                result["durable"] = _publication_interruption(actual, observed_boundary, issuer_log, consumer_log, target)
+                if scenario in {"kill-after-intent", "kill-after-consume"}:
+                    result["durable"]["phase"] = "intent" if scenario == "kill-after-intent" else "consumed"
             cases.extend(("native-" + scenario, "interrupted-epoch-replay-refused"))
             assert _snapshot(retained_roots) == preserved
             workers.preserved(*worker_before)
@@ -882,7 +962,13 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         _passed(result, cases, preserved, worker_claims, worker_baseline, worker_posts)
         return result
     except BaseException as error:
+        result["status"] = "failed"
         result["failure_type"] = type(error).__name__
+        command_failure = _command_failure(error)
+        if command_failure is not None:
+            result["command_failure"] = command_failure
+            for diagnostic in command_failure["diagnostics"]:
+                logger.error("Native fixture command diagnostic: {}", diagnostic)
         logger.exception("Native recovery ownership fixture failed")
         raise
     finally:

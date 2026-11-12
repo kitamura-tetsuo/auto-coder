@@ -11,6 +11,12 @@ finish() {
     trap - EXIT
     set +e
     rm -f /run/recovery-fixture-source-token
+    {
+        systemctl cat cloud-final.service cloud-config.service cloud-init.service cloud-init-local.service
+        systemctl show cloud-final.service cloud-config.service cloud-init.service cloud-init-local.service -p ExecStart -p ActiveState -p UnitFileState
+        docker version
+        docker compose version
+    } > "$output/guest-platform.txt" 2>&1
     printf '%s\n' "$result" | tee "$output/guest-exit-code" > /dev/null
     sync
     systemctl poweroff --no-block
@@ -33,9 +39,16 @@ for name, digest in manifest["inputs_sha256"].items():
             raise ValueError("Recovery fixture input changed: " + name)
 PY
 export DEBIAN_FRONTEND=noninteractive
+# Match the source store before the new daemon starts; cross-store imports can
+# change Docker's image IDs even when their layers are identical.
+mkdir -p /etc/docker
+test ! -e /etc/docker/daemon.json
+test ! -L /etc/docker/daemon.json
+install -m 600 "$input/docker-daemon.json" /etc/docker/daemon.json
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates cron curl docker.io docker-compose-v2 git python3-venv
 systemctl start docker
+docker info --format 'Actual guest image store: {{.Driver}} {{json .DriverStatus}}'
 python3 -m venv /opt/fixture-tools
 /opt/fixture-tools/bin/pip install uv==0.13.6
 mkdir -m 700 /opt/recovery-fixture /opt/reviewed-source
@@ -66,6 +79,11 @@ git -C /opt/reviewed-source fetch --no-tags origin "${selected[3]}"
 git -C /opt/reviewed-source checkout --detach FETCH_HEAD
 test "$(git -C /opt/reviewed-source rev-parse --is-shallow-repository)" = false
 docker image load --input "$input/images.tar"
+docker image ls --no-trunc
+for selected_image in "${selected[1]}" "${selected[2]}"; do
+    printf 'Verifying imported fixture image %s\n' "$selected_image"
+    test "$(docker image inspect --format '{{.Id}}' "$selected_image")" = "$selected_image"
+done
 python3 - "$input" <<'PY'
 import json
 import os
