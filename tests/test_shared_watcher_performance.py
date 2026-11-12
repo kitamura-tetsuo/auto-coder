@@ -94,12 +94,13 @@ class TestEnhancedDebouncingPerformance:
             files.append(f"tests/test{i}.py")
             files.append(f"docs/doc{i}.md")
 
-        start_time = time.time()
+        # CPU time excludes unrelated runner scheduling delays.
+        start_time = time.process_time()
 
         # Apply enhanced debouncing
         debounced = tool._enhanced_debounce_files(files)
 
-        elapsed = time.time() - start_time
+        elapsed = time.process_time() - start_time
 
         # Should complete quickly
         assert elapsed < 0.1  # Less than 100ms
