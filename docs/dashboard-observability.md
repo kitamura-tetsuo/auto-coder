@@ -3535,8 +3535,19 @@ Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempt
 drives the real original admission/refusal producer, inspects structured Loguru
 fields and source locations, and checks that no success/recovery claim appears.
 The process contention cases use those actual post-fsync emissions as observable
-barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
-these tests do not substitute for the independent host suite.
+barriers. The separately required real Docker `original-lineage` cutover and
+original-host durable-boundary cases exercise the actual host producers and
+independent evidence consumer. They establish only the selected prospective
+profile, never a recovered legacy history or recovery-success projection.
+
+Chronological predecessor validation refuses a descendant anchored before its
+parent's durable claim, before any new original boundary can be appended. This
+changes refusal eligibility without adding a trace field, dashboard job or
+success event. Run `bash scripts/test.sh --ci-tests-only
+tests/test_management_original_event_order.py
+tests/test_management_original_attempts.py` for the ordering/refusal and existing
+structured-emission oracles. The full-origin acceptance commands and REQ/AS map
+are in `client-features/management-original-attempt-provenance.md`.
 
 Managed release startup abandonment emits the existing health-log event envelope
 with category `engine_startup_failure`, fixed message

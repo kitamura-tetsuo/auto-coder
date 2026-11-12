@@ -220,4 +220,9 @@ in `tests/test_management_original_attempts.py`; the real producer preserves
 production-to-view assessment in `docs/dashboard-observability.md` leaves the
 view/schema unchanged: enrollment, possible grants and unavailable legacy
 coverage cannot appear as recovery success. Run `bash scripts/test.sh
---ci-tests-only tests/test_management_original_attempts.py`.
+--ci-tests-only tests/test_management_original_attempts.py
+tests/test_management_original_event_order.py`. The chronology guard refuses
+before any new durable boundary emission; it introduces no success event or
+dashboard schema. Required original-history Docker acceptance is mapped in
+`management-original-attempt-provenance.md`, separately from these structured
+trace regressions.

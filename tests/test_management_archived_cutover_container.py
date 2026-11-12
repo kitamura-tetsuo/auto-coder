@@ -946,38 +946,159 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
                     evidence_path = chain.root / "original-evidence.json"
                     binding_path.write_text(json.dumps(asdict(binding), sort_keys=True))
                     evidence_path.write_text(json.dumps(asdict(evidence), sort_keys=True))
-                    consumer = subprocess.run(
-                        [
-                            sys.executable,
-                            "-B",
-                            "-m",
-                            "auto_coder.management.original_attempt_evidence",
-                            "--binding",
-                            str(binding_path),
-                            "--submitted",
-                            str(evidence_path),
-                            *(option for fd in owner_fds for option in ("--owner-fd", str(fd))),
-                        ],
-                        pass_fds=tuple(owner_fds),
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    assert consumer.returncode == 0, consumer.stderr
-                    assert json.loads(consumer.stdout) == json.loads(evidence_path.read_text())
+                    observed_roots = [Path(binding.root), chain.oauth, d_state, d_journal, *(generation.path(part) for generation in (b, c) for part in ("state", "journal", "bootstrap"))]
+
+                    def original_bytes():
+                        # Diagnostics are separate; retain every authoritative file,
+                        # OAuth record and controller configuration in these roots.
+                        return {str(path): (path.stat().st_dev, path.stat().st_ino, path.read_bytes()) for root in observed_roots for path in root.iterdir() if path.is_file()}
+
+                    def consume(*, expected_success: bool, descriptors=None):
+                        # The real CLI obtains its own observation and reopens the
+                        # originals; a submitted result supplies no authority.
+                        current_fds = tuple(owner_fds if descriptors is None else descriptors)
+                        before_read = original_bytes()
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                "-B",
+                                "-m",
+                                "auto_coder.management.original_attempt_evidence",
+                                "--binding",
+                                str(binding_path),
+                                "--submitted",
+                                str(evidence_path),
+                                *(option for fd in current_fds for option in ("--owner-fd", str(fd))),
+                            ],
+                            pass_fds=current_fds,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        assert original_bytes() == before_read
+                        if expected_success:
+                            assert result.returncode == 0, result.stderr
+                            assert json.loads(result.stdout) == json.loads(evidence_path.read_text())
+                        else:
+                            assert result.returncode == 1, (result.stdout, result.stderr)
+                            assert "original attempt coverage unavailable:" in result.stderr and "Traceback" not in result.stderr
+                        return result
+
+                    def append_refused_original(selected_binding, name):
+                        target = chain.root / name
+                        target.mkdir(mode=0o700)
+                        for part in ("state", "journal", "guard"):
+                            (target / part).mkdir(mode=0o700)
+                        target_state, target_journal, target_guard = (target / part for part in ("state", "journal", "guard"))
+                        state_info, journal_info, guard_info = (path.stat() for path in (target_state, target_journal, target_guard))
+                        attempt = replace(
+                            rejected,
+                            request_id=str(uuid.uuid4()),
+                            new_instance=name,
+                            new_container_id=hashlib.sha256(name.encode()).hexdigest(),
+                            original_history=selected_binding.root,
+                            original_history_id=selected_binding.history,
+                            host_state_root=str(target_state),
+                            host_journal_root=str(target_journal),
+                            state_device=state_info.st_dev,
+                            state_inode=state_info.st_ino,
+                            journal_device=journal_info.st_dev,
+                            journal_inode=journal_info.st_ino,
+                            guard_device=guard_info.st_dev,
+                            guard_inode=guard_info.st_ino,
+                        )
+                        with pytest.raises(ValueError, match="retained OAuth root identity differs"):
+                            claim_fresh_initialization(target_state, attempt)
+                        assert not list(target_state.iterdir()) and not list(target_journal.iterdir())
+                        observed_roots.extend((target_state, target_journal))
+                        return attempt
+
+                    consume(expected_success=True)
                     assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed", "grant-possible", "anchor", "claimed", "grant-possible", "anchor", "never-created"]
                     # Re-submitting a forged list with the failed branch omitted
                     # cannot establish the completeness of the original frontier.
                     with pytest.raises(OriginalEvidenceUnavailable):
                         verify(replace(evidence, attempts=evidence.attempts[:-1]), binding, fence, tuple(owner_fds))
+                    evidence_path.write_text(json.dumps(asdict(replace(evidence, attempts=evidence.attempts[:-1])), sort_keys=True))
+                    consume(expected_success=False)
+                    evidence_path.write_text(json.dumps(asdict(evidence), sort_keys=True))
+                    # Another process's same-inode lock is not a held descriptor
+                    # belonging to this consumer; duplicate descriptors also refuse.
+                    with c_lock.open("rb") as unheld_owner:
+                        consume(expected_success=False, descriptors=(*owner_fds[:-1], unheld_owner.fileno()))
+                    consume(expected_success=False, descriptors=(*owner_fds, owner_fds[-1]))
+                    fcntl.flock(owner_fds[-1], fcntl.LOCK_UN)
+                    try:
+                        consume(expected_success=False)
+                    finally:
+                        fcntl.flock(owner_fds[-1], fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    consume(expected_success=True)
+                    # Identical bytes in a replacement inode do not restore an
+                    # original file or fence. These are stopped disposable stores.
+                    for original_path in (c_lock, Path(binding.root) / "history.lock", c.path("state") / "fresh-original-stores.json"):
+                        parked_identity = chain.root / "parked-original-identity"
+                        original_content = original_path.read_bytes()
+                        original_path.rename(parked_identity)
+                        try:
+                            original_path.write_bytes(original_content)
+                            original_path.chmod(0o600)
+                            consume(expected_success=False)
+                        finally:
+                            original_path.unlink(missing_ok=True)
+                            parked_identity.rename(original_path)
+                    authority_path = Path(binding.root) / "authority.json"
+                    authority_bytes = authority_path.read_bytes()
+                    changed_authority = json.loads(authority_bytes)
+                    changed_authority["binding"]["source"] = "sha256:" + "0" * 64
+                    authority_path.write_text(json.dumps(changed_authority, sort_keys=True, separators=(",", ":")))
+                    try:
+                        consume(expected_success=False)
+                    finally:
+                        authority_path.write_bytes(authority_bytes)
                     parked = chain.root / "parked-original-journal"
                     original_db = c.path("journal") / "management-operations.sqlite3"
                     original_db.rename(parked)
                     try:
                         with pytest.raises(OriginalEvidenceUnavailable):
                             verify(evidence, binding, fence, tuple(owner_fds))
+                        consume(expected_success=False)
                     finally:
                         parked.rename(original_db)
+                    foreign_root = chain.root / "unrelated-original-history"
+                    foreign_root.mkdir(mode=0o700)
+                    foreign_binding = enroll(foreign_root, "separate-disposable-deployment")
+                    observed_roots.append(foreign_root)
+                    append_refused_original(foreign_binding, "foreign-refused")
+                    with observe(foreign_binding) as foreign_fence:
+                        foreign_evidence = derive(foreign_binding, foreign_fence)
+                        assert verify(foreign_evidence, foreign_binding, foreign_fence) == foreign_evidence
+                    binding_path.write_text(json.dumps(asdict(foreign_binding), sort_keys=True))
+                    try:
+                        evidence_path.write_text(json.dumps(asdict(foreign_evidence), sort_keys=True))
+                        consume(expected_success=True)
+                        evidence_path.write_text(json.dumps(asdict(evidence), sort_keys=True))
+                        consume(expected_success=False)
+                    finally:
+                        binding_path.write_text(json.dumps(asdict(binding), sort_keys=True))
+                        evidence_path.write_text(json.dumps(asdict(evidence), sort_keys=True))
+                    consume(expected_success=True)
                     assert verify(evidence, binding, fence, tuple(owner_fds)) == evidence
+                    # An earlier verified object carries no authority after its
+                    # observation is released and another original attempt commits.
+                    preserved = original_bytes()
+                    fcntl.flock(fence, fcntl.LOCK_UN)
+                    try:
+                        later = append_refused_original(binding, "manager-e-refused")
+                    finally:
+                        fcntl.flock(fence, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    after_append = original_bytes()
+                    assert all(after_append[path] == value for path, value in preserved.items() if path != str(Path(binding.root) / "frontier.json"))
+                    consume(expected_success=False)
+                    advanced = derive(binding, fence, tuple(owner_fds))
+                    assert advanced.attempts[:-1] == evidence.attempts
+                    assert advanced.attempts[-1].request_id == later.request_id and advanced.attempts[-1].state == "never-created"
+                    assert verify(advanced, binding, fence, tuple(owner_fds)) == advanced
+                    evidence_path.write_text(json.dumps(asdict(advanced), sort_keys=True))
+                    consume(expected_success=True)
     assert chain.snapshot(a) == original_a
     assert chain.grants() == chain.grants_before

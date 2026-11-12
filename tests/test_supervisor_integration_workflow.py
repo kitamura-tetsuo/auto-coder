@@ -23,6 +23,12 @@ SMOKE_CASES = (
     "test_local_smoke_selected_retry_and_same_sha_supersession",
     "test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes",
 )
+ORIGINAL_HISTORY_NODEIDS = (
+    "tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[original-lineage]",
+    "tests/test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[False-False-None-True-False-False-True]",
+    "tests/test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[False-True-None-True-False-False-True]",
+    "tests/test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[False-False-after-claim-False-False-False-True]",
+) + tuple(f"tests/test_management_fresh_end_to_end.py::test_original_host_durable_boundaries[{boundary}]" for boundary in ("anchor", "claimed", "never-created", "grant-possible"))
 OTHER_REQUIRED_NODEIDS = (
     "tests/test_release_worker_acceptance_container.py::test_unready_live_release_candidate_recovers_by_docker_pid1_restart",
     "tests/test_release_worker_acceptance_container.py::test_original_reboot_intent_refuses_actual_same_pid1_reconstruction[False]",
@@ -292,8 +298,10 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert len(MANAGEMENT_SKIPS) == 5
     assert sum("host root is required" in reason for reason in MANAGEMENT_SKIPS.values()) == 4
     assert sum("production-profile image is not available locally" in reason for reason in MANAGEMENT_SKIPS.values()) == 1
-    assert len(FRESH_REQUIRED) == 10
-    assert all(node in profile_args("fresh-host") or node.split("::")[0] in profile_args("fresh-host") for node in FRESH_REQUIRED)
+    assert set(ORIGINAL_HISTORY_NODEIDS) <= set(FRESH_REQUIRED)
+    assert len(FRESH_REQUIRED) == len(set(FRESH_REQUIRED))
+    fresh_selectors = profile_args("fresh-host")
+    assert all(fresh_selectors.count(node) + fresh_selectors.count(node.split("::")[0]) == 1 for node in FRESH_REQUIRED)
 
     containers = _step(workflow["jobs"]["isolated-containers"], "Verify isolated Supervisor containers")
     for path in ("test_supervisor_container_integration.py", "test_worker_network_integration.py", "test_management_beta_deploy_container.py", "test_beta_runtime_smoke_container.py"):
@@ -326,6 +334,25 @@ def test_all_six_smoke_families_are_collected_with_the_required_marker(_use_real
         nodeid = f"tests/test_beta_runtime_smoke_container.py::{name}"
         assert nodeid in nodeids
         assert nodeid in required
+
+
+def test_original_history_acceptance_is_collected_and_required(_use_real_commands) -> None:
+    """Real source node IDs cannot silently disappear from the mandatory plan."""
+    command = [
+        "uv",
+        "run",
+        "pytest",
+        "--collect-only",
+        "-q",
+        "tests/test_management_fresh_end_to_end.py",
+        "tests/test_management_archived_cutover_container.py",
+    ]
+    collected = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=90)
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    nodeids = collected.stdout.splitlines()
+    for nodeid in ORIGINAL_HISTORY_NODEIDS:
+        assert nodeids.count(nodeid) == 1
+        assert nodeid in FRESH_REQUIRED
 
 
 def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path, _use_real_commands) -> None:

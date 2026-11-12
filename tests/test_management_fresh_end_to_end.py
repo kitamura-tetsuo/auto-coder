@@ -190,6 +190,28 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
     ],
 )
 def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, retained_history: bool, original_history: bool, record_property) -> None:
+    _exercise_fresh_first_launch(tmp_path, owner_token_gap, contention, crash_at, restart_after, prior_owner_locked, retained_history, original_history, record_property)
+
+
+@pytest.mark.parametrize("boundary", ["anchor", "claimed", "never-created", "grant-possible"])
+def test_original_host_durable_boundaries(tmp_path: Path, boundary: str, record_property) -> None:
+    """Real host claims/refusals survive each original publication interruption."""
+    _exercise_fresh_first_launch(tmp_path, False, False, None, True, False, False, True, record_property, original_boundary=boundary)
+
+
+def _exercise_fresh_first_launch(
+    tmp_path: Path,
+    owner_token_gap: bool,
+    contention: bool,
+    crash_at: str | None,
+    restart_after: bool,
+    prior_owner_locked: bool,
+    retained_history: bool,
+    original_history: bool,
+    record_property,
+    *,
+    original_boundary: str | None = None,
+) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -435,6 +457,21 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             intent = replace(intent, host_prior_journal_root=str(old_journal), prior_journal_root="/management-prior-operations", prior_journal_device=old_db.st_dev, prior_journal_inode=old_db.st_ino)
         if history_binding is not None:
             intent = replace(intent, original_history=history_binding.root, original_history_id=history_binding.history)
+        if original_boundary is not None:
+            from tests.fixtures.original_host_boundaries import exercise_original_host_boundaries
+
+            exercise_original_host_boundaries(
+                root,
+                intent,
+                original_boundary,
+                tuple(new_args + [image, "--config", "/bootstrap/config.json", "--fresh-initialization"]),
+                network_fd,
+                old_lock,
+                guard / "prior-evidence.json",
+                guard,
+                (old_state, old_bootstrap, bootstrap, oauth, guard),
+                names,
+            )
         intent_file = root / "intent.json"
         intent_file.write_text(json.dumps(asdict(intent)))
         intent_file.chmod(0o600)
