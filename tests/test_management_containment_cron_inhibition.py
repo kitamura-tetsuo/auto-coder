@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import pwd
+import shutil
 import stat
 import tempfile
 from contextlib import contextmanager
@@ -334,6 +335,218 @@ def test_profile_reobserves_complete_scope_and_rejects_races(closed_proof, monke
     values.extend((closed_proof, replace(closed_proof, mask_identity=(1, 99, 3, stat.S_IFLNK | 0o777, 0, 0))))
     with pytest.raises(cron.CronInhibitionUnavailable, match="changed during observation"):
         cron.observe_inhibited_stock_cron_scope((unit,))
+
+
+def _write_proc_task(proc: Path, *, pid: str = "1089", tid: str = "1089", group: str = "/system.slice/unrelated.service") -> Path:
+    task = proc / pid / "task" / tid
+    task.mkdir(parents=True)
+    (task / "stat").write_text(tid + " (fixture) S " + "0 " * 18 + "777 0\n")
+    (task / "cgroup").write_text("0::" + group + "\n")
+    if not (proc / pid / "cmdline").exists():
+        (proc / pid / "cmdline").write_bytes(b"fixture\0")
+    if not (proc / pid / "exe").is_symlink():
+        (proc / pid / "exe").symlink_to("/usr/bin/sleep")
+    return task
+
+
+def _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch):
+    """Keep the real paired observer and filesystem scope reader in this component test."""
+    root, proc, mountinfo = scope_tree
+    state = SimpleNamespace(source=cron._CronSourceBinding.from_observation(closed_proof), source_values=[], source_reads=0, scope_reads=0, completed=[], before_scope=lambda: None)
+    read_scope = cron._cgroup_snapshot
+
+    def source():
+        state.source_reads += 1
+        return state.source_values.pop(0) if state.source_values else state.source
+
+    def scope(*, inhibited_units):
+        state.scope_reads += 1
+        state.before_scope()
+        value = read_scope(root=root, proc=proc, mountinfo=mountinfo, inhibited_units=inhibited_units)
+        state.completed.append(value)
+        return value
+
+    monkeypatch.setattr(cron, "_source_snapshot", source)
+    monkeypatch.setattr(cron, "_cgroup_snapshot", scope)
+    state.facts = (routes.SystemdRouteFact("cron.service", "a" * 64, "masked", "inactive", 0, True),)
+    return state
+
+
+@pytest.mark.parametrize("incomplete_snapshot", (1, 2))
+def test_disappearing_process_discards_the_entire_observation_pair(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch, incomplete_snapshot: int) -> None:
+    root, proc, _ = scope_tree
+    _write_proc_task(proc)
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    enumerate_directory = Path.iterdir
+    injected = False
+
+    def disappear(path):
+        nonlocal injected
+        if path == proc / "1089/task" and state.scope_reads == incomplete_snapshot and not injected:
+            injected = True
+            shutil.rmtree(proc / "1089")
+            _write_group(root / "system.slice/after-exit.scope")
+        return enumerate_directory(path)
+
+    monkeypatch.setattr(Path, "iterdir", disappear)
+    observed = cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert injected and state.source_reads == state.scope_reads == incomplete_snapshot + 2
+    assert state.completed[-2] == state.completed[-1] == observed.cgroups
+    assert "/system.slice/after-exit.scope" in {item.path for item in observed.cgroups.directories}
+    if incomplete_snapshot == 2:
+        assert state.completed[0] != observed.cgroups
+
+
+def test_disappearing_nonleader_is_reobserved_without_skipping_other_tasks(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, proc, _ = scope_tree
+    _write_proc_task(proc)
+    thread = _write_proc_task(proc, tid="1090")
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    read = cron._read
+    injected = False
+
+    def disappear(path, limit=1024 * 1024):
+        nonlocal injected
+        if path == thread / "stat" and not injected:
+            injected = True
+            shutil.rmtree(thread)
+        return read(path, limit)
+
+    monkeypatch.setattr(cron, "_read", disappear)
+    observed = cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert injected and state.source_reads == state.scope_reads == 3
+    assert observed.cgroups == state.completed[-2] == state.completed[-1]
+    assert (proc / "1089/task/1089/stat").is_file()
+
+
+def test_repeated_process_churn_has_a_finite_complete_observation_budget(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, proc, _ = scope_tree
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    state.before_scope = lambda: _write_proc_task(proc)
+    enumerate_directory = Path.iterdir
+
+    def disappear(path):
+        if path == proc / "1089/task":
+            shutil.rmtree(proc / "1089")
+        return enumerate_directory(path)
+
+    monkeypatch.setattr(Path, "iterdir", disappear)
+    with pytest.raises(cron.CronInhibitionUnavailable, match="inventory did not stabilize"):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 3
+    assert not state.completed
+
+
+@pytest.mark.parametrize("fault", ("task-directory", "empty-tasks", "stat", "cgroup", "nonleader-stat", "nonleader-cgroup", "cmdline", "exe", "malformed-stat", "malformed-cgroup", "permission", "eperm"))
+def test_live_missing_or_invalid_process_evidence_is_not_retried(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    _, proc, _ = scope_tree
+    task = _write_proc_task(proc)
+    if fault.startswith("nonleader-"):
+        task = _write_proc_task(proc, tid="1090")
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    if fault == "task-directory":
+        shutil.rmtree(task.parent)
+    elif fault == "empty-tasks":
+        shutil.rmtree(task)
+    elif fault in {"stat", "cgroup", "nonleader-stat", "nonleader-cgroup"}:
+        (task / fault.removeprefix("nonleader-")).unlink()
+    elif fault in {"cmdline", "exe"}:
+        (proc / "1089" / fault).unlink()
+    elif fault.startswith("malformed-"):
+        (task / fault.removeprefix("malformed-")).write_text("unavailable\n")
+    else:
+        read = cron._read
+
+        def denied(path, limit=1024 * 1024):
+            if path == task / "stat":
+                raise PermissionError(1 if fault == "eperm" else 13, "fixture task is inaccessible")
+            return read(path, limit)
+
+        monkeypatch.setattr(cron, "_read", denied)
+    with pytest.raises(cron.CronInhibitionUnavailable):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 1
+
+
+@pytest.mark.parametrize("kind", ("inhibited-membership", "scheduler"))
+def test_positively_observed_inhibited_tasks_are_never_retried(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    _, proc, _ = scope_tree
+    _write_proc_task(proc, group="/system.slice/cron.service" if kind == "inhibited-membership" else "/system.slice/unrelated.service")
+    if kind == "scheduler":
+        (proc / "1089/exe").unlink()
+        (proc / "1089/exe").symlink_to("/usr/sbin/cron")
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    with pytest.raises(cron.CronScopeRetainsTasks):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 1
+
+
+def test_new_nonleader_in_an_inhibited_scope_is_found_by_the_fresh_complete_scan(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, proc, _ = scope_tree
+    _write_proc_task(proc)
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    enumerate_directory = Path.iterdir
+    task_reads = 0
+
+    def add_thread(path):
+        nonlocal task_reads
+        if path == proc / "1089/task":
+            task_reads += 1
+            if task_reads == 2:
+                _write_proc_task(proc, tid="1090", group="/system.slice/cron.service")
+        return enumerate_directory(path)
+
+    monkeypatch.setattr(Path, "iterdir", add_thread)
+    with pytest.raises(cron.CronScopeRetainsTasks, match="tid=1090"):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 2
+    assert not state.completed
+
+
+@pytest.mark.parametrize("field", ("boot_id", "controller_properties", "sources", "mask_path", "mask_identity"))
+def test_changed_source_binding_cannot_be_hidden_by_a_second_snapshot_disappearance(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    _, proc, _ = scope_tree
+    _write_proc_task(proc)
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    changes = {
+        "boot_id": "11111111-89ab-cdef-0123-456789abcdef",
+        "controller_properties": tuple((key, "changed" if key == "FragmentPath" else value) for key, value in state.source.controller_properties),
+        "sources": (replace(state.source.sources[0], inode=99), *state.source.sources[1:]),
+        "mask_path": "/run/systemd/system/cron.service",
+        "mask_identity": (1, 99, 3, stat.S_IFLNK | 0o777, 0, 0),
+    }
+    state.source_values = [state.source, replace(state.source, **{field: changes[field]})]
+    enumerate_directory = Path.iterdir
+
+    def disappear(path):
+        if path == proc / "1089/task" and state.scope_reads == 2:
+            shutil.rmtree(proc / "1089")
+        return enumerate_directory(path)
+
+    monkeypatch.setattr(Path, "iterdir", disappear)
+    with pytest.raises(cron.CronInhibitionUnavailable, match="source/controller authority changed"):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 2
+    assert len(state.completed) == 1
+
+
+def test_first_incomplete_snapshot_retains_its_protected_source_refusal_anchor(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, proc, _ = scope_tree
+    _write_proc_task(proc)
+    state = _filesystem_cron_observer(scope_tree, closed_proof, monkeypatch)
+    state.source_values = [state.source, replace(state.source, mask_identity=(1, 99, 3, stat.S_IFLNK | 0o777, 0, 0))]
+    enumerate_directory = Path.iterdir
+
+    def disappear(path):
+        if path == proc / "1089/task" and state.scope_reads == 1:
+            shutil.rmtree(proc / "1089")
+        return enumerate_directory(path)
+
+    monkeypatch.setattr(Path, "iterdir", disappear)
+    with pytest.raises(cron.CronInhibitionUnavailable, match="source/controller authority changed"):
+        cron.observe_inhibited_stock_cron_scope(state.facts)
+    assert state.source_reads == state.scope_reads == 2
+    assert len(state.completed) == 1
 
 
 def test_vendor_source_read_binds_actual_protected_file_and_refuses_change(native_sources: dict[str, str]) -> None:

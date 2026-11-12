@@ -275,6 +275,17 @@ fresh reads. A process running a scheduler outside its normal service also
 refuses. This initial profile conservatively refuses unrelated masked services
 that retain work as well.
 
+A process or thread may disappear while the complete procfs inventory is read.
+Only disappearance independently confirmed by a fresh PID/TID inventory, or a
+changed complete inventory, permits a retry. At most three attempts are made;
+each discards the incomplete pair and reads two new complete matching
+source/controller/cgroup/task snapshots. Earlier protected source, controller,
+boot and mask bindings remain refusal anchors across attempts. A still-listed
+process or thread with missing evidence, an empty live task inventory, permission
+or malformed-data errors, changed protected facts, and any positively observed
+inhibited task or scheduler still refuse immediately. No task is skipped to
+complete a positive observation, and persistent inventory churn remains unavailable.
+
 A detected remaining task has a typed refusal at the route boundary. Its public
 diagnostic contains fixed text and a bounded validated controller-scope identifier
 so an independent consumer can distinguish the canonical and differently named
