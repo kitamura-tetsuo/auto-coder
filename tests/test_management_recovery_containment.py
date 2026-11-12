@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import stat
 import subprocess
 import tarfile
@@ -188,7 +189,7 @@ def test_named_descriptors_are_exact_sorted_and_have_no_aliases():
 
 
 def test_protected_fixture_load_rejects_unknown_fields_duplicates_and_permissions():
-    with tempfile.TemporaryDirectory(prefix="recovery-enrollment-component-", dir=Path.home()) as directory:
+    with tempfile.TemporaryDirectory(prefix="recovery-enrollment-component-", dir=pwd.getpwuid(os.geteuid()).pw_dir) as directory:
         root = Path(directory)
         path = root / "enrollment.json"
         selected = _enrollment()

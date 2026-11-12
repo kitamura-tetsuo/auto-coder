@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 import pwd
@@ -18,8 +19,9 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import wraps
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator, ParamSpec
 
 import pytest
 
@@ -28,6 +30,86 @@ from auto_coder.management.recovery_containment_model import NamedDescriptor, Re
 from auto_coder.management.recovery_containment_resources import hold_observed_resources
 
 pytestmark = pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+
+_PARAMETERS = ParamSpec("_PARAMETERS")
+_CASE_PARAMETER_SETS: dict[str, tuple[tuple[tuple[str, str], ...], ...]] = {
+    "test_real_independent_resource_holder_is_observed_without_observer_flock_authority": ((),),
+    "test_inherited_open_file_description_is_not_independent_issuer_acquisition": tuple((("mode", value),) for value in ("inherited-original", "inherited-controller")),
+    "test_real_resource_change_at_observed_barrier_refuses_and_closes_observer_references": tuple(
+        (("change", value),) for value in ("unlock-original", "unlock-controller", "close-original", "close-controller", "close-namespace", "replace-original", "replace-controller", "replace-namespace", "holder-death", "original-pin-closed", "owner-path-replaced")
+    ),
+    "test_required_resource_group_cannot_be_omitted": tuple((("field", value),) for value in ("original_owner_fds", "controller_fds", "namespace_fds")),
+    "test_holder_lifetime_binding_cannot_name_another_process_instance": ((("field", "holder_start_token"), ("value", "1")), (("field", "holder_boot_id"), ("value", "00000000-0000-0000-0000-000000000000"))),
+}
+_RESOURCE_ASSERTIONS: dict[str, Callable[..., None]] = {}
+_CASE_RECEIPT = "RECOVERY_RESOURCE_CASE_COMPLETED "
+
+
+def _selected_resource_case(raw: object) -> tuple[str, dict[str, str]]:
+    if not isinstance(raw, dict) or set(raw) != {"case", "parameters"}:
+        raise ValueError("resource component invocation is malformed")
+    name, parameters = raw["case"], raw["parameters"]
+    if not isinstance(name, str) or name not in _CASE_PARAMETER_SETS or not isinstance(parameters, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in parameters.items()):
+        raise ValueError("resource component invocation is not selected")
+    if tuple(sorted(parameters.items())) not in _CASE_PARAMETER_SETS[name]:
+        raise ValueError("resource component parameters are not selected")
+    return name, parameters
+
+
+def _read_host_namespaces() -> None:
+    for namespace in ("pid", "user", "mnt", "net"):
+        os.readlink("/proc/1/ns/" + namespace)
+
+
+def _native_resource_case(function: Callable[_PARAMETERS, None]) -> Callable[_PARAMETERS, None]:
+    """Run the identical real assertions with CI's explicitly available sudo.
+
+    The parent pytest node remains responsible for its result and source receipt.
+    Local test execution never escalates automatically, and an unavailable host
+    component is a failure rather than evidence of native VM acceptance.
+    """
+    _RESOURCE_ASSERTIONS[function.__name__] = function
+
+    @wraps(function)
+    def run(*args: _PARAMETERS.args, **kwargs: _PARAMETERS.kwargs) -> None:
+        try:
+            _read_host_namespaces()
+        except OSError as exc:
+            if os.environ.get("GITHUB_ACTIONS") != "true":
+                pytest.fail("Actual host namespace access is unavailable for this component test; run it explicitly with the required host permissions. This is not native VM acceptance: " + str(exc))
+            parameters = inspect.signature(function).bind(*args, **kwargs).arguments
+            name, selected = _selected_resource_case({"case": function.__name__, "parameters": parameters})
+            invocation = json.dumps({"case": name, "parameters": selected}, sort_keys=True)
+            root = Path(__file__).resolve().parents[1]
+            command = ["sudo", "-n", sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--resource-case", invocation]
+            try:
+                completed = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=60, check=False)
+            except (OSError, subprocess.TimeoutExpired) as failure:
+                pytest.fail("Genuine privileged resource component execution is unavailable: " + str(failure))
+            assert completed.returncode == 0, "Genuine privileged resource assertions did not complete:\n" + completed.stdout + completed.stderr
+            receipts = [json.loads(line.removeprefix(_CASE_RECEIPT)) for line in completed.stdout.splitlines() if line.startswith(_CASE_RECEIPT)]
+            assert len(receipts) == 1, "The selected resource assertions did not produce their completion receipt"
+            receipt = receipts[0]
+            assert receipt == {"case": name, "parameters": selected, "uid": 0, "source": str(Path(__file__).resolve())}
+            return
+        function(*args, **kwargs)
+
+    return run
+
+
+def _run_resource_case(arguments: list[str]) -> None:
+    if len(arguments) != 2 or arguments[0] != "--resource-case":
+        raise ValueError("only an explicitly selected resource component case can run")
+    name, parameters = _selected_resource_case(json.loads(arguments[1]))
+    if os.geteuid() != 0:
+        raise RuntimeError("the privileged resource component child did not obtain root")
+    expected_source = Path(__file__).resolve().parents[1] / "src/auto_coder/management/recovery_containment_resources.py"
+    if Path(inspect.getsourcefile(inspect.unwrap(hold_observed_resources)) or "").resolve() != expected_source:
+        raise RuntimeError("the resource component child imported another checkout")
+    _read_host_namespaces()
+    _RESOURCE_ASSERTIONS[name](**parameters)
+    print(_CASE_RECEIPT + json.dumps({"case": name, "parameters": parameters, "uid": os.geteuid(), "source": str(Path(__file__).resolve())}, sort_keys=True), flush=True)
+
 
 _HOLDER = r"""
 import fcntl,json,os,sys
@@ -153,6 +235,7 @@ def resource_case(mode: str = "independent") -> Iterator[ResourceCase]:
                     pass
 
 
+@_native_resource_case
 def test_real_independent_resource_holder_is_observed_without_observer_flock_authority() -> None:
     with resource_case() as case:
         before = set(os.listdir("/proc/self/fd"))
@@ -182,6 +265,7 @@ def test_real_independent_resource_holder_is_observed_without_observer_flock_aut
 
 
 @pytest.mark.parametrize("mode", ["inherited-original", "inherited-controller"])
+@_native_resource_case
 def test_inherited_open_file_description_is_not_independent_issuer_acquisition(mode: str) -> None:
     with resource_case(mode) as case:
         before = set(os.listdir("/proc/self/fd"))
@@ -192,11 +276,14 @@ def test_inherited_open_file_description_is_not_independent_issuer_acquisition(m
 
 
 @pytest.mark.parametrize("change", ["unlock-original", "unlock-controller", "close-original", "close-controller", "close-namespace", "replace-original", "replace-controller", "replace-namespace", "holder-death", "original-pin-closed", "owner-path-replaced"])
+@_native_resource_case
 def test_real_resource_change_at_observed_barrier_refuses_and_closes_observer_references(change: str) -> None:
     with resource_case() as case:
         before = len(os.listdir("/proc/self/fd"))
+        entered = injected = False
         with pytest.raises((ValueError, OSError)):
             with hold_observed_resources(case.enrollment, case.resources, expected_uid=os.geteuid()):
+                entered = True
                 if change == "holder-death":
                     case.process.kill()
                     case.process.wait(timeout=5)
@@ -209,23 +296,64 @@ def test_real_resource_change_at_observed_barrier_refuses_and_closes_observer_re
                     os.close(descriptor)
                 else:
                     case.command(change)
+                injected = True
+        assert entered, "the resource observation failed before the real mutation barrier"
+        assert injected, "the intended real resource mutation did not complete"
         expected = before - int(change == "original-pin-closed")
         assert len(os.listdir("/proc/self/fd")) == expected
 
 
 @pytest.mark.parametrize("field", ["original_owner_fds", "controller_fds", "namespace_fds"])
+@_native_resource_case
 def test_required_resource_group_cannot_be_omitted(field: str) -> None:
     with resource_case() as case:
-        changed = replace(case.resources, **{field: ()})
+        if field == "original_owner_fds":
+            changed = replace(case.resources, original_owner_fds=())
+        elif field == "controller_fds":
+            changed = replace(case.resources, controller_fds=())
+        else:
+            assert field == "namespace_fds"
+            changed = replace(case.resources, namespace_fds=())
         with pytest.raises(RecoveryContainmentUnavailable, match="membership"):
             with hold_observed_resources(case.enrollment, changed, expected_uid=os.geteuid()):
                 pytest.fail("missing required resource group was accepted")
 
 
 @pytest.mark.parametrize("field,value", [("holder_start_token", "1"), ("holder_boot_id", "00000000-0000-0000-0000-000000000000")])
+@_native_resource_case
 def test_holder_lifetime_binding_cannot_name_another_process_instance(field: str, value: str) -> None:
     with resource_case() as case:
-        changed = replace(case.resources, **{field: value})
+        if field == "holder_start_token":
+            changed = replace(case.resources, holder_start_token=value)
+        else:
+            assert field == "holder_boot_id"
+            changed = replace(case.resources, holder_boot_id=value)
         with pytest.raises(RecoveryContainmentUnavailable, match="changed or exited"):
             with hold_observed_resources(case.enrollment, changed, expected_uid=os.geteuid()):
                 pytest.fail("another lifetime was accepted")
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        {},
+        {"case": "arbitrary", "parameters": {}},
+        {"case": "test_real_independent_resource_holder_is_observed_without_observer_flock_authority", "parameters": {"unexpected": "value"}},
+        {"case": "test_required_resource_group_cannot_be_omitted", "parameters": {"field": "arbitrary"}},
+        {"case": "test_holder_lifetime_binding_cannot_name_another_process_instance", "parameters": {"field": "holder_start_token", "value": "00000000-0000-0000-0000-000000000000"}},
+    ],
+)
+def test_privileged_component_dispatch_rejects_unselected_case_or_parameters(invocation: object) -> None:
+    with pytest.raises(ValueError, match="resource component"):
+        _selected_resource_case(invocation)
+
+
+def test_privileged_component_dispatch_covers_every_real_assertion() -> None:
+    assert set(_RESOURCE_ASSERTIONS) == set(_CASE_PARAMETER_SETS)
+    for name, selections in _CASE_PARAMETER_SETS.items():
+        for parameters in selections:
+            assert _selected_resource_case({"case": name, "parameters": dict(parameters)}) == (name, dict(parameters))
+
+
+if __name__ == "__main__":
+    _run_resource_case(sys.argv[1:])

@@ -70,12 +70,15 @@ executable receipt, the installed management console wrapper and its supported
 environment. A missing original root or an executable environment hook refuses
 without reconstructing the missing state.
 
-The ordinary proxy may use its explicit owner-only writable `/data` and `/config`
-bind roots as a pair. The ordinary predecessor capture checks their exact
-canonical host directories; anonymous volumes or a lone additional data mount
-do not meet this profile. A genesis predecessor carries the same read-only
-`/management-original-history` mount into the existing successor capture, whose
-host reader verifies that binding against the original root authority.
+The existing ordinary successor capture keeps its strict single Caddyfile bind
+profile. The integrated genesis fixture copies the verified Caddy binary from
+its exact imported source image into an image without inherited data volumes,
+then creates the proxy with `/srv` as its working directory and only the
+read-only Caddyfile bind. Extra `/data` or `/config` mounts are not admitted by
+that existing capture path. Stock Caddy's separate current-containment capture
+does not relax this contract. A genesis predecessor carries the same read-only
+`/management-original-history` mount into successor capture, whose host reader
+verifies that binding against the original root authority.
 
 Root authorization JSON contains exactly the fields of
 `GenesisRootAuthorization`: `profile` (`ordinary-original-roots-v1`), `purpose`
@@ -189,7 +192,7 @@ these tests are not real-Docker, first-child or recovery-epoch acceptance.
 against a missing original state root and proves that logger setup does not
 recreate it. The component selection also checks effective configuration mismatches
 and executable/environment failures before native publication. The additive
-predecessor and explicit proxy-data capture checks are exercised in
+predecessor binding and strict proxy mount checks are exercised in
 `tests/test_management_original_genesis_capture.py`.
 
 The production interfaces are suitable for isolated real-Docker and host-root

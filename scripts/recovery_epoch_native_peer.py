@@ -19,6 +19,7 @@ import select
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -440,6 +441,173 @@ def mutate_after_intent(context: NativeNegativeContext, scenario: str, issuer_pi
             raise AssertionError("production refusal or replay changed the deliberately unmasked controller")
 
 
+def _socket_option(descriptor: int, option: int, size: int) -> bytes:
+    """Read kernel socket metadata without constructing or reconfiguring a socket."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.getsockopt.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint))
+    libc.getsockopt.restype = ctypes.c_int
+    value = ctypes.create_string_buffer(size)
+    length = ctypes.c_uint(size)
+    result = libc.getsockopt(descriptor, socket.SOL_SOCKET, option, value, ctypes.byref(length))
+    if result < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if length.value != size:
+        raise AssertionError("the actual socket metadata has an incomplete kernel representation")
+    return value.raw
+
+
+def _local_socket_peer(descriptor: int) -> dict[str, int] | None:
+    """Return the real AF_UNIX stream peer's host-visible credentials."""
+    domain = struct.unpack("i", _socket_option(descriptor, socket.SO_DOMAIN, struct.calcsize("i")))[0]
+    kind = struct.unpack("i", _socket_option(descriptor, socket.SO_TYPE, struct.calcsize("i")))[0]
+    if domain != socket.AF_UNIX or kind != socket.SOCK_STREAM:
+        return None
+    pid, uid, gid = struct.unpack("iII", _socket_option(descriptor, socket.SO_PEERCRED, struct.calcsize("iII")))
+    return {"pid": pid, "uid": uid, "gid": gid}
+
+
+def _peek_queued_packet(descriptor: int, expected: bytes) -> tuple[bytes, int, int]:
+    """Observe the actual queued frame twice, without consuming or changing flags."""
+    if not expected.endswith(b"\n") or not 0 < len(expected) <= MAX_MESSAGE_BYTES:
+        raise AssertionError("a bounded complete expected grant frame is required")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.recv.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+    libc.recv.restype = ctypes.c_ssize_t
+    before = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+
+    def peek() -> bytes:
+        buffer = ctypes.create_string_buffer(MAX_MESSAGE_BYTES + 1)
+        result = libc.recv(descriptor, buffer, len(buffer), socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        if result < 0:
+            error = ctypes.get_errno()
+            raise AssertionError("the actual receiver has no observable complete queued grant: " + os.strerror(error))
+        if result <= 0 or result > MAX_MESSAGE_BYTES:
+            raise AssertionError("the actual receiver has an empty or oversized queued grant")
+        return buffer.raw[:result]
+
+    encoded = peek()
+    if encoded != expected:
+        raise AssertionError("the actual queued bytes differ from the exact consumed grant")
+    if peek() != encoded:
+        raise AssertionError("the actual grant bytes did not remain queued after MSG_PEEK")
+    after = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    if after != before:
+        raise AssertionError("observing the actual grant changed shared socket status flags")
+    return encoded, before, after
+
+
+def _expected_queued_grant(context: NativeNegativeContext, issuer_pid: int, issuer_start_token: str, target_pid: int, target_start_token: str) -> dict[str, object]:
+    """Bind the expected packet to fixed consumer inputs and original durable custody."""
+    configuration = _consumer_configuration(context)
+    inventory_bytes = read_original(context.epoch_root / "inventory.json")[0]
+    consumed_bytes = read_original(context.epoch_root / "consumed.json")[0]
+    receipt_bytes = read_original(context.epoch_root / "receipt.json")[0]
+    receipt = json.loads(receipt_bytes)
+    binding = receipt["binding"]
+    evidence_bytes = binding["evidence_json"].encode()
+    evidence = json.loads(evidence_bytes)
+    if canonical(evidence) != evidence_bytes or hashlib.sha256(evidence_bytes).hexdigest() != binding["evidence_sha256"]:
+        raise AssertionError("the actual retained custody evidence is not canonical and digest-bound")
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    if (binding["host_pid"], binding["host_start_token"], binding["host_boot_id"]) != (issuer_pid, issuer_start_token, boot):
+        raise AssertionError("the original consumed evidence names another issuer lifetime")
+    custody = evidence["custody"]
+    peer = custody["peer"]
+    if (peer["pid"], peer["start_token"], peer["boot_id"], peer["uid"]) != (target_pid, target_start_token, boot, 0):
+        raise AssertionError("the original consumed custody names another target lifetime")
+    selected = {name: getattr(configuration, name) for name in ("request_id", "authorization_id", "target_id")}
+    if any(binding[name] != value or peer[name] != value for name, value in selected.items()):
+        raise AssertionError("the original consumed custody differs from the actual fixed consumer binding")
+    for name in ("challenge", "receipt_nonce"):
+        if not isinstance(custody[name], str) or re.fullmatch(r"[0-9a-f]{64}", custody[name]) is None:
+            raise AssertionError("the actual original custody challenge or receipt nonce is incomplete")
+    return {
+        "schema": GRANT_SCHEMA,
+        "granted": "recovery-epoch-consumed",
+        **selected,
+        "challenge": custody["challenge"],
+        "receipt_nonce": custody["receipt_nonce"],
+        "inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+        "binding_sha256": hashlib.sha256(canonical(binding)).hexdigest(),
+        "consumed_sha256": hashlib.sha256(consumed_bytes).hexdigest(),
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "host_boot_id": boot,
+        "host_pid": issuer_pid,
+        "host_start_token": issuer_start_token,
+    }
+
+
+def observe_queued_grant(context: NativeNegativeContext, issuer_pid: int, *, target_pid: int, target_start_token: str, issuer_start_token: str) -> dict[str, object]:
+    """Prove a full grant reached the stopped receiver before the issuer dies."""
+    _require_publication_prefix(context, issuer_pid, "receipt")
+    with ExitStack() as held:
+        target = DockerTraceProcess(context)
+        held.callback(target.close)
+        issuer_lifetime = os.pidfd_open(issuer_pid, 0)
+        held.callback(os.close, issuer_lifetime)
+        issuer_dead = select.poll()
+        issuer_dead.register(issuer_lifetime, select.POLLIN)
+
+        def check_lifetimes() -> None:
+            target.check()
+            if (target.pid, target.start_token) != (target_pid, target_start_token) or issuer_dead.poll(0) or _token(issuer_pid) != issuer_start_token:
+                raise AssertionError("a queued-grant observer input differs from the original pinned lifetimes")
+
+        check_lifetimes()
+        before = _descriptor_snapshot(target.pid)
+        _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
+        if len(before) > 4096:
+            raise AssertionError("the actual receiver descriptor inventory exceeds the fixture bound")
+        expected = _expected_queued_grant(context, issuer_pid, issuer_start_token, target.pid, target.start_token)
+        configuration = _consumer_configuration(context)
+        matches = []
+        for descriptor, device, inode, _ in before:
+            if not stat.S_ISSOCK(Path(f"/proc/{target.pid}/fd/{descriptor}").stat().st_mode):
+                continue
+            duplicate = _duplicate(target.pid, descriptor, device, inode)
+            held.callback(os.close, duplicate)
+            credentials = _local_socket_peer(duplicate)
+            if credentials is not None and credentials["pid"] == issuer_pid:
+                if credentials["uid"] != configuration.issuer_uid:
+                    raise AssertionError("the actual queued-grant sender has the wrong Unix owner")
+                matches.append((descriptor, device, inode, duplicate, credentials))
+        if len(matches) != 1:
+            raise AssertionError("the stopped receiver does not retain one exact authenticated issuer socket")
+        descriptor, device, inode, duplicate, credentials = matches[0]
+        encoded, flags_before, flags_after = _peek_queued_packet(duplicate, canonical(expected) + b"\n")
+        check_lifetimes()
+        _stopped_receiver(target.pid, target.start_token, target.pidfd, before)
+        _assert_no_target_admission(context, running_pid=target.pid)
+        _require_publication_prefix(context, issuer_pid, "receipt")
+        if _expected_queued_grant(context, issuer_pid, issuer_start_token, target.pid, target.start_token) != expected or _local_socket_peer(duplicate) != credentials:
+            raise AssertionError("the original grant binding or socket sender changed during kernel observation")
+        logger.bind(issuer_pid=issuer_pid, target_pid=target.pid, grant_schema=GRANT_SCHEMA, bytes_observed=len(encoded)).info("Observed the complete consumed grant still queued for the stopped actual receiver")
+        return {
+            "schema": "actual-recovery-queued-grant-v1",
+            "target_id": configuration.target_id,
+            "target_pid": target.pid,
+            "target_start_token": target.start_token,
+            "issuer_pid": issuer_pid,
+            "issuer_start_token": issuer_start_token,
+            "socket_descriptor": descriptor,
+            "socket_device": device,
+            "socket_inode": inode,
+            "peer_credentials": credentials,
+            "grant_schema": GRANT_SCHEMA,
+            "message_sha256": hashlib.sha256(encoded).hexdigest(),
+            "bytes_observed": len(encoded),
+            "grant": expected,
+            "socket_flags_before": flags_before,
+            "socket_flags_after": flags_after,
+            "peek_only": True,
+            "socket_flags_unchanged": True,
+            "bytes_still_queued": True,
+            "receiver_stopped": True,
+            "issuer_alive": True,
+        }
+
+
 @contextmanager
 def pause_target_before_grant(context: NativeNegativeContext, issuer_pid: int) -> Iterator[dict[str, object]]:
     """Hold the actual receiver while the original issuer sends, then dies."""
@@ -670,11 +838,11 @@ def _descriptor_snapshot(pid: int) -> tuple[tuple[int, int, int, str], ...]:
 
 
 def _stopped_receiver(pid: int, start_token: str, pidfd: int, descriptors: tuple[tuple[int, int, int, str], ...]) -> dict[str, object]:
-    """Prove refusal preceded receiver death or any userspace acknowledgment."""
+    """Prove the exact live receiver cannot yet observe userspace messages."""
     poll = select.poll()
     poll.register(pidfd, select.POLLIN)
     if poll.poll(0) or _token(pid) != start_token:
-        raise AssertionError("the receiver lifetime ended before the original issuer refused")
+        raise AssertionError("the receiver lifetime ended before the original boundary observation")
     state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
     if state not in {"T", "t"} or _descriptor_snapshot(pid) != descriptors:
         raise AssertionError("the receipt-free receiver is not still stopped with its exact descriptors")

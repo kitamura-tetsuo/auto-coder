@@ -31,7 +31,7 @@ from typing import Callable
 from scripts.recovery_epoch_containment_fixture import CapturedGeneration, capture_generation, enroll_recovery_scope, selected_file, start_watcher, target_from_container
 from scripts.recovery_epoch_fault_tracer import BOUNDARY_SCENARIOS, PUBLICATIONS, KernelPublicationBarrier, PublicationObservation, parse_boundary
 from scripts.recovery_epoch_native_negatives import REQUIRED_NEGATIVE_CASES, REQUIRED_REPORT_CASES, NativeNegativeContext, _replacement, assert_unreserved_epoch, run_native_negatives, verify_native_containment_reports
-from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_intent, pause_target_before_grant, run_native_peer_cases
+from scripts.recovery_epoch_native_peer import LATE_MUTATION_SCENARIOS, REQUIRED_PEER_CASES, mutate_after_intent, observe_queued_grant, pause_target_before_grant, run_native_peer_cases
 from scripts.test_management_containment_closed_host import InhibitedStockRoutes, WatcherFixture, require_disposable_host
 from scripts.test_management_containment_enrollment_host import DisposableSystemdRoutes, _private_directory, _write_private
 
@@ -45,7 +45,7 @@ from auto_coder.management.original_attempt_evidence import derive_lineage, obse
 from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, canonical, source_identity
 from auto_coder.management.recovery_containment_model import RecoveryWatcher
 from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, AUTHORIZATION_ROOT, AUTHORIZATION_SCHEMA, PEER_ROOT, PEER_SOCKET, EpochAuthorization
-from auto_coder.management.recovery_epoch_consumer import ConsumerConfiguration, OriginalFence, TargetOwner, TransferredResource
+from auto_coder.management.recovery_epoch_consumer import GRANT_SCHEMA, ConsumerConfiguration, OriginalFence, TargetOwner, TransferredResource
 from auto_coder.management.recovery_epoch_state import EPOCH_ROOT, EpochInventory
 from auto_coder.management.self_update_handoff import runtime_for_receipt
 from auto_coder.management.version_staging import ManagementPrepareIntent, ManagementReadyReceipt, ManagementRuntimeConfig, ManagementVersionStager
@@ -87,6 +87,15 @@ def required_cases(scenario: str) -> frozenset[str]:
     if scenario == "grant":
         return REQUIRED_CASES | REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES | REQUIRED_PEER_CASES | ORIGINAL_NEGATIVE_CASES | LINEAGE_REPORT_CASES
     return (REQUIRED_CASES - {"complete-native-epoch-granted", "old-owner-and-controller-contenders-refused", "issuer-death-ended-current-custody", "consumed-epoch-replay-refused", "reservation-barrier-contender-refused"}) | {"native-" + scenario, "interrupted-epoch-replay-refused"}
+
+
+def _fixture_directory() -> Path:
+    """Select a unique private leaf that fits the actual Linux socket paths."""
+    root = FIXTURE_ROOT / uuid.uuid4().hex[:16]
+    sockets = (PEER_SOCKET, *(root / "deployment" / name / "guard" / "fresh-guard.sock" for name in ("A", "B", "C", "D")))
+    if any(len(os.fsencode(path)) > 107 for path in sockets):
+        raise ValueError("the native fixture's original Unix socket pathname exceeds the Linux limit")
+    return root
 
 
 class WorkerFixture(Chain):
@@ -596,6 +605,19 @@ def validate_result(value: dict[str, object]) -> None:
         assert value["durable"]["grant_send_completed"] is (scenario == "lost-reply")
         if scenario == "lost-reply":
             assert value["durable"]["receiver_paused_before_send"] is True and value["durable"]["issuer_died_before_receiver_resumed"] is True
+            original = value["durable"]["native_observation"]
+            queued = value["durable"]["queued_grant"]
+            assert queued["schema"] == "actual-recovery-queued-grant-v1" and queued["grant_schema"] == GRANT_SCHEMA
+            assert all(queued.get(name) is True for name in ("peek_only", "socket_flags_unchanged", "bytes_still_queued", "receiver_stopped", "issuer_alive"))
+            assert queued["bytes_observed"] > 0 and re.fullmatch(r"[0-9a-f]{64}", queued["message_sha256"])
+            packet = queued["grant"]
+            encoded = canonical(packet) + b"\n"
+            assert len(encoded) == queued["bytes_observed"] and hashlib.sha256(encoded).hexdigest() == queued["message_sha256"]
+            assert (packet["schema"], packet["target_id"], packet["host_pid"], packet["host_start_token"]) == (queued["grant_schema"], queued["target_id"], original["issuer_pid"], original["issuer_start_token"])
+            assert queued["socket_inode"] > 0 and queued["socket_flags_before"] == queued["socket_flags_after"]
+            assert all(queued[name] == original[name] for name in ("target_pid", "target_start_token", "issuer_pid", "issuer_start_token"))
+            assert queued["peer_credentials"] == {"pid": original["issuer_pid"], "uid": 0, "gid": 0}
+            assert original["issuer_death_verified_before_receiver_resumed"] is True
 
 
 def _selected_boundary(scenario: str) -> tuple[str, str]:
@@ -623,6 +645,7 @@ def _lost_reply(context: NativeNegativeContext, barrier: KernelPublicationBarrie
             _wait(lambda: "One consumed recovery epoch grant send completed" in issuer_log.read_text(), "actual grant send while its receiver remains kernel-stopped", timeout=1800, process=issuer)
             assert "Recovery custody acknowledged" not in consumer_log.read_text(), "the stopped receiver observed the grant"
             assert _snapshot((EPOCH_ROOT,)) == original_epoch
+            queued = observe_queued_grant(context, issuer.pid, target_pid=observation["target_pid"], target_start_token=observation["target_start_token"], issuer_start_token=observation["issuer_start_token"])
             signal.pidfd_send_signal(descriptor, signal.SIGKILL)
             assert issuer.wait(timeout=30) == -signal.SIGKILL
             assert "Recovery custody acknowledged" not in consumer_log.read_text()
@@ -635,7 +658,7 @@ def _lost_reply(context: NativeNegativeContext, barrier: KernelPublicationBarrie
     assert _snapshot((EPOCH_ROOT,)) == original_epoch
     replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
     assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == original_epoch, "a consumed epoch was reissued after its reply was lost"
-    return {"phase": "receipt", "consumer_grant_acknowledged": False, "grant_send_completed": True, "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True, "native_observation": observation, "epoch_sha256": original_epoch}
+    return {"phase": "receipt", "consumer_grant_acknowledged": False, "grant_send_completed": True, "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True, "native_observation": observation, "queued_grant": queued, "epoch_sha256": original_epoch}
 
 
 def _publication_interruption(scenario: str, observed: PublicationObservation, issuer_log: Path, consumer_log: Path, target: PreparedTarget) -> dict[str, object]:
@@ -825,6 +848,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         if re.fullmatch(r"sha256:[0-9a-f]{64}", os.environ.get(name, "")) is None:
             raise ValueError("an exact already imported fixture image is required: " + name)
     authorization = require_disposable_host(authorization_id)
+    root = _fixture_directory()
     # No resource is provisioned until the original marker selected this VM.
     os.umask(0o077)
     for directory in (FIXTURE_ROOT, EPOCH_ROOT, PEER_ROOT, AUTHORIZATION_ROOT):
@@ -833,7 +857,6 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
     for parent in (Path("/var/lib/auto-coder"), Path("/etc/auto-coder")):
         _private_directory(parent)
     _private_directory(FIXTURE_ROOT)
-    root = FIXTURE_ROOT / uuid.uuid4().hex
     root.mkdir(mode=0o700)
     for directory in (EPOCH_ROOT, PEER_ROOT, AUTHORIZATION_ROOT):
         _private_directory(directory)

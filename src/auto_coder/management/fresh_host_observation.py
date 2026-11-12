@@ -169,21 +169,6 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         raise HostObservationUnavailable("unsupported prior container containment")
     initialized_fresh = False
     allowed_destinations = {"/bootstrap", "/management-child-state", "/management-oauth", "/management-operations", "/management-policy", "/management-versions", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge", "/etc/caddy/Caddyfile"}
-    if not require_owner_lock and not require_deployment_identity and values[15:17] == [["caddy"], ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]]:
-        # The stock Caddy image declares these data volumes. Its explicit
-        # bind-only profile must select the actual private roots, not silently
-        # create Docker volumes or admit executable/configuration overlays.
-        if isinstance(mounts, list):
-            data_roots = [item for item in mounts if isinstance(item, dict) and item.get("Destination") in ("/data", "/config")]
-            if data_roots:
-                if len(data_roots) != 2 or {item.get("Destination") for item in data_roots} != {"/data", "/config"}:
-                    raise HostObservationUnavailable("Caddy data root bindings are incomplete")
-                for item in data_roots:
-                    path = Path(item.get("Source", ""))
-                    info = path.lstat()
-                    if item.get("Type") != "bind" or item.get("RW") is not True or path != path.resolve(strict=True) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                        raise HostObservationUnavailable("Caddy data root binding differs")
-                allowed_destinations.update(("/data", "/config"))
     if require_deployment_identity:
         from .exclusion_host import inherited_support
 

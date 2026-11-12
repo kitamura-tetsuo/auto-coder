@@ -1,4 +1,4 @@
-"""Bounded ordinary genesis predecessor and stock Caddy capture profiles."""
+"""Ordinary genesis predecessors preserve the existing strict Caddy capture."""
 
 from __future__ import annotations
 
@@ -50,23 +50,18 @@ def caddy_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return identifier, image, values, marker
 
 
-def test_stock_caddy_explicit_private_data_binds_are_captured(caddy_profile) -> None:
+def test_original_genesis_proxy_uses_the_existing_single_config_capture(caddy_profile) -> None:
     identifier, image, values, marker = caddy_profile
+    values[11] = values[11][:1]
     expected = tuple((item["Source"], item["Destination"], item["RW"]) for item in values[11])
     assert observation.capture_prior_container(identifier, image, expected_mounts=expected) is marker
 
 
-@pytest.mark.parametrize("mutation", ["partial", "writable-policy", "arbitrary-command", "unprotected-root"])
-def test_caddy_data_profile_cannot_admit_other_mounts(caddy_profile, mutation: str) -> None:
+@pytest.mark.parametrize("extra", ["data", "config", "both"])
+def test_ordinary_predecessor_capture_does_not_admit_stock_data_mounts(caddy_profile, extra: str) -> None:
     identifier, image, values, _ = caddy_profile
-    if mutation == "partial":
-        values[11].pop()
-    elif mutation == "writable-policy":
-        values[11][-1]["RW"] = False
-    elif mutation == "arbitrary-command":
-        values[15] = ["python"]
-    else:
-        Path(values[11][-1]["Source"]).chmod(0o755)
+    if extra != "both":
+        values[11] = [item for item in values[11] if item["Destination"] in {"/etc/caddy/Caddyfile", "/" + extra}]
     expected = tuple((item["Source"], item["Destination"], item["RW"]) for item in values[11])
     with pytest.raises(observation.HostObservationUnavailable):
         observation.capture_prior_container(identifier, image, expected_mounts=expected)

@@ -30,7 +30,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "0.13.6"
+          version: "0.7.22"
       - name: Install locked test dependencies
         run: uv sync --locked --dev --extra test
       - name: Select every independent production scenario
@@ -75,7 +75,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "0.13.6"
+          version: "0.7.22"
       - name: Install locked test dependencies
         run: uv sync --locked --dev --extra test
       - name: Inspect the actual guest acceleration device

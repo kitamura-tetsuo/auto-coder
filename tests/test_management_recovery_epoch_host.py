@@ -55,6 +55,26 @@ def test_unmatched_marker_stops_before_fixture_provisioning(tmp_path: Path, monk
     assert created == [] and not inputs["output"].exists()
 
 
+def test_unique_fixture_leaf_fits_the_actual_original_socket_paths() -> None:
+    first, second = fixture._fixture_directory(), fixture._fixture_directory()
+    assert first.parent == second.parent == fixture.FIXTURE_ROOT and first != second
+    assert len(first.name) == 16 and int(first.name, 16) >= 0
+    for name in ("A", "B", "C", "D"):
+        assert len(os.fsencode(first / "deployment" / name / "guard" / "fresh-guard.sock")) <= 107
+    assert len(os.fsencode(fixture.PEER_SOCKET)) <= 107
+
+
+def test_oversized_socket_path_stops_before_any_original_provisioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(fixture, "require_disposable_host", lambda _: {})
+    monkeypatch.setattr(fixture, "FIXTURE_ROOT", tmp_path / ("long-original-root-" * 8))
+    monkeypatch.setattr(fixture, "_private_directory", lambda _: pytest.fail("oversized socket path reached original provisioning"))
+    monkeypatch.setattr(fixture.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("oversized socket path reached a native effect"))
+    with pytest.raises(ValueError, match="Unix socket pathname exceeds"):
+        fixture.run_fixture(**inputs)
+    assert not inputs["output"].exists()
+
+
 def test_mutable_image_tag_stops_before_host_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inputs = _inputs(tmp_path, monkeypatch)
     monkeypatch.setenv("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:latest")
@@ -275,10 +295,43 @@ def test_native_result_cannot_claim_success_without_preservation(field: str) -> 
         fixture.validate_result(result)
 
 
+def _lost_reply_durable() -> dict[str, object]:
+    lifetimes = {"target_pid": 321, "target_start_token": "12345", "issuer_pid": 654, "issuer_start_token": "54321"}
+    grant = {"schema": fixture.GRANT_SCHEMA, "target_id": "a" * 64, "host_pid": lifetimes["issuer_pid"], "host_start_token": lifetimes["issuer_start_token"]}
+    encoded = canonical(grant) + b"\n"
+    return {
+        "phase": "receipt",
+        "consumer_grant_acknowledged": False,
+        "grant_send_completed": True,
+        "receiver_paused_before_send": True,
+        "issuer_died_before_receiver_resumed": True,
+        "native_observation": {**lifetimes, "issuer_death_verified_before_receiver_resumed": True},
+        "queued_grant": {
+            **lifetimes,
+            "schema": "actual-recovery-queued-grant-v1",
+            "grant_schema": fixture.GRANT_SCHEMA,
+            "target_id": grant["target_id"],
+            "grant": grant,
+            "message_sha256": hashlib.sha256(encoded).hexdigest(),
+            "bytes_observed": len(encoded),
+            "socket_inode": 789,
+            "socket_flags_before": 2048,
+            "socket_flags_after": 2048,
+            "peer_credentials": {"pid": lifetimes["issuer_pid"], "uid": 0, "gid": 0},
+            "peek_only": True,
+            "socket_flags_unchanged": True,
+            "bytes_still_queued": True,
+            "receiver_stopped": True,
+            "issuer_alive": True,
+        },
+    }
+
+
 @pytest.mark.parametrize("scenario,phase", [("kill-after-intent", "intent"), ("kill-after-consume", "consumed"), ("lost-reply", "receipt")])
 def test_interruption_result_requires_the_actual_boundary_and_no_grant(scenario: str, phase: str) -> None:
     result = _result()
-    result.update(scenario=scenario, cases=sorted(fixture.required_cases(scenario)), durable={"phase": phase, "consumer_grant_acknowledged": False, "grant_send_completed": scenario == "lost-reply", "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True})
+    durable = _lost_reply_durable() if scenario == "lost-reply" else {"phase": phase, "consumer_grant_acknowledged": False, "grant_send_completed": False}
+    result.update(scenario=scenario, cases=sorted(fixture.required_cases(scenario)), durable=durable)
     fixture.validate_result(result)
     result["durable"]["consumer_grant_acknowledged"] = True
     with pytest.raises(AssertionError):
@@ -305,10 +358,46 @@ def test_canonical_acceptance_contains_all_distinct_publication_and_late_faults(
 @pytest.mark.parametrize("field", ["grant_send_completed", "receiver_paused_before_send", "issuer_died_before_receiver_resumed"])
 def test_lost_reply_requires_actual_send_before_issuer_death(field: str) -> None:
     result = _result()
-    result.update(scenario="lost-reply", cases=sorted(fixture.required_cases("lost-reply")), durable={"phase": "receipt", "consumer_grant_acknowledged": False, "grant_send_completed": True, "receiver_paused_before_send": True, "issuer_died_before_receiver_resumed": True})
+    result.update(scenario="lost-reply", cases=sorted(fixture.required_cases("lost-reply")), durable=_lost_reply_durable())
     fixture.validate_result(result)
     result["durable"][field] = False
     with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("field", ["peek_only", "socket_flags_unchanged", "bytes_still_queued", "receiver_stopped", "issuer_alive"])
+def test_lost_reply_requires_nonconsuming_current_kernel_observation(field: str) -> None:
+    result = _result()
+    result.update(scenario="lost-reply", cases=sorted(fixture.required_cases("lost-reply")), durable=_lost_reply_durable())
+    fixture.validate_result(result)
+    result["durable"]["queued_grant"][field] = False
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "foreign-peer", "foreign-lifetime", "changed-flags", "empty-queue", "issuer-still-alive", "changed-packet", "foreign-grant"])
+def test_lost_reply_log_cannot_replace_exact_queued_bytes_and_lifetimes(mutation: str) -> None:
+    result = _result()
+    result.update(scenario="lost-reply", cases=sorted(fixture.required_cases("lost-reply")), durable=_lost_reply_durable())
+    if mutation == "missing":
+        result["durable"].pop("queued_grant")
+    elif mutation == "foreign-peer":
+        result["durable"]["queued_grant"]["peer_credentials"]["pid"] += 1
+    elif mutation == "foreign-lifetime":
+        result["durable"]["queued_grant"]["target_start_token"] = "99999"
+    elif mutation == "changed-flags":
+        result["durable"]["queued_grant"]["socket_flags_after"] += 1
+    elif mutation == "empty-queue":
+        result["durable"]["queued_grant"]["bytes_observed"] = 0
+    elif mutation in {"changed-packet", "foreign-grant"}:
+        queued = result["durable"]["queued_grant"]
+        queued["grant"]["target_id"] = "b" * 64
+        if mutation == "foreign-grant":
+            encoded = canonical(queued["grant"]) + b"\n"
+            queued.update(message_sha256=hashlib.sha256(encoded).hexdigest(), bytes_observed=len(encoded))
+    else:
+        result["durable"]["native_observation"]["issuer_death_verified_before_receiver_resumed"] = False
+    with pytest.raises((AssertionError, KeyError)):
         fixture.validate_result(result)
 
 

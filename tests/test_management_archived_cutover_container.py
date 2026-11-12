@@ -190,9 +190,7 @@ class Chain:
 
     def prepare_caddy_image(self) -> str:
         """Use the real pinned Caddy binary with the supported bind-only profile."""
-        if self.original_genesis:
-            return _resolve_fixture_base(os.environ.get("AUTOCODER_RECOVERY_CADDY_IMAGE", "caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489"))
-        source = _resolve_fixture_base("caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
+        source = _resolve_fixture_base(os.environ["AUTOCODER_RECOVERY_CADDY_IMAGE"] if self.original_genesis else "caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
         binary = self.root / "caddy"
         donor = self.docker("create", "--network", "none", source)
         target = None
@@ -498,10 +496,7 @@ class Chain:
         )
 
     def proxy_mounts(self, generation: Generation) -> tuple[tuple[str, str, bool], ...]:
-        mounts = ((str(generation.path("Caddyfile")), "/etc/caddy/Caddyfile", False),)
-        if self.original_genesis:
-            mounts += ((str(generation.path("caddy-data")), "/data", True), (str(generation.path("caddy-config")), "/config", True))
-        return mounts
+        return ((str(generation.path("Caddyfile")), "/etc/caddy/Caddyfile", False),)
 
     @staticmethod
     def _write_proxy_config(root: Path) -> Path:
@@ -514,11 +509,9 @@ class Chain:
     def _create_recovery_proxy(self, generation: Generation) -> None:
         """Create the real paired object before original capture, without start."""
         self._write_proxy_config(generation.root)
-        for name in ("caddy-data", "caddy-config"):
-            generation.path(name).mkdir(mode=0o700)
         name = "original-recovery-proxy-" + uuid.uuid4().hex[:16]
         self.names.append(name)
-        arguments = ["create", "--name", name, "--network", "container:" + generation.container, "--entrypoint", "caddy"]
+        arguments = ["create", "--name", name, "--workdir", "/srv", "--network", "container:" + generation.container, "--entrypoint", "caddy"]
         for source, destination, writable in self.proxy_mounts(generation):
             arguments += ["--mount", f"type=bind,src={source},dst={destination}" + ("" if writable else ",readonly")]
         generation.proxy = self.docker(*arguments, self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")

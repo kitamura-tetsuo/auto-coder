@@ -26,7 +26,9 @@ from scripts.recovery_epoch_native_peer import (
     _descriptor_snapshot,
     _failed_terminal,
     _Iovec,
+    _local_socket_peer,
     _MessageHeader,
+    _peek_queued_packet,
     _stopped_receiver,
     _verify_target_loss,
     mutate_after_intent,
@@ -347,3 +349,67 @@ def test_live_stopped_receiver_oracle_cannot_count_running_or_dead_peer_as_unack
             signal.pidfd_send_signal(descriptor, signal.SIGKILL)
         process.communicate(timeout=10)
         os.close(descriptor)
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_actual_queued_grant_peek_preserves_bytes_and_shared_socket_flags(blocking: bool) -> None:
+    """Use a real duplicate OFD; native VM separately requires pidfd_getfd."""
+    import fcntl
+
+    expected = canonical({"schema": "management-recovery-epoch-grant-v1", "component": "queued-frame"}) + b"\n"
+    with ExitStack() as held:
+        sender, receiver = socket.socketpair()
+        held.enter_context(sender)
+        held.enter_context(receiver)
+        receiver.setblocking(blocking)
+        duplicate = os.dup(receiver.fileno())
+        held.callback(os.close, duplicate)
+        before = fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL)
+        sender.sendall(expected)
+        encoded, observed_before, observed_after = _peek_queued_packet(duplicate, expected)
+        assert encoded == expected and observed_before == observed_after == before
+        assert fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL) == before
+        assert _local_socket_peer(duplicate) == {"pid": os.getpid(), "uid": os.geteuid(), "gid": os.getegid()}
+        # This is the first consuming read. Both native peeks left the whole
+        # original frame available to the intended receiver's own descriptor.
+        assert receiver.recv(len(expected) + 1, socket.MSG_DONTWAIT) == expected
+        with pytest.raises(BlockingIOError):
+            receiver.recv(1, socket.MSG_DONTWAIT)
+
+
+@pytest.mark.parametrize("fault", ["empty", "closed", "partial", "foreign", "additional", "oversized"])
+def test_actual_queued_grant_peek_cannot_substitute_expected_records_for_received_bytes(fault: str) -> None:
+    import fcntl
+
+    expected = canonical({"schema": "management-recovery-epoch-grant-v1", "request_id": "component-request"}) + b"\n"
+    with ExitStack() as held:
+        sender, receiver = socket.socketpair()
+        held.enter_context(sender)
+        held.enter_context(receiver)
+        before = fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL)
+        payload = b""
+        if fault == "closed":
+            sender.close()
+        elif fault == "partial":
+            payload = expected[:-1]
+        elif fault == "foreign":
+            payload = canonical({"schema": "management-recovery-epoch-grant-v1", "request_id": "foreign-request"}) + b"\n"
+        elif fault == "additional":
+            payload = expected + b"unexpected-second-frame\n"
+        elif fault == "oversized":
+            payload = b"x" * (MAX_MESSAGE_BYTES + 1)
+        if payload:
+            sender.sendall(payload)
+        with pytest.raises(AssertionError, match="queued grant|consumed grant"):
+            _peek_queued_packet(receiver.fileno(), expected)
+        assert fcntl.fcntl(receiver.fileno(), fcntl.F_GETFL) == before
+        if payload:
+            assert receiver.recv(MAX_MESSAGE_BYTES + 2, socket.MSG_DONTWAIT) == payload
+
+
+def test_actual_socket_peer_reader_does_not_accept_datagram_transport() -> None:
+    with ExitStack() as held:
+        sender, receiver = socket.socketpair(type=socket.SOCK_DGRAM)
+        held.enter_context(sender)
+        held.enter_context(receiver)
+        assert _local_socket_peer(receiver.fileno()) is None

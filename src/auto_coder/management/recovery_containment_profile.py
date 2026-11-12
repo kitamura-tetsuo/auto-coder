@@ -278,6 +278,9 @@ def validate_proxy_profile(selected: RecoveryOriginal, inspected: dict[str, obje
     if host.get("NetworkMode") != "container:" + selected.management_id or config.get("Entrypoint") != ["caddy"] or config.get("Cmd") != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"] or config.get("WorkingDir") != "/srv":
         raise RecoveryContainmentUnavailable("original recovery proxy command or network differs")
     mounts = bind_mounts(inspected, selected.mounts, expected_uid=expected_uid)
+    effects = {item.destination: item.writable for item in mounts}
+    if effects not in ({"/etc/caddy/Caddyfile": False}, {"/etc/caddy/Caddyfile": False, "/data": True, "/config": True}) or len(effects) != len(mounts):
+        raise RecoveryContainmentUnavailable("original recovery proxy mount effects differ")
     if _mapped_file("/etc/caddy/Caddyfile", mounts, writable=False) != selected.proxy_config.path:
         raise RecoveryContainmentUnavailable("original recovery proxy configuration is not actually mounted")
     for item in mounts:

@@ -45,6 +45,7 @@ from .fresh_host_observation import (
     assert_host_listener_absent,
     assert_prior_network_unreferenced,
     assert_prior_processes_absent,
+    capture_prior_container,
 )
 from .installed_bootstrap_mount_profile import _inspect as _full_inspect
 from .installed_bootstrap_mount_profile import _mounts
@@ -517,7 +518,13 @@ def capture_recovery_original_pair(original: RecoveryOriginal, *, source: str) -
     mounts = _mounts(full)
     manager = _capture_prior_kernel(original.management_id, original.management_image_id, engine, values, mounts, require_owner_lock=True)
     manager = _capture_supervisor_identity(manager, values, mounts, Path(original.bootstrap_config.path))
-    proxy = capture_original_caddy_container(original.proxy_id, original.proxy_image_id, expected_mounts=_mounts(proxy_full))
+    proxy_mounts = _mounts(proxy_full)
+    if tuple(destination for _, destination, _ in proxy_mounts) == ("/etc/caddy/Caddyfile",):
+        # Ordinary cutover and original stock Caddy retain their separate
+        # capture contracts. Recovery composes them without widening either.
+        proxy = capture_prior_container(original.proxy_id, original.proxy_image_id, expected_mounts=proxy_mounts)
+    else:
+        proxy = capture_original_caddy_container(original.proxy_id, original.proxy_image_id, expected_mounts=proxy_mounts)
     if _full_inspect(original.management_id) != full or _full_inspect(original.proxy_id) != proxy_full or _engine_id() != engine or manager.net_namespace != proxy.net_namespace:
         raise RecoveryContainmentUnavailable("recovery original changed during live capture")
     validate_manager_profile(original, full, source=source)
