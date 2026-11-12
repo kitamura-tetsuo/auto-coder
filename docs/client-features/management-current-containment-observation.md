@@ -345,7 +345,23 @@ same kernel object afresh. A saved result does not retain a pin or reserve the
 namespace. Releasing or replacing the holder's FD after the producer exits
 must cause the verifier to refuse.
 
-Both v1 and v2 still retain `kernel-containment` as an independently missing
+For the v3 enrollment, a **separately authorized operator process** also
+acquires and retains an exclusive `flock` on the exact original owner file
+**after** the original manager stops. The enrollment selects that external
+process's PID/start token/boot, open FD and original file device/inode. The
+observer does not acquire a lock: it independently reopens the holder's FD,
+checks a real `FLOCK ADVISORY WRITE` kernel record owned by that exact live
+process, and checks its lifetime and lock again after the kernel scan. A
+second verifier must repeat these observations while the external process
+continues to hold the lock. Releasing the flock, closing/replacing the FD,
+changing the file, terminating the holder or reusing its PID causes refusal.
+An enrollment with no external lock holder now explicitly adds
+`kernel-subcomponent-unfenced`; a file's inode identity alone does not fence
+another controller. A v3 record does not retrospectively establish the
+original manager's prior lock or add historical execution authority. The
+separate fixture holder is test-only and cleans up its exclusive flock.
+
+All v1–v3 enrollments still retain `kernel-containment` as an independently missing
 full-profile condition. A positively pinned subcomponent is **not** a positive
 closed-profile verdict. Unreadable processes, nonleader namespace occupancy, wrong original
 cgroup/owner identities, occupied listeners, replaced prior evidence and

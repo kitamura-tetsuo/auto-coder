@@ -735,6 +735,8 @@ def _assert_pid_flock(pid: int, fence_descriptor: int, mode: str) -> None:
             if fields[4] == str(pid) and identity == target:
                 return
         raise HostObservationUnavailable("replacement does not hold the old owner fence")
+    except HostObservationUnavailable:
+        raise
     except (OSError, ValueError, UnicodeError) as exc:
         raise HostObservationUnavailable("kernel lock evidence unavailable") from exc
 

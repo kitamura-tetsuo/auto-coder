@@ -433,6 +433,8 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
             kernel_subobservation = observe_kernel_subcomponent(approved_enrollment)
             if not kernel_subobservation.external_namespace_pin_verified:
                 unavailable.append(Unavailable("kernel-subcomponent-unpinned", "Current old-cgroup, task-namespace and host-listener checks passed, but the original namespace object is not retained by an independently re-openable pin. These facts cannot establish kernel containment."))
+            if not kernel_subobservation.external_owner_fence_verified:
+                unavailable.append(Unavailable("kernel-subcomponent-unfenced", "The original owner-lock inode was read, but no separately authorized external holder maintained an exclusive kernel flock throughout the read. File identity alone cannot prevent a new owner from launching."))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
     return PrerequisiteReport(

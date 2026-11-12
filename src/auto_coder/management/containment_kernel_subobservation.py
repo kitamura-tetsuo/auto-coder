@@ -19,11 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from .containment_enrollment import EnrollmentObservation, OriginalNetworkPin, _file_identity, _protected
+from .containment_enrollment import EnrollmentObservation, OriginalNetworkPin, OriginalOwnerFencePin, _file_identity, _protected
 from .fresh_host import _evidence
 from .fresh_host_observation import (
     HostObservationUnavailable,
     PriorContainer,
+    _assert_pid_flock,
     _inspect,
     assert_host_listener_absent,
     assert_known_prior_stack_stopped,
@@ -58,6 +59,10 @@ class KernelSubObservation:
     namespace_pin_holder_pid: int = 0
     namespace_pin_holder_start_token: str = ""
     namespace_pin_holder_fd: int = -1
+    external_owner_fence_verified: bool = False
+    owner_fence_holder_pid: int = 0
+    owner_fence_holder_start_token: str = ""
+    owner_fence_holder_fd: int = -1
 
 
 def _holder_start_token(pid: int) -> str:
@@ -118,6 +123,53 @@ def _external_namespace_pin(pin: OriginalNetworkPin, original_namespace: str) ->
             os.close(lifetime)
 
 
+@contextmanager
+def _external_owner_fence(pin: OriginalOwnerFencePin, prior: PriorContainer) -> Iterator[None]:
+    """Read back another process's exclusive flock without taking any lock.
+
+    An approved operator must acquire the fence outside the read-only observer
+    after the original manager has stopped. Both producer and verifier require
+    the external process, exact open file and exclusive kernel flock to survive.
+    """
+    descriptor = None
+    lifetime = None
+    try:
+        if pin.holder_pid == os.getpid() or (pin.device, pin.inode) != (prior.owner_lock_device, prior.owner_lock_inode):
+            raise HostObservationUnavailable("original owner fence is not an independent exact-file pin")
+        if str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip())) != pin.holder_boot_id:
+            raise HostObservationUnavailable("approved owner fence holder boot differs")
+        lifetime = os.pidfd_open(pin.holder_pid, 0)
+        selector = select.poll()
+        selector.register(lifetime, select.POLLIN)
+        target = f"/proc/{pin.holder_pid}/fd/{pin.holder_fd}"
+
+        def check_holder() -> None:
+            if _holder_start_token(pin.holder_pid) != pin.holder_start_token or selector.poll(0):
+                raise HostObservationUnavailable("approved owner fence holder lifetime differs or exited")
+            if descriptor is None:
+                raise HostObservationUnavailable("approved owner fence descriptor is not open")
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (pin.device, pin.inode):
+                raise HostObservationUnavailable("approved owner fence file identity differs")
+            _assert_pid_flock(pin.holder_pid, descriptor, "WRITE")
+            if (os.stat(target).st_dev, os.stat(target).st_ino) != (pin.device, pin.inode):
+                raise HostObservationUnavailable("approved owner fence holder descriptor changed")
+
+        descriptor = os.open(target, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        check_holder()
+        yield
+        check_holder()
+    except HostObservationUnavailable:
+        raise
+    except (OSError, ValueError, IndexError, UnicodeError) as exc:
+        raise HostObservationUnavailable("approved external owner fence cannot be independently verified") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if lifetime is not None:
+            os.close(lifetime)
+
+
 def _owner_lock(prior: PriorContainer) -> tuple[int, int, int, int]:
     """Reopen the exact owner lock by its independently inspected state mount."""
     raw = _inspect(prior.container_id)
@@ -159,7 +211,8 @@ def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObs
         raise HostObservationUnavailable("original lifetime scope differs")
     start = time.monotonic_ns()
     pin = approval.original_network_pin
-    with _external_namespace_pin(pin, management.net_namespace) if pin is not None else nullcontext():
+    owner_pin = approval.original_owner_fence
+    with _external_owner_fence(owner_pin, management) if owner_pin is not None else nullcontext(), _external_namespace_pin(pin, management.net_namespace) if pin is not None else nullcontext():
         first_owner = _owner_lock(management)
         assert_known_prior_stack_stopped(management, proxy)
         assert_prior_network_unreferenced(management.net_namespace)
@@ -195,4 +248,8 @@ def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObs
             namespace_pin_holder_pid=pin.holder_pid if pin is not None else 0,
             namespace_pin_holder_start_token=pin.holder_start_token if pin is not None else "",
             namespace_pin_holder_fd=pin.holder_fd if pin is not None else -1,
+            external_owner_fence_verified=owner_pin is not None,
+            owner_fence_holder_pid=owner_pin.holder_pid if owner_pin is not None else 0,
+            owner_fence_holder_start_token=owner_pin.holder_start_token if owner_pin is not None else "",
+            owner_fence_holder_fd=owner_pin.holder_fd if owner_pin is not None else -1,
         )

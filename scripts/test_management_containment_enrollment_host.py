@@ -9,6 +9,7 @@ kernel *sub-observation* is not positive full-profile containment acceptance.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -20,18 +21,17 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from loguru import logger
 
-from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile, OriginalNetworkPin, observe_approved_enrollment
+from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile, OriginalNetworkPin, OriginalOwnerFencePin, observe_approved_enrollment
 from auto_coder.management.containment_observation import _docker as inspect_complete_docker
 from auto_coder.management.containment_observation import read_scope
 from auto_coder.management.containment_route_manifest import propose_unapproved_route_draft
 from auto_coder.management.fresh_host import _write_evidence
-from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, capture_prior_container
+from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, _assert_pid_flock, capture_prior_container
 from auto_coder.management.installed_bootstrap_source import _REVIEWED_ORDINARY_SOURCE_SHA256
 
 APPROVAL_ROOT = Path("/var/lib/auto-coder/approved-containment-enrollments")
@@ -168,8 +168,12 @@ def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool, pin
             raise AssertionError("kernel component has incomplete original task or listener checks")
         if component.get("external_namespace_pin_verified") is not pinned:
             raise AssertionError("external original namespace pin observation differs")
+        if component.get("external_owner_fence_verified") is not True:
+            raise AssertionError("separate owner process did not retain the original exclusive owner lock")
         if ("kernel-subcomponent-unpinned" in authorities) == pinned:
             raise AssertionError("kernel namespace pin refusal reason differs")
+        if "kernel-subcomponent-unfenced" in authorities:
+            raise AssertionError("externally retained owner lock was incorrectly marked unfenced")
     elif "kernel-subcomponent" not in authorities:
         raise AssertionError("kernel refusal did not identify its unavailable component")
 
@@ -361,6 +365,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
     proxy_name = fixture_id + "-proxy"
     created_containers: list[str] = []
     namespace_pin_fd: int | None = None
+    owner_fence_fd: int | None = None
     systemd_fixture: DisposableSystemdRoutes | None = None
     try:
         logger.add(sys.stdout, level="INFO", format="{time} | {level} | {message}")
@@ -446,6 +451,16 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
         (private / "bootstrap-source").chmod(0o600)
         _docker("stop", "--time", "1", proxy, timeout=25)
         _docker("stop", "--time", "1", manager, timeout=25)
+        # Test-only, externally held owner fence. The observer never takes a
+        # flock or starts/stops a process; its two subprocesses inspect the
+        # exact kernel lock and holder independently throughout each scan.
+        owner_fence_fd = os.open(state / ".supervisor-owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fcntl.flock(owner_fence_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fence_stat = os.fstat(owner_fence_fd)
+        if (fence_stat.st_dev, fence_stat.st_ino) != (prior_manager.owner_lock_device, prior_manager.owner_lock_inode):
+            raise AssertionError("disposable original owner file differs")
+        _assert_pid_flock(os.getpid(), owner_fence_fd, "WRITE")
+        owner_pin = OriginalOwnerFencePin(os.getpid(), pin_holder_start, pin.holder_boot_id, owner_fence_fd, fence_stat.st_dev, fence_stat.st_ino)
         evidence_dir = private / "captured"
         evidence_dir.mkdir(mode=0o700)
         prior_digest = _write_evidence(evidence_dir, {"management": asdict(prior_manager), "proxy": asdict(prior_proxy)})
@@ -461,7 +476,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
             )
         )
         approved = ApprovedEnrollment(
-            "approved-current-containment-enrollment-v2",
+            "approved-current-containment-enrollment-v3",
             fixture_id,
             fixture_id,
             "test-only-" + fixture_id,
@@ -476,6 +491,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
             prior_digest,
             True,
             pin,
+            owner_pin,
         )
         _write_private(enrollment_file, json.dumps(asdict(approved), sort_keys=True).encode())
         scope = private / "scope.json"
@@ -566,6 +582,14 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
             conflict = _verify_expected(scope, previous, {"kernel-subcomponent", "saved-report:kernel_subobservation"})
             _assert_kernel_subcomponent(conflict, present=False)
         logger.info("Real loopback listener on the disposable published port caused kernel refusal; it was released")
+        # Releasing only the external owner flock makes the saved evidence
+        # invalid even while the original namespace pin remains alive.
+        fcntl.flock(owner_fence_fd, fcntl.LOCK_UN)
+        os.close(owner_fence_fd)
+        owner_fence_fd = None
+        unfenced = _verify_expected(scope, previous, {"kernel-subcomponent", "saved-report:kernel_subobservation"})
+        _assert_kernel_subcomponent(unfenced, present=False)
+        logger.info("Released the disposable original exclusive owner flock; separate consumer rejected the unfenced state")
         # The previous positive kernel component cannot outlive its externally
         # owned pin: closing the one real FD must invalidate the later consumer.
         os.close(namespace_pin_fd)
@@ -585,6 +609,8 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, exercise_disposab
             systemd_fixture.cleanup()
         if namespace_pin_fd is not None:
             os.close(namespace_pin_fd)
+        if owner_fence_fd is not None:
+            os.close(owner_fence_fd)
         for container in reversed(created_containers):
             subprocess.run(("docker", "rm", "-f", container), capture_output=True, check=False, timeout=30)
         if enrollment_file.exists():

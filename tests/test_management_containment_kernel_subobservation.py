@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import asdict
+import subprocess
+import sys
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from auto_coder.management import containment_kernel_subobservation as kernel
-from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation, OriginalNetworkPin
+from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation, OriginalNetworkPin, OriginalOwnerFencePin
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, PriorTask
 
 
@@ -133,4 +136,58 @@ def test_real_live_namespace_fd_is_independently_opened_then_released() -> None:
         os.close(original)
     with pytest.raises(HostObservationUnavailable, match="namespace pin"):
         with kernel._external_namespace_pin(pin, link):
+            pass
+
+
+def test_real_external_owner_flock_requires_a_distinct_live_holder(tmp_path: Path) -> None:
+    lock = tmp_path / "original-owner.lock"
+    lock.write_bytes(b"")
+    holder_code = "\n".join(
+        (
+            "import fcntl, json, os, sys",
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_NOFOLLOW)",
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+            "info = os.fstat(fd)",
+            "token = open('/proc/self/stat', encoding='ascii').read().rsplit(')', 1)[1].split()[19]",
+            "boot = open('/proc/sys/kernel/random/boot_id', encoding='ascii').read().strip()",
+            "print(json.dumps({'pid':os.getpid(), 'fd':fd, 'token':token, 'boot':boot, 'device':info.st_dev, 'inode':info.st_ino}), flush=True)",
+            "sys.stdin.read(1)",
+            "fcntl.flock(fd, fcntl.LOCK_UN)",
+            "print('released', flush=True)",
+            "sys.stdin.read(1)",
+        )
+    )
+    process = subprocess.Popen((sys.executable, "-c", holder_code, str(lock)), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout is not None and process.stdin is not None
+        data = json.loads(process.stdout.readline())
+        pin = OriginalOwnerFencePin(data["pid"], data["token"], data["boot"], data["fd"], data["device"], data["inode"])
+        prior = replace(_prior(True), owner_lock_device=data["device"], owner_lock_inode=data["inode"])
+        with kernel._external_owner_fence(pin, prior):
+            assert process.poll() is None
+        with pytest.raises(HostObservationUnavailable, match="independent exact-file"):
+            with kernel._external_owner_fence(replace(pin, holder_pid=os.getpid()), prior):
+                pass
+        with pytest.raises(HostObservationUnavailable, match="holder lifetime"):
+            with kernel._external_owner_fence(replace(pin, holder_start_token=str(int(pin.holder_start_token) + 1)), prior):
+                pass
+        with pytest.raises(HostObservationUnavailable, match="independent exact-file"):
+            with kernel._external_owner_fence(replace(pin, inode=pin.inode + 1), prior):
+                pass
+        with pytest.raises(HostObservationUnavailable, match="does not hold the old owner fence"):
+            with kernel._external_owner_fence(pin, prior):
+                process.stdin.write("r")
+                process.stdin.flush()
+                assert process.stdout.readline().strip() == "released"
+    finally:
+        if process.stdin is not None and process.poll() is None:
+            process.stdin.write("q")
+            process.stdin.flush()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=5)
+    with pytest.raises(HostObservationUnavailable, match="external owner fence"):
+        with kernel._external_owner_fence(pin, prior):
             pass

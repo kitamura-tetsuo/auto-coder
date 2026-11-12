@@ -101,6 +101,43 @@ class OriginalNetworkPin:
 
 
 @dataclass(frozen=True)
+class OriginalOwnerFencePin:
+    """Select an independently held exclusive lock on the original owner file.
+
+    The external holder is an operator-controlled, separately authorized
+    process. Observation never acquires or changes the owner lock itself.
+    """
+
+    holder_pid: int
+    holder_start_token: str
+    holder_boot_id: str
+    holder_fd: int
+    device: int
+    inode: int
+
+    @classmethod
+    def parse(cls, value: object) -> OriginalOwnerFencePin:
+        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            raise EnrollmentUnavailable("approved owner fence pin schema differs")
+        if type(value["holder_pid"]) is not int or not 1 < value["holder_pid"] <= 2147483647:
+            raise EnrollmentUnavailable("approved owner fence holder PID differs")
+        if type(value["holder_fd"]) is not int or not 0 <= value["holder_fd"] <= 1048576:
+            raise EnrollmentUnavailable("approved owner fence holder descriptor differs")
+        token = value["holder_start_token"]
+        if not isinstance(token, str) or not re.fullmatch(r"[1-9][0-9]{0,23}", token):
+            raise EnrollmentUnavailable("approved owner fence holder lifetime differs")
+        try:
+            boot = str(uuid.UUID(value["holder_boot_id"]))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise EnrollmentUnavailable("approved owner fence holder boot identity differs") from exc
+        if value["holder_boot_id"] != boot:
+            raise EnrollmentUnavailable("approved owner fence holder boot identity differs")
+        if any(type(value[name]) is not int or value[name] <= 0 for name in ("device", "inode")):
+            raise EnrollmentUnavailable("approved owner fence kernel identity differs")
+        return cls(value["holder_pid"], token, boot, value["holder_fd"], value["device"], value["inode"])
+
+
+@dataclass(frozen=True)
 class ApprovedEnrollment:
     schema: str
     deployment_id: str
@@ -117,6 +154,7 @@ class ApprovedEnrollment:
     original_prior_evidence_sha256: str
     approved_observation_only: bool
     original_network_pin: OriginalNetworkPin | None = None
+    original_owner_fence: OriginalOwnerFencePin | None = None
 
     @classmethod
     def parse(cls, value: object) -> ApprovedEnrollment:
@@ -124,12 +162,19 @@ class ApprovedEnrollment:
             raise EnrollmentUnavailable("approved enrollment schema differs")
         keys = set(cls.__dataclass_fields__)
         schema = value.get("schema")
-        if schema == "approved-current-containment-enrollment-v1" and set(value) in (keys, keys - {"original_network_pin"}):
-            if value.get("original_network_pin") is not None:
-                raise EnrollmentUnavailable("legacy approval cannot carry a namespace pin")
+        if schema == "approved-current-containment-enrollment-v1" and keys - {"original_network_pin", "original_owner_fence"} <= set(value) <= keys:
+            if value.get("original_network_pin") is not None or value.get("original_owner_fence") is not None:
+                raise EnrollmentUnavailable("legacy approval cannot carry a kernel pin")
             network_pin = None
-        elif schema == "approved-current-containment-enrollment-v2" and set(value) == keys:
+            owner_pin = None
+        elif schema == "approved-current-containment-enrollment-v2" and set(value) in (keys, keys - {"original_owner_fence"}):
+            if value.get("original_owner_fence") is not None:
+                raise EnrollmentUnavailable("v2 approval cannot carry an owner fence pin")
             network_pin = OriginalNetworkPin.parse(value["original_network_pin"])
+            owner_pin = None
+        elif schema == "approved-current-containment-enrollment-v3" and set(value) == keys:
+            network_pin = OriginalNetworkPin.parse(value["original_network_pin"])
+            owner_pin = OriginalOwnerFencePin.parse(value["original_owner_fence"])
         else:
             raise EnrollmentUnavailable("approved enrollment schema differs")
         if value["approved_observation_only"] is not True:
@@ -181,6 +226,7 @@ class ApprovedEnrollment:
             evidence_sha,
             True,
             network_pin,
+            owner_pin,
         )
 
 

@@ -19,6 +19,7 @@ from auto_coder.management.containment_enrollment import (
     EnrollmentUnavailable,
     OriginalFile,
     OriginalNetworkPin,
+    OriginalOwnerFencePin,
     _observe_approved_enrollment,
     observe_approved_enrollment,
 )
@@ -149,6 +150,30 @@ def test_protected_v2_reader_binds_external_namespace_pin_without_claiming_it_is
                 _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
 
         forged = replace(enrollment, original_network_pin=pin)
+        path.write_text(json.dumps(asdict(forged), sort_keys=True))
+        with pytest.raises(EnrollmentUnavailable, match="cannot be decoded"):
+            _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
+
+
+def test_protected_v3_reader_requires_both_external_kernel_pins() -> None:
+    with _approved_fixture() as (root, enrollment, selection):
+        boot = "00000000-0000-0000-0000-000000000001"
+        network = OriginalNetworkPin(123, "456", boot, 7, "net:[2222]", 8, 2222)
+        owner = OriginalOwnerFencePin(123, "456", boot, 9, 1, 4)
+        approved = replace(enrollment, schema="approved-current-containment-enrollment-v3", original_network_pin=network, original_owner_fence=owner)
+        path = root / "fixture-enrollment.json"
+        path.write_text(json.dumps(asdict(approved), sort_keys=True))
+        assert _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid()).enrollment == approved
+
+        for field, invalid in (("holder_pid", 0), ("holder_fd", -1), ("holder_start_token", "0"), ("holder_boot_id", "fake"), ("device", 0), ("inode", 0)):
+            changed = asdict(approved)
+            changed["original_owner_fence"][field] = invalid
+            path.write_text(json.dumps(changed, sort_keys=True))
+            with pytest.raises(EnrollmentUnavailable, match="cannot be decoded"):
+                _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
+
+        # A formerly supported v2 record cannot silently acquire v3 authority.
+        forged = replace(approved, schema="approved-current-containment-enrollment-v2")
         path.write_text(json.dumps(asdict(forged), sort_keys=True))
         with pytest.raises(EnrollmentUnavailable, match="cannot be decoded"):
             _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
