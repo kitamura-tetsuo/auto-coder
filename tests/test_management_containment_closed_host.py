@@ -680,7 +680,7 @@ def test_quarantine_variant_never_starts_when_its_own_supported_control_fails(tm
             raise AssertionError("required real approval failed")
 
     monkeypatch.setattr(quarantine, "prepare_quarantine", prepare)
-    monkeypatch.setattr(fixture, "_quarantine_case", lambda *args: control_case)
+    monkeypatch.setattr(fixture, "_quarantine_case", lambda *args, **kwargs: control_case)
     monkeypatch.setattr(fixture, "_close_and_approve", approve)
     original = SimpleNamespace(prior_evidence=tmp_path / "actual-prior.json", prior_manager=object(), state=tmp_path)
     template = SimpleNamespace(prior=SimpleNamespace(published_port=19001), image_id="sha256:" + "a" * 64)
@@ -764,3 +764,21 @@ def test_control_cleanup_releases_owned_fence_even_when_runtime_cleanup_refuses(
     assert case.owner_fd == -1
     with pytest.raises(OSError):
         os.fstat(descriptor)
+
+
+def test_quarantine_start_failure_keeps_actual_artifacts_before_case_exists(tmp_path: Path) -> None:
+    evidence = tmp_path / "bootstrap-start-failure.json"
+    artifacts: list[Path] = []
+    groups: list[list[Path]] = []
+
+    def fail_capture() -> object:
+        evidence.write_text('{"failure_type":"TimeoutError","captured_before_cleanup":true}\n')
+        artifacts.append(evidence)
+        raise TimeoutError("actual guard request was not received")
+
+    prepared = SimpleNamespace(artifacts=artifacts, start_and_capture=fail_capture)
+    with pytest.raises(TimeoutError, match="guard request"):
+        fixture._quarantine_case(prepared, object(), tmp_path / "worker.json", artifact_groups=groups)
+    assert groups == [[evidence]]
+    assert groups[0] is artifacts
+    assert json.loads(groups[0][0].read_text()) == {"failure_type": "TimeoutError", "captured_before_cleanup": True}

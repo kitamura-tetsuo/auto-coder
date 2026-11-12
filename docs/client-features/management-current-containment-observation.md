@@ -386,6 +386,21 @@ installed runtime using the published tested-source record, public GitHub
 readback and synthetic OAuth; no fake READY receipt or bootstrap substitution is
 accepted as original-source evidence.
 
+The intent is created and immediately read back by the pinned original image's
+own initialization writer and reader, with both initialization and bootstrap
+module hashes checked first. Its explicit original input fields and serialized
+readback must match; a newer intent format cannot stand in for that version's
+wire contract. The claim helper binds only its new fixture state as writable and
+the new journal/OAuth roots as read-only at their actual host paths. The original
+bootstrap still performs its normal validation, publishes its own supervisor
+identity and reaches the genuine unanswered guard request.
+
+If startup or live capture fails, the helper retains a bounded actual bootstrap
+log tail and allowlisted Docker identity/state before its container is removed.
+The driver registers these artifacts before a complete case exists, so failure
+cleanup cannot discard the only startup diagnosis. Neither this diagnostic nor
+an intent readback is a successful containment observation.
+
 Before the full-profile approvals, a separately owned native systemd probe checks
 a local absolute alias to the actual protected OS shell. Direct packaged-program
 and bounded packaged-shell controls must first pass. The real helper is then

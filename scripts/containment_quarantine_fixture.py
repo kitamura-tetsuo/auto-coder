@@ -32,7 +32,6 @@ from auto_coder.management.containment_kernel_subobservation import _holder_star
 from auto_coder.management.docker_inspection import canonical_legacy_inspection
 from auto_coder.management.fresh_host import _evidence
 from auto_coder.management.fresh_host_observation import PriorContainer, _capture_prior_kernel, _capture_supervisor_identity, _engine_id, _inspect
-from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization
 from auto_coder.management.fresh_oauth import validate_retained_oauth
 from auto_coder.management.installed_bootstrap_mount_profile import _inspect as _profile_inspect
 from auto_coder.management.installed_bootstrap_mount_profile import _mounts as _profile_mounts
@@ -84,6 +83,64 @@ stager=configured_management_stager(settings,config)
 ready=stager.prepare(ManagementPrepareIntent(sys.argv[1],'containment-fixture')).receipt
 runtime=runtime_for_receipt(config,ready)
 print(json.dumps({'receipt':asdict(ready),'runtime':{**asdict(runtime),'environment':dict(runtime.environment)}},default=str,sort_keys=True))
+"""
+
+
+_ORIGINAL_INTENT_SOURCE_SHA256 = "7ea42ce9320aaa8a677e5e4dd65b28157b0d8bd568da62e885ecf3c91b6a148e"
+_ORIGINAL_INTENT_REQUIRED_FIELDS = frozenset(
+    [
+        "request_id",
+        "old_instance",
+        "old_container_id",
+        "new_instance",
+        "new_container_id",
+        "prior_evidence_sha256",
+        "owner_lock_device",
+        "owner_lock_inode",
+        "host_listener_port",
+        "bootstrap_config_sha256",
+        "management_config_sha256",
+        "image_digest",
+        "executable_sha256",
+        "application_sha256",
+        "runtime_reference",
+        "state_root",
+        "journal_root",
+        "oauth_root",
+        "host_state_root",
+        "host_journal_root",
+        "host_oauth_root",
+        "state_device",
+        "state_inode",
+        "journal_device",
+        "journal_inode",
+        "oauth_device",
+        "oauth_inode",
+        "guard_device",
+        "guard_inode",
+    ]
+)
+_ORIGINAL_INTENT_DEFAULTS = {"host_prior_journal_root": "", "prior_journal_root": "", "prior_journal_device": 0, "prior_journal_inode": 0}
+_CLAIM_ORIGINAL_INTENT = """import hashlib,json,sys
+from pathlib import Path
+import auto_coder
+from auto_coder.management import fresh_initialization as original
+application=Path(auto_coder.__file__).resolve(strict=True).parent
+source_sha256=hashlib.sha256(Path(original.__file__).read_bytes()).hexdigest()
+bootstrap_sha256=hashlib.sha256((application/'management/bootstrap_supervisor.py').read_bytes()).hexdigest()
+if source_sha256 != sys.argv[1] or bootstrap_sha256 != sys.argv[2]:
+    raise ValueError('original initialization source differs')
+raw=json.loads(sys.argv[3])
+optional={'host_prior_journal_root','prior_journal_root','prior_journal_device','prior_journal_inode'}
+if not isinstance(raw,dict) or set(raw) != set(original.FreshInitializationIntent.__dataclass_fields__)-optional:
+    raise ValueError('original intent input fields differ')
+intent=original.FreshInitializationIntent(**raw)
+root=Path(intent.host_state_root)
+claimed=original.claim_fresh_initialization(root,intent)
+loaded,readback=original.load_fresh_initialization(root,host=True)
+if loaded != intent or readback != claimed:
+    raise ValueError('original intent claim readback differs')
+print(json.dumps({'intent_sha256':claimed,'request_id':intent.request_id,'new_container_id':intent.new_container_id,'intent_source_sha256':source_sha256,'bootstrap_source_sha256':bootstrap_sha256},sort_keys=True))
 """
 
 
@@ -188,6 +245,7 @@ class PreparedQuarantine:
     prior: PriorContainer | None = None
     stopped: bool = False
     variant: str = "supported"
+    artifacts: list[Path] = field(default_factory=list)
 
     def _capture_negative_variant(self) -> PriorContainer:
         """Record actual unsupported input, without granting a supported profile.
@@ -256,6 +314,16 @@ class PreparedQuarantine:
 
     def start_and_capture(self) -> PriorContainer:
         """Capture only after the pinned bootstrap reaches its actual grant RPC."""
+        try:
+            return self._start_and_capture()
+        except BaseException as error:
+            try:
+                self._record_start_failure(error)
+            except BaseException as capture_error:
+                logger.warning("Quarantine start diagnostics unavailable: {}", type(capture_error).__name__)
+            raise
+
+    def _start_and_capture(self) -> PriorContainer:
         if self.prior is not None or self.stopped:
             raise RuntimeError("the quarantined fixture lifetime cannot be replayed")
         self.docker("start", self.manager_id)
@@ -274,6 +342,34 @@ class PreparedQuarantine:
         self.prior = prior
         logger.info("Captured exact quarantined owner at its ungranted fresh request: {}", self.manager_id)
         return prior
+
+    def _record_start_failure(self, error: BaseException) -> None:
+        """Retain bounded actual failure evidence before owned container cleanup."""
+        report: dict[str, object] = {"schema": "quarantined-original-start-failure-v1", "exception_category": type(error).__name__, "requested_container_id": self.manager_id, "requested_image_id": self.image_id}
+        try:
+            observed = json.loads(self.docker("inspect", "--type", "container", "--format", '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}}}', self.manager_id))
+            state = observed.get("State")
+            if not isinstance(state, dict):
+                raise ValueError("Docker state is unavailable")
+            allowed = ("Status", "Running", "Paused", "Restarting", "OOMKilled", "Dead", "Pid", "ExitCode", "Error", "StartedAt", "FinishedAt")
+            report["docker"] = {"Id": observed.get("Id"), "Image": observed.get("Image"), "State": {key: state[key] for key in allowed if key in state}}
+        except BaseException as readback_error:
+            report["docker_readback_error"] = type(readback_error).__name__
+        log_path = self.state_root / "logs" / "management-bootstrap.log"
+        try:
+            descriptor = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("bootstrap diagnostic log is not regular")
+                stream.seek(max(0, info.st_size - 65536))
+                tail = stream.read(65536)
+            report["bootstrap_log"] = {"path": str(log_path), "file_size": info.st_size, "tail_bytes": len(tail), "truncated": info.st_size > len(tail), "tail_sha256": hashlib.sha256(tail).hexdigest(), "text": tail.decode("utf-8", errors="replace")}
+        except BaseException as log_error:
+            report["bootstrap_log_error"] = type(log_error).__name__
+        path = self.root / "start-failure.json"
+        _write_private(path, json.dumps(report, sort_keys=True).encode())
+        self.artifacts.append(path)
 
     def stop(self) -> None:
         """Kill only this disposable held owner; keep its Docker object to read."""
@@ -306,6 +402,55 @@ def _mount_arguments(mounts: tuple[tuple[str, str, bool], ...]) -> list[str]:
     for source, destination, writable in mounts:
         result.extend(("--mount", f"type=bind,src={source},dst={destination}" + ("" if writable else ",readonly")))
     return result
+
+
+def _claim_original_intent(*, docker: DockerRunner, image_id: str, state: Path, journal: Path, oauth: Path, intent: dict[str, object]) -> dict[str, str]:
+    """Let the exact original producer claim its supported wire format once."""
+    if set(intent) != _ORIGINAL_INTENT_REQUIRED_FIELDS:
+        raise ValueError("original fixture intent requires its exact original input fields")
+    if len(image_id) != 71 or not image_id.startswith("sha256:") or any(char not in "0123456789abcdef" for char in image_id[7:]) or intent["image_digest"] != image_id:
+        raise ValueError("original intent image must match the immutable manager image")
+    if any(intent[key] != str(path) for key, path in (("host_state_root", state), ("host_journal_root", journal), ("host_oauth_root", oauth))):
+        raise ValueError("original intent host roots differ from the fixture")
+    output = docker(
+        "run",
+        "--rm",
+        "--read-only",
+        "--network",
+        "none",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        *_mount_arguments(((str(state), str(state), True), (str(journal), str(journal), False), (str(oauth), str(oauth), False))),
+        "--entrypoint",
+        "python",
+        image_id,
+        "-c",
+        _CLAIM_ORIGINAL_INTENT,
+        _ORIGINAL_INTENT_SOURCE_SHA256,
+        _REVIEWED_QUARANTINED_SOURCE_SHA256,
+        json.dumps(intent, sort_keys=True, separators=(",", ":")),
+    )
+    reply = json.loads(output.splitlines()[-1])
+    claim_path = state / "fresh-initialization.json"
+    before = claim_path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) != 0o600:
+        raise ValueError("original intent claim is not protected")
+    content = claim_path.read_bytes()
+    after = claim_path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError("original intent claim changed during readback")
+    expected = json.dumps({**intent, **_ORIGINAL_INTENT_DEFAULTS}, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(content).hexdigest()
+    report = {
+        "intent_sha256": digest,
+        "request_id": str(intent["request_id"]),
+        "new_container_id": str(intent["new_container_id"]),
+        "intent_source_sha256": _ORIGINAL_INTENT_SOURCE_SHA256,
+        "bootstrap_source_sha256": _REVIEWED_QUARANTINED_SOURCE_SHA256,
+    }
+    if content != expected or reply != report:
+        raise ValueError("original producer claim differs from exact host readback")
+    return {**report, "wire_json": content.decode("utf-8")}
 
 
 def prepare_quarantine(
@@ -522,40 +667,44 @@ def prepare_quarantine(
     )
     try:
         s, j, o, g = (directory.stat() for directory in (state, journal, oauth, guard_root))
-        intent = FreshInitializationIntent(
-            str(uuid.uuid4()),
-            predecessor.instance_id,
-            predecessor.container_id,
-            instance_id,
-            container_id,
-            evidence_digest,
-            lock_info.st_dev,
-            lock_info.st_ino,
-            host_listener_port,
-            hashlib.sha256(config_path.read_bytes()).hexdigest(),
-            hashlib.sha256(management_path.read_bytes()).hexdigest(),
-            image_id,
-            ready["python_executable_sha256"],
-            probe["application_sha256"],
-            ready["management_runtime_id"],
-            "/management-child-state",
-            "/management-operations",
-            "/management-oauth",
-            str(state),
-            str(journal),
-            str(oauth),
-            s.st_dev,
-            s.st_ino,
-            j.st_dev,
-            j.st_ino,
-            o.st_dev,
-            o.st_ino,
-            g.st_dev,
-            g.st_ino,
-        )
-        digest = claim_fresh_initialization(state, intent)
-        guard = HeldFreshGuard(guard_root / "fresh-guard.sock", request_id=intent.request_id, intent_sha256=digest, container_id=container_id)
-        return PreparedQuarantine(root, container_id, image_id, config_path, management_path, state, journal, oauth, mounts, support, guard, docker, variant=variant)
+        request_id = str(uuid.uuid4())
+        intent: dict[str, object] = {
+            "request_id": request_id,
+            "old_instance": predecessor.instance_id,
+            "old_container_id": predecessor.container_id,
+            "new_instance": instance_id,
+            "new_container_id": container_id,
+            "prior_evidence_sha256": evidence_digest,
+            "owner_lock_device": lock_info.st_dev,
+            "owner_lock_inode": lock_info.st_ino,
+            "host_listener_port": host_listener_port,
+            "bootstrap_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+            "management_config_sha256": hashlib.sha256(management_path.read_bytes()).hexdigest(),
+            "image_digest": image_id,
+            "executable_sha256": ready["python_executable_sha256"],
+            "application_sha256": probe["application_sha256"],
+            "runtime_reference": ready["management_runtime_id"],
+            "state_root": "/management-child-state",
+            "journal_root": "/management-operations",
+            "oauth_root": "/management-oauth",
+            "host_state_root": str(state),
+            "host_journal_root": str(journal),
+            "host_oauth_root": str(oauth),
+            "state_device": s.st_dev,
+            "state_inode": s.st_ino,
+            "journal_device": j.st_dev,
+            "journal_inode": j.st_ino,
+            "oauth_device": o.st_dev,
+            "oauth_inode": o.st_ino,
+            "guard_device": g.st_dev,
+            "guard_inode": g.st_ino,
+        }
+        claim = _claim_original_intent(docker=docker, image_id=image_id, state=state, journal=journal, oauth=oauth, intent=intent)
+        claim_evidence = root / "original-intent-claim.json"
+        _write_private(claim_evidence, json.dumps({"schema": "original-quarantine-intent-claim-v1", "image_id": image_id, "wire_fields": sorted((*intent, *_ORIGINAL_INTENT_DEFAULTS)), **claim}, sort_keys=True).encode())
+        logger.info("Claimed original fresh intent {} using reviewed source {}", request_id, _ORIGINAL_INTENT_SOURCE_SHA256)
+        guard = HeldFreshGuard(guard_root / "fresh-guard.sock", request_id=request_id, intent_sha256=claim["intent_sha256"], container_id=container_id)
+        return PreparedQuarantine(root, container_id, image_id, config_path, management_path, state, journal, oauth, mounts, support, guard, docker, variant=variant, artifacts=[claim_evidence])
     except BaseException:
         docker("rm", "--force", container_id)
         raise

@@ -877,7 +877,10 @@ def _namespace_pin(prior: PriorContainer) -> tuple[int, OriginalNetworkPin]:
         raise
 
 
-def _quarantine_case(prepared: PreparedQuarantine, worker: subprocess.Popen[str], worker_config: Path) -> Case:
+def _quarantine_case(prepared: PreparedQuarantine, worker: subprocess.Popen[str], worker_config: Path, *, artifact_groups: list[list[Path]] | None = None) -> Case:
+    if artifact_groups is not None:
+        # Keep the live list before capture, which can fail before Case exists.
+        artifact_groups.append(prepared.artifacts)
     prior = prepared.start_and_capture()
     descriptor, pin = _namespace_pin(prior)
     try:
@@ -1510,6 +1513,7 @@ def _quarantine_variant_pair(
     cron_dispatch: CronDispatchFixture,
     custom_cron: MaskedCronController,
     cases: list[Case],
+    artifact_groups: list[list[Path]] | None = None,
 ) -> dict[str, object]:
     """Run a fresh genuine supported control before one immutable-input fault."""
     from scripts.containment_quarantine_fixture import NEGATIVE_VARIANTS, prepare_quarantine
@@ -1533,7 +1537,7 @@ def _quarantine_variant_pair(
         )
 
     def capture(prepared: PreparedQuarantine) -> Case:
-        case = _quarantine_case(prepared, worker, worker_config)
+        case = _quarantine_case(prepared, worker, worker_config, artifact_groups=artifact_groups)
         case.stock_routes, case.cron_dispatch, case.custom_cron = stock_routes, cron_dispatch, custom_cron
         case.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
         cases.append(case)
@@ -1759,6 +1763,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     cron_dispatch: CronDispatchFixture | None = None
     custom_cron: MaskedCronController | None = None
     stock_evidence: list[Path] = []
+    prepared_artifacts: list[list[Path]] = []
     completed_profiles: list[str] = []
     refused_variants: list[str] = []
     variant_pairs: list[dict[str, object]] = []
@@ -1813,7 +1818,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 ) as prepared,
                 ExitStack() as cleanup,
             ):
-                case = _quarantine_case(prepared, worker, worker_config)
+                case = _quarantine_case(prepared, worker, worker_config, artifact_groups=prepared_artifacts)
                 case.stock_routes = stock_routes
                 case.cron_dispatch = cron_dispatch
                 case.custom_cron = custom_cron
@@ -1844,6 +1849,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                     cron_dispatch=cron_dispatch,
                     custom_cron=custom_cron,
                     cases=cases,
+                    artifact_groups=prepared_artifacts,
                 )
                 variant_pairs.append(paired)
                 refused_variants.append(variant)
@@ -1879,7 +1885,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 cleanup_errors.append(type(exc).__name__ + ": " + str(exc))
         worker.terminate()
         worker.wait(timeout=15)
-        result["artifact_paths"] = [str(path) for case in cases for path in case.artifacts] + [str(path) for path in stock_evidence] + [str(root / "test.log")]
+        result["artifact_paths"] = [str(path) for case in cases for path in case.artifacts] + [str(path) for group in prepared_artifacts for path in group] + [str(path) for path in stock_evidence] + [str(root / "test.log")]
         if cleanup_errors:
             result["cleanup_errors"] = cleanup_errors
             result["status"] = "failed"
