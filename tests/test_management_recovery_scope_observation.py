@@ -8,10 +8,13 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import http.server
 import json
 import os
+import socketserver
 import subprocess
 import sys
+import threading
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
@@ -57,6 +60,7 @@ class ScopeFixture:
     root: Path
     raw: dict
     inspections: dict
+    exec_inspections: dict
     holder: subprocess.Popen
     enrollment_path: Path
     producers: list[tuple[int, int]] = field(default_factory=list)
@@ -130,7 +134,16 @@ def scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "target": pairs[2],
             "watchers": [{"manager_id": pair["manager_id"], "config_path": str(config), "config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(), "lock": selection(index + 2)} for index, (pair, config) in enumerate(zip(pairs, configs))],
         }
-        fixture = ScopeFixture(tmp_path, raw, inspections, holder, enrollment_root / "fixture.json")
+        exec_inspections = {
+            identity: {
+                "ID": identity,
+                "ContainerID": "f" * 64,
+                "Running": True,
+                "ProcessConfig": {"entrypoint": "python", "arguments": ["worker_check.py"]},
+            }
+            for identity in ("d" * 64, "e" * 64)
+        }
+        fixture = ScopeFixture(tmp_path, raw, inspections, exec_inspections, holder, enrollment_root / "fixture.json")
         fixture.save()
         monkeypatch.setattr(recovery, "_docker_ids", lambda: tuple(sorted(inspections)))
 
@@ -142,6 +155,11 @@ def scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             assert arguments[:3] == ("inspect", "--type", "container")
             return [copy.deepcopy(inspections[arguments[3]])]
 
+        def docker_exec(exec_id, engine_id):
+            assert engine_id == "fixture-engine"
+            return copy.deepcopy(exec_inspections[exec_id])
+
+        monkeypatch.setattr(recovery, "_docker_exec_inspection", docker_exec)
         monkeypatch.setattr(recovery, "_docker_read", docker)
         yield fixture
     finally:
@@ -639,6 +657,111 @@ def test_independent_worker_preserved_and_exec_ids_are_volatile(scope: ScopeFixt
     assert scope.inspections == before
 
 
+def test_exec_inspection_uses_read_only_local_engine_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Exercise actual Unix HTTP transport without touching a live Docker daemon."""
+    socket_path = tmp_path / "docker.sock"
+    exec_id = "d" * 64
+    observed_paths: list[str] = []
+    expected = {
+        "ID": exec_id,
+        "ContainerID": "f" * 64,
+        "Running": True,
+        "ProcessConfig": {"entrypoint": "python", "arguments": ["worker.py"]},
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            observed_paths.append(self.path)
+            if self.path == "/v1.41/info":
+                payload = {"ID": "approved-engine"}
+            elif self.path == f"/v1.41/exec/{exec_id}/json":
+                payload = expected
+            else:
+                self.send_error(404)
+                return
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    with socketserver.UnixStreamServer(str(socket_path), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = recovery._LocalDockerConnection
+        monkeypatch.setattr(recovery, "_LocalDockerConnection", lambda _path: connection(socket_path))
+        try:
+            assert recovery._docker_exec_inspection(exec_id, "approved-engine") == expected
+            assert observed_paths == ["/v1.41/info", f"/v1.41/exec/{exec_id}/json"]
+            with pytest.raises(recovery.RecoveryScopeUnavailable, match="Engine exec observation unavailable"):
+                recovery._docker_exec_inspection(exec_id, "wrong-engine")
+            assert observed_paths[-1] == "/v1.41/info"
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "entrypoint,arguments",
+    [
+        ("python", ["-m", "auto_coder.management.bootstrap_supervisor"]),
+        ("auto-coder", ["management", "serve"]),
+        ("/bin/sh", ["-c", "exec auto-coder management serve"]),
+    ],
+)
+def test_unselected_exec_management_command_refuses(scope: ScopeFixture, entrypoint: str, arguments: list[str]):
+    _unrelated_worker(scope)
+    scope.exec_inspections["d" * 64]["ProcessConfig"] = {"entrypoint": entrypoint, "arguments": arguments}
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management exec"):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_unselected_exec_with_no_arguments_is_unrelated(scope: ScopeFixture):
+    worker = _unrelated_worker(scope)
+    scope.exec_inspections["d" * 64]["ProcessConfig"] = {"entrypoint": "true", "arguments": None}
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+    assert observed.unrelated_inspections[0][0] == worker["Id"]
+
+
+@pytest.mark.parametrize("mutation", ["foreign-container", "wrong-id", "missing-command", "duplicate-exec"])
+def test_unselected_exec_identity_and_command_must_be_independently_read(scope: ScopeFixture, mutation: str):
+    worker = _unrelated_worker(scope)
+    details = scope.exec_inspections["d" * 64]
+    if mutation == "foreign-container":
+        details["ContainerID"] = scope.raw["target"]["manager_id"]
+    elif mutation == "wrong-id":
+        details["ID"] = "a" * 64
+    elif mutation == "missing-command":
+        details["ProcessConfig"].pop("entrypoint")
+    else:
+        worker["ExecIDs"] *= 2
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="exec"):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_unselected_exec_management_change_between_reads_refuses(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
+    _unrelated_worker(scope)
+    docker_exec = recovery._docker_exec_inspection
+    reads = 0
+
+    def changing(exec_id, engine_id):
+        nonlocal reads
+        if exec_id == "d" * 64:
+            reads += 1
+            if reads == 2:
+                scope.exec_inspections["d" * 64]["ProcessConfig"]["arguments"] = ["-m", "auto_coder.management.bootstrap_supervisor"]
+        return docker_exec(exec_id, engine_id)
+
+    monkeypatch.setattr(recovery, "_docker_exec_inspection", changing)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management exec"):
+        recovery.observe_recovery_custody("fixture")
+    assert reads == 2
+
+
 @pytest.mark.parametrize("pair_index", [0, 1, 2])
 @pytest.mark.parametrize("mutation", ["image", "proxy-image", "stopped-image", "supervisor", "module", "serve", "manager-network", "proxy-network", "bind-parent", "bind-child"])
 def test_unselected_candidates_cannot_hide_as_workers(scope: ScopeFixture, pair_index: int, mutation: str):
@@ -718,6 +841,7 @@ def test_worker_changes_between_producer_and_consumer_refuse(scope: ScopeFixture
         scope.inspections.pop(worker["Id"])
         if mutation == "swap":
             worker["Id"] = "e" * 64
+            scope.exec_inspections["d" * 64]["ContainerID"] = worker["Id"]
             scope.inspections[worker["Id"]] = worker
     elif mutation == "state":
         worker["RestartCount"] += 1
@@ -743,6 +867,7 @@ def test_worker_changes_during_sampling_refuse(scope: ScopeFixture, monkeypatch:
                 scope.inspections.pop(worker["Id"])
                 if mutation == "swap":
                     worker["Id"] = "e" * 64
+                    scope.exec_inspections["d" * 64]["ContainerID"] = worker["Id"]
                     scope.inspections[worker["Id"]] = worker
             else:
                 worker["RestartCount"] += 1

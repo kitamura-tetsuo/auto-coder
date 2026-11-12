@@ -8,6 +8,7 @@ It never creates a lock, acquires a flock, or invokes a controller.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -27,8 +28,9 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import _approved_directory, _file_identity, _protected, _trusted_ancestors
 from .containment_kernel_subobservation import _holder_start_token, _require_capture_host
 from .containment_observation import _docker_ids, _docker_read
-from .docker_inspection import canonical_inspection, canonical_mounts, management_candidate_roles, unrelated_inspection, validate_container_facts
+from .docker_inspection import canonical_inspection, canonical_mounts, management_candidate_roles, management_command_candidate, unrelated_inspection, validate_container_facts
 from .fresh_host_observation import _assert_pid_flock
+from .fresh_new_host_start import _LocalDockerConnection
 
 RECOVERY_ENROLLMENT_ROOT = Path("/var/lib/auto-coder/approved-recovery-scopes")
 _PROFILE = "ordinary-recovery-custody-component-v1"
@@ -216,6 +218,48 @@ def _read_enrollment(deployment_id: str) -> tuple[RecoveryEnrollment, str, tuple
     return enrollment, hashlib.sha256(data).hexdigest(), _file_identity(info)
 
 
+def _docker_exec_inspection(exec_id: str, engine_id: str) -> object:
+    """GET exec facts from the enrolled local Docker Engine; Docker CLI cannot inspect execs."""
+    connection = _LocalDockerConnection(Path("/var/run/docker.sock"))
+    try:
+        for endpoint, limit in (("/v1.41/info", 262144), (f"/v1.41/exec/{exec_id}/json", 65536)):
+            connection.request("GET", endpoint)
+            response = connection.getresponse()
+            content = response.read(limit + 1)
+            if response.status != 200 or len(content) > limit:
+                raise RecoveryScopeUnavailable("Docker Engine exec observation unavailable")
+            payload = json.loads(content)
+            if endpoint == "/v1.41/info":
+                if not isinstance(payload, dict) or payload.get("ID") != engine_id:
+                    raise RecoveryScopeUnavailable("local Docker Engine identity changed")
+            else:
+                return payload
+    except (OSError, ValueError, http.client.HTTPException, UnicodeError, RecursionError) as exc:
+        raise RecoveryScopeUnavailable("Docker Engine exec observation unavailable") from exc
+    finally:
+        connection.close()
+    raise RecoveryScopeUnavailable("Docker Engine exec observation incomplete")
+
+
+def _inspect_unselected_exec(container_id: str, exec_id: str, engine_id: str) -> None:
+    """Inspect an actual Docker exec before ignoring its volatile identifier."""
+    details = _docker_exec_inspection(exec_id, engine_id)
+    if not isinstance(details, dict):
+        raise RecoveryScopeUnavailable("unselected exec inspection unavailable")
+    if details.get("ID") != exec_id or details.get("ContainerID") != container_id or type(details.get("Running")) is not bool:
+        raise RecoveryScopeUnavailable("unselected exec identity or lifetime differs")
+    process = details.get("ProcessConfig")
+    if not isinstance(process, dict):
+        raise RecoveryScopeUnavailable("unselected exec command unavailable")
+    entrypoint, arguments = process.get("entrypoint"), process.get("arguments")
+    if arguments is None:
+        arguments = []
+    if not isinstance(entrypoint, str) or not entrypoint or len(entrypoint) > 4096 or not isinstance(arguments, list) or len(arguments) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in arguments):
+        raise RecoveryScopeUnavailable("unselected exec command is malformed")
+    if management_command_candidate((entrypoint, *arguments)):
+        raise RecoveryScopeUnavailable("unexpected unselected management exec")
+
+
 def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
     if any(os.environ.get(key) for key in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")):
         raise RecoveryScopeUnavailable("Docker environment override is unsupported")
@@ -272,7 +316,18 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
             info = source.stat()
             if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)) or any((info.st_dev, info.st_ino) == (other.st_dev, other.st_ino) for other in (Path(root).stat() for root in sources)):
                 raise RecoveryScopeUnavailable("unselected bind root identity overlaps or is unsupported")
-        result[identity] = unrelated_inspection(obj)
+        # ExecIDs are volatile, but they can conceal an active management
+        # command even when the worker's original command is unrelated.
+        normalized = unrelated_inspection(obj)
+        exec_ids = obj.get("ExecIDs")
+        if exec_ids is not None:
+            if not isinstance(exec_ids, list) or len(exec_ids) > 32 or len(set(exec_ids)) != len(exec_ids):
+                raise RecoveryScopeUnavailable("unselected exec inventory is ambiguous")
+            for exec_id in exec_ids:
+                if not isinstance(exec_id, str):
+                    raise RecoveryScopeUnavailable("unselected exec identity is malformed")
+                _inspect_unselected_exec(identity, exec_id, enrollment.engine_id)
+        result[identity] = normalized
     if _docker_ids() != ids or _docker_read(("info", "--format", "{{json .ID}}")) != enrollment.engine_id:
         raise RecoveryScopeUnavailable("engine changed during membership observation")
     return result
