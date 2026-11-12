@@ -386,6 +386,77 @@ def test_clean_test_only_git_main_is_required_for_installed_source(tmp_path, _us
         fixture._source_fixture_revision(test_source)
 
 
+@pytest.mark.parametrize("checkout_kind", ["worktree", "shared"])
+def test_source_with_unmounted_git_storage_is_rejected_before_fixture_writes(tmp_path, _use_real_commands, checkout_kind):
+    source = source_tree(tmp_path)
+    donor = _git_source_tree(tmp_path / "donor")
+    candidate = tmp_path / "candidate"
+    if checkout_kind == "worktree":
+        subprocess.run(["git", "-C", str(donor), "worktree", "add", "--detach", str(candidate), "main"], check=True, capture_output=True)
+        assert (candidate / ".git").is_file()
+    else:
+        subprocess.run(["git", "clone", "--shared", str(donor), str(candidate)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"], check=True, capture_output=True)
+        assert (candidate / ".git/objects/info/alternates").read_text(encoding="utf-8").strip() == str(donor / ".git/objects")
+
+    command = ["git", "-C", str(candidate), "cat-file", "-p", "HEAD:uv.lock"]
+    assert subprocess.run(command, check=True, capture_output=True, text=True).stdout == "version = 1\n"
+    assert subprocess.run(["git", "-C", str(candidate), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout == ""
+
+    # The fixture mounts only the candidate. Make its external donor path
+    # unavailable to exercise real Git's read, without fabricating a result.
+    unavailable = donor.with_name("unmounted-donor")
+    donor.rename(unavailable)
+    try:
+        isolated = subprocess.run(command, capture_output=True, text=True)
+        assert isolated.returncode != 0
+        assert isolated.stdout == ""
+    finally:
+        unavailable.rename(donor)
+
+    # The donor is visible again, so a host-only identity check would pass.
+    with pytest.raises(ValueError, match="independent checkout"):
+        fixture.provision(
+            source=source,
+            fixture_id="pr2835-test-unmounted",
+            firebase_project="fixture-test-123",
+            owner_uid=1000,
+            owner_gid=1000,
+            test_source=candidate,
+        )
+    assert not (source / ".agent-tmp").exists()
+
+
+def test_materialized_source_remains_readable_without_its_original_donor(tmp_path, _use_real_commands):
+    source = source_tree(tmp_path)
+    donor = _git_source_tree(tmp_path / "donor")
+    candidate = tmp_path / "candidate"
+    subprocess.run(["git", "clone", "--shared", str(donor), str(candidate)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"], check=True, capture_output=True)
+    revision = subprocess.run(["git", "-C", str(candidate), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(candidate), "repack", "-a", "-d"], check=True, capture_output=True)
+    (candidate / ".git/objects/info/alternates").unlink()
+
+    unavailable = donor.with_name("unmounted-donor")
+    donor.rename(unavailable)
+    try:
+        assert subprocess.run(["git", "-C", str(candidate), "cat-file", "-p", f"{revision}:uv.lock"], check=True, capture_output=True, text=True).stdout == "version = 1\n"
+        root = fixture.provision(
+            source=source,
+            fixture_id="pr2835-test-independent",
+            firebase_project="fixture-test-123",
+            owner_uid=1000,
+            owner_gid=1000,
+            test_source=candidate,
+        )
+    finally:
+        unavailable.rename(donor)
+
+    manifest = json.loads((root / "fixture.json").read_text(encoding="utf-8"))
+    assert manifest["source_fixture_sha"] == revision
+    assert manifest["source_fixture_available"] is True
+
+
 def test_wrong_test_source_remote_refused_before_fixture_creation(tmp_path, _use_real_commands):
     source = source_tree(tmp_path)
     test_source = source_tree(tmp_path / "candidate")

@@ -49,6 +49,14 @@ def _source_fixture_revision(source: Path | None) -> str:
         return ""
     if not (source / "pyproject.toml").is_file() or not (source / "uv.lock").is_file():
         raise ValueError("disposable tested source must contain the real locked Python project")
+    # The worker receives only this checkout at /source:ro. Host-visible
+    # worktree metadata or borrowed object stores do not cross that mount.
+    git_directory = source / ".git"
+    if git_directory.is_symlink() or not git_directory.is_dir():
+        raise ValueError("disposable tested source must be an independent checkout with its own .git directory")
+    alternates = git_directory / "objects/info/alternates"
+    if alternates.exists() and alternates.read_text(encoding="utf-8").strip():
+        raise ValueError("disposable tested source must be an independent checkout without borrowed Git objects")
 
     def git(*arguments: str) -> str:
         try:

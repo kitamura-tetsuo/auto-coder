@@ -220,7 +220,15 @@ fixture before any live acceptance. The generated image names are pinned fixture
 requirements, not automatically verified runtime identities. The Firebase ID
 must start with `fixture-`, and authenticated `whoami` must return that **exact**
 project ID. The test-source checkout must be a fully clean `main` of the fixed
-test repository, including no untracked files. The fixture starts with an empty
+test repository, including no untracked files. Each worker receives only that
+checkout at `/source:ro`, so it must contain its own ordinary `.git` directory
+and Git object database. Gitfiles, linked worktrees and nonempty object
+alternates, such as those created by `git clone --shared`, are rejected before
+fixture files are written: their host-visible metadata or borrowed objects may
+be absent inside the worker. Use a standalone clone, or explicitly materialize
+the borrowed objects and remove the alternate dependency while preserving the
+exact clean `main`. Successful Git reads on the host alone do not establish
+that the single mounted checkout is usable. The fixture starts with an empty
 UID allowlist and intentionally held worker bootstrap; both require separate
 operator authorization and real test-only setup to proceed.
 
