@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import stat
@@ -360,6 +361,30 @@ def run_issuer() -> EpochDispatch:
                 signal.signal(saved_signal, handler)  # type: ignore[arg-type]
 
 
+def _refusal_causes(error: BaseException) -> list[dict[str, str | int]]:
+    """Describe bounded code locations, never exception data or frame locals."""
+    causes: list[dict[str, str | int]] = []
+    visited: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in visited and len(causes) < 8:
+        visited.add(id(current))
+        name = type(current).__name__
+        row: dict[str, str | int] = {"type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,95}", name) else "Exception"}
+        if isinstance(current, OSError) and type(current.errno) is int:
+            row["errno"] = current.errno
+        trace = current.__traceback__
+        if trace is not None:
+            while trace.tb_next is not None:
+                trace = trace.tb_next
+            code = trace.tb_frame.f_code
+            filename = Path(code.co_filename).name
+            if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\.py", filename) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,95}|<module>", code.co_name):
+                row.update(file=filename, function=code.co_name, line=trace.tb_lineno)
+        causes.append(row)
+        current = current.__cause__
+    return causes
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Issue one approved management ownership epoch from fixed host authority")
     parser.parse_args(argv)
@@ -368,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_issuer()
     except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
         logger.bind(recovery_epoch_phase="unavailable", current_ready=False).error("Recovery epoch unavailable; preserved evidence is not repaired: {}", error)
+        for index, cause in enumerate(_refusal_causes(error), start=1):
+            logger.bind(recovery_epoch_phase="unavailable", current_ready=False).error("Recovery epoch refusal cause {}: {}", index, json.dumps(cause, sort_keys=True, separators=(",", ":")))
         return 2
     print(json.dumps(asdict(result), sort_keys=True))
     return 0

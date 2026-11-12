@@ -186,6 +186,11 @@ GitHub issue/PR processing attempt, dashboard slot, management operation admissi
 or worker outcome is created by this host ownership protocol. See the matching
 entry in `docs/dashboard-observability.md`.
 
+Refusal diagnostics retain up to eight explicit exception causes with only their
+type, integer error number, and code basename/function/line. They omit inner
+exception messages, arguments, frame locals and full paths, and never change the
+refusal decision or preserved state.
+
 The maintained component selections cover real persistence failures/process
 interruption, exact fixed-scope parsing, independent-process SH/EX/nsfs custody,
 actual received descriptors, current peer lifetime and cancellation. Component
