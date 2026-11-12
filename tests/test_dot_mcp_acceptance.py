@@ -16,6 +16,7 @@ def fixture():
     return accept.Fixture(
         schema=1,
         fixture_nonce="a" * 32,
+        firebase_project_id="fixture-test-123",
         repository="kitamura-tetsuo/auto-coder-test",
         fixture_id="pr2835-test-abc",
         compose_project="dot-pr2835-test-abc",
@@ -95,6 +96,7 @@ def test_fixture_manifest_is_strict_and_refuses_nonfixture_targets(tmp_path):
         {**raw, "endpoint": "http://127.0.0.1:8081/mcp?port=9999"},
         {**raw, "docker_authority_in_worker_or_management": True},
         {**raw, "fixture_nonce": "not-a-nonce"},
+        {**raw, "firebase_project_id": "auto-coder-production"},
         {**raw, "source_fixture_sha": "current HEAD"},
         {**raw, "nonsecret_but_unknown": "unexpected"},
     ):
@@ -198,7 +200,7 @@ def test_disposable_git_source_not_present_cannot_trigger_proof_network():
 
 def test_authenticated_identity_is_bound_to_fixture_resource_client_and_current_scopes():
     identity = {
-        "project_id": "fixture-test",
+        "project_id": fixture().firebase_project_id,
         "uid": "verified-owner",
         "client_id": "dot-disposable-operator",
         "resource": fixture().endpoint,
@@ -211,6 +213,7 @@ def test_authenticated_identity_is_bound_to_fixture_resource_client_and_current_
         {"client_id": "production-desktop"},
         {"scopes": ["auto-coder.read"]},
         {"uid": ""},
+        {"project_id": "fixture-production-other"},
     ):
         with pytest.raises(accept.Blocked, match="OAuth"):
             accept.verify_current_operator({**identity, **change}, fixture(), "reevaluate", mutation=True)

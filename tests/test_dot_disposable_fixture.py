@@ -25,6 +25,7 @@ def test_provision_is_dockerless_private_and_observe_only(tmp_path):
     config = yaml.safe_load((root / "management/config.yaml").read_text(encoding="utf-8"))
     policy = yaml.safe_load((root / "policy/operating-policy.yaml").read_text(encoding="utf-8"))
     assert marker["repository"] == "kitamura-tetsuo/auto-coder-test"
+    assert marker["firebase_project_id"] == "fixture-test-123"
     assert marker["docker_authority_in_worker_or_management"] is False
     assert marker["endpoint_namespace"] == "management-container-only"
     assert policy["profile"] == "observe"
@@ -79,6 +80,8 @@ def test_root_or_untrusted_project_rejected_before_writes(tmp_path):
         fixture.provision(source=source, fixture_id="pr2835-test-abc", firebase_project="fixture-test-123", owner_uid=0, owner_gid=1000)
     with pytest.raises(ValueError, match="Firebase project"):
         fixture.provision(source=source, fixture_id="pr2835-test-abc", firebase_project="../../prod", owner_uid=1000, owner_gid=1000)
+    with pytest.raises(ValueError, match="Firebase project"):
+        fixture.provision(source=source, fixture_id="pr2835-test-abc", firebase_project="auto-coder-production", owner_uid=1000, owner_gid=1000)
     assert not (source / ".agent-tmp").exists()
 
 
@@ -111,6 +114,9 @@ def test_clean_test_only_git_main_is_required_for_installed_source(tmp_path, _us
     for role in ("beta", "release"):
         assert f"{test_source}:/source:ro" in compose["services"][role]["volumes"]
         assert "PYTHONPATH" not in compose["services"][role]["environment"]
+    (test_source / "untracked-source.py").write_text("# Untrusted source injection\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="untracked changes"):
+        fixture._source_fixture_revision(test_source)
 
 
 def test_wrong_test_source_remote_refused_before_fixture_creation(tmp_path, _use_real_commands):

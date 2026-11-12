@@ -54,6 +54,7 @@ class Failed(RuntimeError):
 class Fixture:
     schema: int
     fixture_nonce: str
+    firebase_project_id: str
     repository: str
     fixture_id: str
     compose_project: str
@@ -79,6 +80,8 @@ class Fixture:
             raise Blocked("Disposable fixture identity is invalid")
         if not isinstance(fixture.fixture_nonce, str) or NONCE.fullmatch(fixture.fixture_nonce) is None:
             raise Blocked("Disposable fixture nonce is invalid")
+        if not isinstance(fixture.firebase_project_id, str) or re.fullmatch(r"fixture-[a-z0-9-]{6,50}", fixture.firebase_project_id) is None:
+            raise Blocked("The current Firebase project is not bounded to a disposable fixture")
         if fixture.repository != TEST_REPOSITORY or fixture.compose_project != "dot-" + fixture.fixture_id:
             raise Blocked("Target source repository or Compose project is not the approved disposable fixture")
         if fixture.endpoint != "http://127.0.0.1:8081/mcp" or fixture.endpoint_namespace != "management-container-only":
@@ -316,7 +319,7 @@ def verify_current_operator(identity: dict[str, Any], fixture: Fixture, scenario
         or identity.get("client_id") != "dot-disposable-operator"
         or not isinstance(identity.get("uid"), str)
         or not identity["uid"]
-        or not isinstance(identity.get("project_id"), str)
+        or identity.get("project_id") != fixture.firebase_project_id
         or not isinstance(scopes, (list, tuple))
         or not expected.issubset(set(scopes))
     ):

@@ -195,15 +195,14 @@ are 0 only for independently established `PASS`, 1 for `FAIL`, 2 for
 unexecuted acceptance for success. Any future `PASS` requires an independent original producer oracle,
 not just an MCP JSON response or a checkpoint.
 
-**Current acceptance gap:** This version has no mutation mode, no
-operator-selected disposable Docker/source repo test fixture provider, no real
-authenticated beta/release effect flow, no independent Actions/source acceptance
-cross-check, and no verified real dot scheduling exercise. Those
-#2608/REQ-007/008/011 deliverables are explicitly **NOT_RUN/BLOCKED**, not
-simulated `PASS`. Changes to the running beta/release service are prohibited
-for this test. The implementation PR stays DRAFT until the genuine disposable
-end-to-end staging/unknown/recovery/policy downgrade tests and exact-head CI
-succeed and all review is resolved.
+**Current acceptance gap:** This read-only observer has no mutation mode; the
+separate opt-in disposable harness below implements only limited fixture-only
+mutation. The real authenticated beta/release producer flow, original GitHub
+Actions publication, staging/unknown/recovery/policy downgrade acceptance and
+dot scheduler execution remain **NOT_RUN/BLOCKED**, never simulated `PASS`.
+Production beta/release changes are prohibited. Keep this implementation PR
+DRAFT until genuine end-to-end verification, exact-head CI and all review
+threads have passed.
 
 ### Disposable-only acceptance harness (partial)
 
@@ -213,7 +212,29 @@ repository, non-root workers, no host ports or runtime Docker socket, and an
 observe-only management policy. It neither executes Compose nor creates grants.
 The operator must separately provision and explicitly authorize a disposable
 fixture before any live acceptance. The generated image names are pinned fixture
-requirements, not automatically verified runtime identities.
+requirements, not automatically verified runtime identities. The Firebase ID
+must start with `fixture-`, and authenticated `whoami` must return that **exact**
+project ID. The test-source checkout must be a fully clean `main` of the fixed
+test repository, including no untracked files. The fixture starts with an empty
+UID allowlist and intentionally held worker bootstrap; both require separate
+operator authorization and real test-only setup to proceed.
+
+```sh
+python scripts/dot_disposable_fixture.py \
+  --fixture-id pr2835-sandbox-20261112 \
+  --firebase-project-id fixture-actual-sandbox \
+  --test-source /path/to/clean/auto-coder-test
+# Exit 3/NOT_RUN: this generates configuration only, not Docker or OAuth.
+docker compose -f .agent-tmp/pr2835-sandbox-20261112/compose.yaml up -d
+# Run only inside the generated management container after inspecting isolation:
+docker compose -f .agent-tmp/pr2835-sandbox-20261112/compose.yaml exec -T management \
+  python -m scripts.dot_mcp_acceptance --fixture-manifest /fixture/fixture.json
+```
+
+Without an **exact fixture-specific** `AUTO_CODER_MCP_ACCESS_TOKEN`, the client
+returns `BLOCKED` before opening an MCP connection. Even with OAuth,
+`observe` needs two independently advancing verified worker heartbeats. Mere
+container liveness, accepted MCP receipts or a copied Git SHA are insufficient.
 
 `scripts/dot_mcp_acceptance.py` is opt-in and returns `NOT_RUN` without a fixture.
 Its default path only reads current authenticated MCP observations. The explicit

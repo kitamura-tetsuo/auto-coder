@@ -71,8 +71,8 @@ def _source_fixture_revision(source: Path | None) -> str:
     revision = git("rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", revision) or revision != git("rev-parse", "main"):
         raise ValueError("disposable tested source must be the pinned local main commit")
-    if git("status", "--porcelain", "--untracked-files=no"):
-        raise ValueError("disposable tested source must have a clean index and tracked files")
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("disposable tested source must have no tracked or untracked changes")
     return revision
 
 
@@ -91,8 +91,8 @@ def provision(
         raise ValueError("source root must be the checked-out Auto-Coder test fixture source")
     if SAFE_FIXTURE.fullmatch(fixture_id) is None:
         raise ValueError("fixture ID must be an exact lowercase disposable identifier")
-    if not isinstance(firebase_project, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9-]{3,64}", firebase_project):
-        raise ValueError("Firebase project ID must be a bounded explicit value")
+    if not isinstance(firebase_project, str) or not re.fullmatch(r"fixture-[a-z0-9-]{6,50}", firebase_project):
+        raise ValueError("Firebase project ID must name an explicit fixture-only project")
     if owner_uid < 1 or owner_gid < 1:
         raise ValueError("fixture worker cannot run as root")
     test_source = test_source.resolve(strict=True) if test_source is not None else None
@@ -266,6 +266,7 @@ def provision(
             {
                 "schema": 1,
                 "fixture_nonce": nonce,
+                "firebase_project_id": firebase_project,
                 "repository": TEST_REPOSITORY,
                 "fixture_id": fixture_id,
                 "compose_project": project,
