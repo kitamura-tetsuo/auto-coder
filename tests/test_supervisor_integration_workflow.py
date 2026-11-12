@@ -341,16 +341,19 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         "test_beta_runtime_smoke_container.py",
         "test_management_new_instance_docker_created.py",
         "test_management_new_docker_network_policy.py",
-        "test_management_new_instance_docker_created.py",
         "test_management_new_instance_profile.py",
     ):
         assert any(path in value for value in profile_args("isolated-containers"))
     assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    containment = "tests/test_management_containment_observation.py::test_real_docker_inventory_and_separate_consumer"
+    assert containment in profile_args("isolated-containers")
+    assert containment in CONTAINER_REQUIRED
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_FRESH_TEST_BASE_IMAGE"] == workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
     required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
-    assert all(node.split("::", 1)[0] in profile_args("isolated-containers") for node in required)
+    container_selectors = profile_args("isolated-containers")
+    assert all(container_selectors.count(node) + container_selectors.count(node.split("::", 1)[0]) == 1 for node in required)
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
     assert {
         "tests/test_management_new_instance_docker_created.py::test_unisolated_docker_source_can_never_consume_a_new_first_start",

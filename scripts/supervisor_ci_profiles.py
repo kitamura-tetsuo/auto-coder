@@ -69,6 +69,7 @@ CONTAINER_REQUIRED = (
     + (
         "tests/test_worker_network_integration.py::test_three_target_manager_restart_peer_isolation_and_lost_response",
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
+        "tests/test_management_containment_observation.py::test_real_docker_inventory_and_separate_consumer",
         "tests/test_management_new_instance_docker_created.py::test_unisolated_docker_source_can_never_consume_a_new_first_start",
         "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[config-only]",
         "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[stale-owner]",
@@ -137,6 +138,7 @@ SELECTORS = {
         "tests/test_worker_network_integration.py",
         "tests/test_management_beta_deploy_container.py",
         "tests/test_beta_runtime_smoke_container.py",
+        "tests/test_management_containment_observation.py::test_real_docker_inventory_and_separate_consumer",
         "tests/test_management_new_instance_docker_created.py",
         "tests/test_management_new_docker_network_policy.py",
         "tests/test_management_new_instance_profile.py",
