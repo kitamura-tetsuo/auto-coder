@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Observe real disposable refusal/recovery boundaries without granting authority.
 
-Only the two explicit refusal probes send a fixed reevaluation request. They
-require an operator-selected observe policy and a durable pre-send ticket.
+Explicit refusal probes send a fixed reevaluation or source-promotion request.
+They require an operator-selected denying policy and a durable pre-send ticket.
 All other scenarios inspect the original operation and never retry or recover it.
 """
 
@@ -26,8 +26,9 @@ else:
     import dot_mcp_acceptance as accept
 
 smoke = accept.smoke
-SCENARIOS = frozenset({"observe-refusal", "policy-downgrade", "held-drain", "unknown-effect", "repeated-failure", "data-rollback"})
-REFUSAL_PROBES = frozenset({"observe-refusal", "policy-downgrade"})
+SCENARIOS = frozenset({"observe-refusal", "policy-downgrade", "beta-release-refusal", "held-drain", "unknown-effect", "repeated-failure", "data-rollback"})
+REFUSAL_PROBES = frozenset({"observe-refusal", "policy-downgrade", "beta-release-refusal"})
+WORKER_ACTIONS = frozenset({"reevaluate_target", "deploy_beta_source", "deploy_release_source", "start_worker", "stop_worker", "restart_worker"})
 ROOT = Path("/fixture/management")
 POLICY = Path("/fixture/policy/operating-policy.yaml")
 JOURNAL = ROOT / "operations/management-operations.sqlite3"
@@ -77,6 +78,8 @@ def selected_checkpoint(fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint
         raise accept.Blocked("The checkpoint must retain both original disposable targets")
     if checkpoint.source_sha != fixture.source_fixture_sha or not fixture.source_fixture_available:
         raise accept.Blocked("The negative scenario must retain the exact disposable source")
+    if scenario == "beta-release-refusal" and checkpoint.stage != "beta":
+        raise accept.Blocked("The beta-only release refusal requires the current operator-selected beta stage")
     if scenario in REFUSAL_PROBES:
         if not probe:
             raise accept.Blocked("An actual refusal probe requires explicit operator selection")
@@ -91,13 +94,17 @@ def selected_checkpoint(fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint
 
 
 def observe_policy_revision(fixture: accept.Fixture, path: Path = POLICY) -> str:
+    return denying_policy_revision(fixture, "observe", path)
+
+
+def denying_policy_revision(fixture: accept.Fixture, profile: str, path: Path = POLICY) -> str:
     """Read the mounted operator policy without modifying or granting anything."""
-    from auto_coder.operating_policy import PolicyProfile, load_operating_policy
+    from auto_coder.operating_policy import load_operating_policy
 
     loaded = load_operating_policy(path)
     policy = loaded.policy
-    if policy is None or policy.profile is not PolicyProfile.OBSERVE:
-        raise accept.Blocked("The external operator has not selected the required observe policy")
+    if profile not in {"observe", "beta"} or policy is None or policy.profile.value != profile:
+        raise accept.Blocked("The external operator has not selected the required " + profile + " policy")
     expected = {(fixture.target_ids["beta"], "beta", (accept.BETA_WORK_REPOSITORY,)), (fixture.target_ids["release"], "release", (accept.TEST_REPOSITORY,))}
     actual = {(target.target_id, target.channel.value, target.repositories) for target in policy.targets}
     if actual != expected or policy.management_self_update is not None:
@@ -116,7 +123,15 @@ def journal_original_key(path: Path, target: str, key: str) -> tuple[str, ...]:
             intent = json.loads(encoded)
             if not isinstance(intent, dict) or not isinstance(intent.get("target"), list) or len(intent["target"]) != 3:
                 raise ValueError("invalid original journal intent")
-            if intent["target"][0] == target and intent.get("idempotency_key") == key:
+            pairs = intent.get("parameters")
+            if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str) for pair in pairs):
+                raise ValueError("invalid original journal parameters")
+            parameters = dict(pairs)
+            if len(parameters) != len(pairs):
+                raise ValueError("duplicate original journal parameter")
+            # Source promotion owns a canonical source lane while retaining the
+            # physical release target in its immutable parameters.
+            if (intent["target"][0] == target or parameters.get("target_id") == target) and intent.get("idempotency_key") == key:
                 found.append(str(operation_id))
         return tuple(sorted(found))
     except (OSError, sqlite3.Error, ValueError, TypeError) as error:
@@ -154,48 +169,62 @@ async def prior_reevaluation(live: accept.Live, fixture: accept.Fixture, root: P
 
 async def refusal_probe(live: accept.Live, fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint, scenario: str, issue_number: int, *, root: Path = ROOT, policy_path: Path = POLICY, journal_path: Path = JOURNAL) -> NegativeReport:
     """Prove current policy refusal at the producer and independent admission DB."""
-    if scenario not in REFUSAL_PROBES or type(issue_number) is not int or not 1 <= issue_number <= 999999999:
+    release_probe = scenario == "beta-release-refusal"
+    if scenario not in REFUSAL_PROBES or (not release_probe and (type(issue_number) is not int or not 1 <= issue_number <= 999999999)):
         raise accept.Blocked("Select one fixed refusal scenario and a test-repository Issue number")
-    policy_revision = observe_policy_revision(fixture, policy_path)
+    if release_probe and checkpoint.stage != "beta":
+        raise accept.Blocked("The beta-only release refusal requires the current operator-selected beta stage")
+    profile = "beta" if release_probe else "observe"
+    policy_revision = denying_policy_revision(fixture, profile, policy_path)
     if scenario == "policy-downgrade":
         await prior_reevaluation(live, fixture, root)
-    target = fixture.target_ids["beta"]
+    target = fixture.target_ids["release" if release_probe else "beta"]
     before = journal_original_key(journal_path, target, checkpoint.idempotency_key)
     if before:
         raise accept.Blocked("A refusal probe cannot replay an existing original journal intent")
-    beta = await accept.observed_target(live, target, "beta", accept.BETA_WORK_REPOSITORY)
-    worker = beta.get("worker")
-    if beta.get("alive") is not True or not isinstance(worker, dict):
-        raise accept.Blocked("No genuine current worker fence is available for the refusal probe")
-    arguments = {
-        "target_id": target,
-        "target_type": "issue",
-        "number": issue_number,
-        "idempotency_key": checkpoint.idempotency_key,
-        "expected_process_run_id": worker.get("process_run_id"),
-        "expected_deployment_generation": worker.get("deployment_generation"),
-    }
-    if any(not isinstance(value, (str, int)) or not value for value in arguments.values()):
-        raise accept.Blocked("The current refusal-probe process fence is unavailable")
-    if observe_policy_revision(fixture, policy_path) != policy_revision:
+    if release_probe:
+        # This validates the original tested source and independently published
+        # beta acceptance. No release catalog or worker fence is fabricated.
+        arguments = await accept.prepare_arguments(live, fixture, checkpoint, "promote-source", 0)
+        tool = accept.MUTATIONS["promote-source"]
+        denied_reason = "release_policy_denied"
+    else:
+        beta = await accept.observed_target(live, target, "beta", accept.BETA_WORK_REPOSITORY)
+        worker = beta.get("worker")
+        if beta.get("alive") is not True or not isinstance(worker, dict):
+            raise accept.Blocked("No genuine current worker fence is available for the refusal probe")
+        arguments = {
+            "target_id": target,
+            "target_type": "issue",
+            "number": issue_number,
+            "idempotency_key": checkpoint.idempotency_key,
+            "expected_process_run_id": worker.get("process_run_id"),
+            "expected_deployment_generation": worker.get("deployment_generation"),
+        }
+        if any(not isinstance(value, (str, int)) or not value for value in arguments.values()):
+            raise accept.Blocked("The current refusal-probe process fence is unavailable")
+        tool = accept.MUTATIONS["reevaluate"]
+        denied_reason = "profile_denies_mutation"
+    if denying_policy_revision(fixture, profile, policy_path) != policy_revision:
         raise accept.Blocked("The operator policy changed before the refusal probe")
     ticket = refusal_ticket(scenario, root)
-    accept.persist_original_ticket(ticket, fixture, checkpoint, "auto_coder_reevaluate_target", arguments)
-    response = await live.call("auto_coder_reevaluate_target", arguments, mutation=True)
+    await accept.check_retained_recovery(live, fixture, checkpoint, tool, target, root=root)
+    accept.persist_original_ticket(ticket, fixture, checkpoint, tool, arguments)
+    response = await live.call(tool, arguments, mutation=True)
     operation_id = response.get("operation_id")
-    if isinstance(operation_id, str) and operation_id and response.get("action") == "reevaluate_target" and response.get("target_id") == target and response.get("status") not in {"BUSY", "CONFLICT", "NOT_FOUND", "DENIED", "UNAVAILABLE", "INVALID_REQUEST"}:
+    if isinstance(operation_id, str) and operation_id and response.get("action") == tool.removeprefix("auto_coder_") and response.get("target_id") == target and response.get("status") not in {"BUSY", "CONFLICT", "NOT_FOUND", "DENIED", "UNAVAILABLE", "INVALID_REQUEST"}:
         accept.update_original_ticket(ticket, fixture, operation_id, "ADMITTED")
         raise accept.Failed("The expected refusal admitted an operation; preserve its original ticket and stop")
     if operation_id is not None:
         raise accept.Blocked("A busy, conflicting or unbound operation is not this probe's original admission; preserve uncertainty")
-    if response.get("status") != "DENIED" or response.get("reason") != "profile_denies_mutation":
+    if response.get("status") != "DENIED" or response.get("reason") != denied_reason:
         raise accept.Blocked("The producer did not prove the expected policy refusal; the send remains held")
     after = journal_original_key(journal_path, target, checkpoint.idempotency_key)
     if after:
         raise accept.Failed("The producer refusal conflicts with an admitted original journal intent")
     digest = _journal_absence_digest(target, checkpoint.idempotency_key, after)
-    accept.record_refused_ticket(ticket, fixture, reason="profile_denies_mutation", journal_sha256=digest)
-    if observe_policy_revision(fixture, policy_path) != policy_revision:
+    accept.record_refused_ticket(ticket, fixture, reason=denied_reason, journal_sha256=digest)
+    if denying_policy_revision(fixture, profile, policy_path) != policy_revision:
         raise accept.Blocked("The refusal is retained, but the operator policy changed during the scenario")
     live.observations.append(accept.Evidence("management-operation-journal", digest, "fixture SQLite mode=ro original-key read", "ABSENT"))
     return NegativeReport("PASS", scenario, "The current producer denied the fixed request and its original admission key is absent; no worker effect", tuple(live.observations), negative_boundary_verified=True)
@@ -214,13 +243,42 @@ def original_binding(checkpoint: smoke.DotCheckpoint, fixture: accept.Fixture) -
     return target, operation_id
 
 
-def check_original(value: dict[str, object], target: str, operation_id: str, source_sha: str) -> None:
+def check_original(value: dict[str, object], target: str, operation_id: str, source_sha: str, *, publication_action: str = "") -> None:
     if value.get("operation_id") != operation_id or value.get("target_id") != target:
         raise accept.Blocked("The original journal operation is unavailable or differently bound")
-    if value.get("action") not in {"reevaluate_target", "deploy_beta_source", "deploy_release_source", "start_worker", "stop_worker", "restart_worker"}:
+    if publication_action == "promote_accepted_source_release" and value.get("action") != publication_action:
+        raise accept.Blocked("The saved original promotion is not a source-promotion operation")
+    if value.get("action") not in WORKER_ACTIONS and (not publication_action or value.get("action") != publication_action):
         raise accept.Blocked("The original action has no supported recovery acceptance scenario")
     if str(value.get("action")).startswith("deploy_") and value.get("source_sha") != source_sha:
         raise accept.Failed("Original source operation differs from the immutable selected source")
+    if value.get("action") == "promote_accepted_source_release" and value.get("selected_source_sha") != source_sha:
+        raise accept.Failed("Original source promotion differs from the immutable selected source")
+
+
+def original_acceptance_intent(path: Path, fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint, operation_id: str) -> str:
+    """Bind acceptance source from its real journal, absent from MCP inspection."""
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+            connection.execute("PRAGMA query_only=ON")
+            row = connection.execute("SELECT intent_json FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
+        if row is None:
+            raise ValueError("original acceptance is absent")
+        intent = json.loads(row[0])
+        pairs = intent.get("parameters") if isinstance(intent, dict) else None
+        if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str) for pair in pairs):
+            raise ValueError("original acceptance parameters are malformed")
+        parameters = dict(pairs)
+        if len(parameters) != len(pairs):
+            raise ValueError("duplicate original acceptance parameter")
+    except (OSError, sqlite3.Error, ValueError, TypeError) as error:
+        raise accept.Blocked("The original acceptance source intent cannot be independently checked") from error
+    target = fixture.target_ids["beta"]
+    if intent.get("action") != "run_beta_acceptance" or intent.get("target") != [target, "beta", accept.BETA_WORK_REPOSITORY] or parameters.get("target_id") != target or not checkpoint.idempotency_key or intent.get("idempotency_key") != checkpoint.idempotency_key:
+        raise accept.Blocked("The original acceptance action, target or fixed key differs from its checkpoint")
+    if parameters.get("source_sha") != checkpoint.source_sha:
+        raise accept.Failed("Original beta acceptance differs from the immutable selected source")
+    return hashlib.sha256(json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def record_exhausted_failure(root: Path, fixture: accept.Fixture, identity: FailureIdentity, operation_id: str) -> str:
@@ -251,11 +309,20 @@ def record_exhausted_failure(root: Path, fixture: accept.Fixture, identity: Fail
     return signature
 
 
-async def original_scenario(live: accept.Live, fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint, scenario: str, *, root: Path = ROOT) -> NegativeReport:
+async def original_scenario(live: accept.Live, fixture: accept.Fixture, checkpoint: smoke.DotCheckpoint, scenario: str, *, root: Path = ROOT, journal_path: Path = JOURNAL) -> NegativeReport:
     target, operation_id = original_binding(checkpoint, fixture)
     arguments = {"target_id": target, "operation_id": operation_id}
     original = await live.call("auto_coder_operation_inspect", arguments)
-    check_original(original, target, operation_id, checkpoint.source_sha)
+    publication_action = ""
+    if scenario == "unknown-effect":
+        if operation_id == checkpoint.promotion_operation_id and target == fixture.target_ids["release"]:
+            publication_action = "promote_accepted_source_release"
+        elif operation_id == checkpoint.beta_operation_id and target == fixture.target_ids["beta"]:
+            publication_action = "run_beta_acceptance"
+    check_original(original, target, operation_id, checkpoint.source_sha, publication_action=publication_action)
+    if original.get("action") == "run_beta_acceptance":
+        digest = original_acceptance_intent(journal_path, fixture, checkpoint, operation_id)
+        live.observations.append(accept.Evidence("management-operation-journal", digest, "fixture SQLite mode=ro original acceptance intent", "BOUND"))
     signature = ""
     if scenario == "held-drain":
         steps = original.get("steps")
@@ -284,7 +351,7 @@ async def original_scenario(live: accept.Live, fixture: accept.Fixture, checkpoi
             raise accept.Blocked("The original operation is not currently an unresolved-effect case")
         reason = "The original effect remains unresolved; only its non-dispatching journal was inspected"
     elif scenario == "repeated-failure":
-        if type(original.get("recovery_attempts")) is not int or original["recovery_attempts"] != 1 or original.get("status") not in {"NEEDS_ATTENTION", "FAILED", "RECOVERED_PREVIOUS"}:
+        if type(original.get("recovery_attempts")) is not int or original["recovery_attempts"] != 1 or original.get("status") not in {"NEEDS_ATTENTION", "FAILED"}:
             raise accept.Blocked("The producer has not proven one consumed recovery attempt for this failure")
         failure_reason = original.get("reason")
         if not isinstance(failure_reason, str) or not failure_reason or smoke.SAFE_ID.fullmatch(failure_reason) is None:
@@ -302,8 +369,8 @@ async def original_scenario(live: accept.Live, fixture: accept.Fixture, checkpoi
     else:
         raise accept.Blocked("Select a supported read-only original-operation scenario")
     after = await live.call("auto_coder_operation_inspect", arguments)
-    check_original(after, target, operation_id, checkpoint.source_sha)
-    if any(after.get(key) != original.get(key) for key in ("action", "status", "phase", "source_sha", "recovery_attempts", "recovery_state")):
+    check_original(after, target, operation_id, checkpoint.source_sha, publication_action=publication_action)
+    if any(after.get(key) != original.get(key) for key in ("action", "status", "phase", "effect_state", "source_sha", "selected_source_sha", "recovery_attempts", "recovery_state")):
         raise accept.Blocked("The original producer state changed during bounded negative observation")
     return NegativeReport("BLOCKED", scenario, reason, tuple(live.observations), operation_id, negative_boundary_verified=True, failure_signature=signature)
 
@@ -320,7 +387,7 @@ async def run_authenticated(fixture: accept.Fixture, checkpoint: smoke.DotCheckp
             await session.initialize()
             live = accept.Live(session, {tool.name for tool in (await session.list_tools()).tools})
             identity = await live.call("auto_coder_whoami", {})
-            accept.verify_current_operator(identity, fixture, "reevaluate", mutation=scenario in REFUSAL_PROBES)
+            accept.verify_current_operator(identity, fixture, "promote-source" if scenario == "beta-release-refusal" else "reevaluate", mutation=scenario in REFUSAL_PROBES)
             accept.verify_current_targets(await live.call("auto_coder_targets", {}), fixture)
             if scenario in REFUSAL_PROBES:
                 return await refusal_probe(live, fixture, checkpoint, scenario, issue_number)

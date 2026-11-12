@@ -847,3 +847,123 @@ def test_original_promotion_run_and_catalog_cannot_be_replaced_by_readback():
     for changed in (replace(original, promotion_run_id="43"), replace(original, promotion_operation_id="other-promotion"), replace(original, promotion_catalog_oid="e" * 40), replace(original, promotion_catalog_ref="")):
         with pytest.raises(accept.Failed):
             accept.confirm_saved_promotion(changed, evidence)
+
+
+def _retained_actual_exhaustion(tmp_path):
+    """Produce and retain a real terminal journal outcome, without live claims."""
+    from scripts import dot_mcp_negative_acceptance as negative
+
+    from tests.test_dot_mcp_negative_acceptance import ProjectedOriginal, confirmed_prior_runtime_recovery
+
+    record, snapshot = confirmed_prior_runtime_recovery(fixture(), tmp_path)
+    original = checkpoint(beta_operation_id=record.operation_id, pending_operation_id=record.operation_id, pending_effect_state="NEEDS_ATTENTION")
+    producer = ProjectedOriginal(record, snapshot)
+    result = asyncio.run(negative.original_scenario(producer, fixture(), original, "repeated-failure", root=tmp_path))
+    assert result.negative_boundary_verified is True and result.verdict == "BLOCKED"
+    producer.calls.clear()
+    return record, producer, tmp_path / f"dot-recovery-{result.failure_signature}.json"
+
+
+def test_terminal_exhaustion_without_send_ticket_blocks_new_checkpoint_and_key(monkeypatch, tmp_path):
+    """The real producer releases FAILED lanes; the retained client budget does not."""
+    from auto_coder.management.operation_store import ManagementOperationStore
+    from auto_coder.management.operations import AdmissionStatus
+
+    record, producer, ledger = _retained_actual_exhaustion(tmp_path)
+    original_bytes = ledger.read_bytes()
+    journal = ManagementOperationStore(tmp_path / "journal")
+    assert journal.list_operations(outstanding_only=True, target=record.intent.target).records == ()
+    fresh = checkpoint(idempotency_key="new-checkpoint-and-key", stage_revision="operator-v2")
+    ticket = tmp_path / "dot-fixture-beta-source-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+
+    def handler(name, arguments):
+        assert name == "auto_coder_operation_inspect"
+        assert arguments == {"target_id": fixture().target_ids["beta"], "operation_id": record.operation_id}
+        return producer.producer.project_snapshot(record, producer.snapshot)
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    with pytest.raises(accept.Blocked, match="exhausted the recovery budget"):
+        asyncio.run(accept.run_authenticated(fixture(), fresh, "beta-source", mutate=True, item_number=0))
+    assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_targets", "auto_coder_operation_inspect"]
+    assert not ticket.exists()
+    assert ledger.read_bytes() == original_bytes
+    # This counterfactual admission occurs only in the isolated offline journal.
+    # It demonstrates why the server's lane check alone cannot enforce REQ-004.
+    counterfactual = journal.admit(replace(record.intent, idempotency_key=fresh.idempotency_key), record.authority)
+    assert counterfactual.status is AdmissionStatus.CREATED
+    assert counterfactual.record.operation_id != record.operation_id
+
+
+@pytest.mark.parametrize("changed", ["action", "target", "source"])
+def test_retained_exhaustion_does_not_fence_an_unrelated_identity(tmp_path, changed):
+    _, producer, ledger = _retained_actual_exhaustion(tmp_path)
+    before = ledger.read_bytes()
+    selected = checkpoint(source_sha="f" * 40) if changed == "source" else checkpoint()
+    action = accept.MUTATIONS["beta-acceptance" if changed == "action" else "beta-source"]
+    target = fixture().target_ids["release" if changed == "target" else "beta"]
+    asyncio.run(accept.check_retained_recovery(producer, fixture(), selected, action, target, root=tmp_path))
+    assert producer.calls == [] and ledger.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("changed", "message"),
+    [
+        ({"status": "UNAVAILABLE"}, "recovery outcome changed"),
+        ({"operation_id": "another-operation"}, "cannot be independently verified"),
+        ({"source_sha": "f" * 40}, "original source"),
+        ({"recovery_attempts": 0}, "recovery outcome changed"),
+        ({"effect_state": "sent_unknown"}, "no confirmed original producer outcome"),
+    ],
+)
+def test_retained_exhaustion_requires_current_exact_original_evidence(tmp_path, changed, message):
+    record, producer, ledger = _retained_actual_exhaustion(tmp_path)
+    before = ledger.read_bytes()
+    calls = []
+
+    async def read(name, arguments, *, mutation=False):
+        assert name == "auto_coder_operation_inspect" and mutation is False
+        calls.append(arguments)
+        return {**producer.producer.project_snapshot(record, producer.snapshot), **changed}
+
+    with pytest.raises(accept.Blocked, match=message):
+        asyncio.run(accept.check_retained_recovery(SimpleNamespace(call=read), fixture(), checkpoint(), accept.MUTATIONS["beta-source"], fixture().target_ids["beta"], root=tmp_path))
+    assert calls == [{"target_id": fixture().target_ids["beta"], "operation_id": record.operation_id}]
+    assert ledger.read_bytes() == before
+
+
+def test_changed_retained_failure_signature_cannot_authorize_new_admission(tmp_path):
+    _, producer, ledger = _retained_actual_exhaustion(tmp_path)
+    value = json.loads(ledger.read_text())
+    value["signature"] = "0" * 64
+    ledger.write_text(json.dumps(value))
+    with pytest.raises(accept.Blocked, match="changed or is incomplete"):
+        asyncio.run(accept.check_retained_recovery(producer, fixture(), checkpoint(), accept.MUTATIONS["beta-source"], fixture().target_ids["beta"], root=tmp_path))
+    assert producer.calls == []
+
+
+def test_retained_exhaustion_keeps_exact_original_inspection_and_resumption(tmp_path, monkeypatch):
+    record, producer, ledger = _retained_actual_exhaustion(tmp_path)
+    before = ledger.read_bytes()
+    saved = checkpoint(idempotency_key=record.intent.idempotency_key, beta_operation_id=record.operation_id, pending_operation_id=record.operation_id, pending_effect_state="NEEDS_ATTENTION", recovery_attempts=1)
+    ticket = tmp_path / "dot-fixture-beta-source-original-send.json"
+    monkeypatch.setattr(accept, "ticket_path", lambda _scenario: ticket)
+
+    def handler(name, arguments):
+        assert name == "auto_coder_operation_inspect"
+        assert arguments == {"target_id": fixture().target_ids["beta"], "operation_id": record.operation_id}
+        return producer.producer.project_snapshot(record, producer.snapshot)
+
+    calls = _install_offline_mcp_session(monkeypatch, handler)
+    inspected = asyncio.run(accept.run_authenticated(fixture(), saved, "inspect-original", mutate=False, item_number=0))
+    assert inspected.verdict == "BLOCKED" and inspected.operation_id == record.operation_id
+    assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_operation_inspect"]
+    arguments = {"target_id": fixture().target_ids["beta"], "idempotency_key": saved.idempotency_key, "selected_git_sha": saved.source_sha}
+    accept.persist_original_ticket(ticket, fixture(), saved, accept.MUTATIONS["beta-source"], arguments)
+    accept.update_original_ticket(ticket, fixture(), record.operation_id, "ADMITTED")
+    calls.clear()
+    with pytest.raises(accept.Blocked, match="Original operation failed"):
+        asyncio.run(accept.run_authenticated(fixture(), saved, "beta-source", mutate=True, item_number=0, resume_original=True))
+    assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_targets", "auto_coder_operation_inspect"]
+    assert ledger.read_bytes() == before
+    assert json.loads(ticket.read_text())["operation_id"] == record.operation_id

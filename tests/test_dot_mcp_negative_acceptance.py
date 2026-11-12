@@ -21,7 +21,10 @@ from starlette.testclient import TestClient
 
 from auto_coder.management.app import create_management_app
 from auto_coder.management.mcp_runtime_tools import ManagementRuntime
+from auto_coder.management.oauth_grants import OAuthGrantService
+from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import AcceptedAuthority, ActionParameter, EffectAttempt, EffectState, ManagedTarget, OperationIntent, OperationPhase, OperationRecord
+from auto_coder.management.source_release_dispatch import SourceReleaseDispatch
 from auto_coder.management.worker_lifecycle import WorkerLifecycle
 from tests.test_dot_mcp_acceptance import checkpoint as saved_checkpoint
 from tests.test_dot_mcp_acceptance import fixture as disposable_fixture
@@ -104,9 +107,15 @@ class HttpSession:
         return SimpleNamespace(isError=False, structuredContent=value)
 
 
-def fixture_app(boundary, profile):
+def fixture_app(boundary, profile, *, selected_fixture=None, deploy_scope=False):
     settings, grants, signed, policy, beta, release = boundary
-    fixture = disposable_fixture()
+    if deploy_scope:
+        scopes = (*settings.oauth.enabled_scopes, "auto-coder.deploy")
+        clients = tuple(replace(client, allowed_scopes=(*client.allowed_scopes, "auto-coder.deploy")) for client in settings.oauth.clients)
+        oauth = replace(settings.oauth, clients=clients, enabled_scopes=scopes)
+        settings = replace(settings, oauth=oauth)
+        grants = OAuthGrantService(oauth, grants.identity, clock=grants.clock)
+    fixture = selected_fixture or disposable_fixture()
     for role, worker in (("beta", beta), ("release", release)):
         worker.config = replace(worker.config, instance_id=fixture.target_ids[role], repository=accept.BETA_WORK_REPOSITORY if role == "beta" else accept.TEST_REPOSITORY)
     policy.write_text(policy_text(fixture, profile))
@@ -116,7 +125,7 @@ def fixture_app(boundary, profile):
 
 
 def live_session(session):
-    return accept.Live(session, {"auto_coder_operation_inspect", "auto_coder_deployment_status", "auto_coder_reevaluate_target"})
+    return accept.Live(session, {"auto_coder_operation_inspect", "auto_coder_deployment_status", "auto_coder_beta_acceptance_get", "auto_coder_reevaluate_target", "auto_coder_promote_accepted_source_release"})
 
 
 def test_actual_observe_refusal_has_no_admission_and_preserves_terminal_refused_ticket(runtime_boundary, tmp_path):
@@ -158,6 +167,103 @@ def test_policy_downgrade_requires_actual_prior_reevaluation_receipt(runtime_bou
         assert report.verdict == "PASS" and beta.send_calls == 1
         assert session.calls == ["auto_coder_operation_inspect", "auto_coder_deployment_status", "auto_coder_reevaluate_target"]
         assert json.loads(path.read_text())["operation_id"] == admitted["operation_id"]
+
+
+def test_actual_beta_policy_refuses_independently_published_original_source(runtime_boundary, monkeypatch, tmp_path):
+    """Real HTTP policy refusal with offline Git/worker producer prerequisites."""
+    from auto_coder.management.source_acceptance import BetaAcceptanceHandler, SourceAcceptancePublisher
+    from tests import test_beta_runtime_smoke as upstream
+    from tests.test_source_release_promotion import _harness
+
+    # The shared deterministic Git edge uses these synthetic namespaces. The
+    # actual fixture CLI restrictions are tested separately; no remote is used.
+    monkeypatch.setattr(accept, "TEST_REPOSITORY", "owner/repo")
+    monkeypatch.setattr(accept, "BETA_WORK_REPOSITORY", "fixture/beta")
+    original_intent = upstream.OperationIntent
+
+    def targeted_intent(target, action, parameters, *args):
+        return original_intent(target, action, (*parameters, ActionParameter("target_id", target.instance_id)), *args)
+
+    monkeypatch.setattr(upstream, "OperationIntent", targeted_intent)
+    remote, producer, request, release_policy = _harness(tmp_path / "upstream")
+    publisher = SourceAcceptancePublisher(remote, "owner/repo")
+    handler = BetaAcceptanceHandler(None, producer.producer(), publisher)
+    original = producer.operation
+    begun = producer.journal.begin_effect(original.operation_id, original.revision, owner_attempt_id="publish-owner", attempt_id="publish-original", correlation_identity="publication-correlation").record
+    assert begun is not None
+    published = publisher.read(original.operation_id)
+    assert published is not None
+    completed = handler._complete(begun, published)
+    assert completed.phase is OperationPhase.SUCCEEDED and completed.effect.state is EffectState.CONFIRMED
+    projection_runtime = SimpleNamespace(_project_operation=ManagementRuntime._project_operation, beta_acceptance=handler)
+
+    fixture = replace(disposable_fixture(), repository="owner/repo", source_fixture_sha=request.source_sha, target_ids={"beta": "beta-worker", "release": "release-worker"})
+    original = replace(
+        checkpoint(),
+        source_sha=request.source_sha,
+        beta_target=fixture.target_ids["beta"],
+        release_target=fixture.target_ids["release"],
+        ci_run_id=str(request.ci_run_id),
+        ci_run_attempt=str(request.ci_run_attempt),
+        tested_source_ref=request.tested_source_ref,
+        tested_source_oid=request.tested_source_oid,
+        beta_acceptance_ref=request.acceptance_ref,
+        beta_acceptance_oid=request.acceptance_oid,
+        idempotency_key="original-beta-denied-promotion",
+    )
+    release_policy_path = tmp_path / "source-release-policy.json"
+    release_policy_path.write_text(json.dumps(asdict(release_policy)))
+    token_path = tmp_path / "offline-release-token"
+    token_path.write_text("unused-offline-placeholder")
+    settings, grants, signed, policy, beta, release = runtime_boundary
+    settings = replace(settings, source_release_policy_path=release_policy_path, source_release_token_file=token_path, source_release_target_id=fixture.target_ids["release"], source_release_workflow_id=321)
+    fixture, settings, signed, policy, beta, app = fixture_app((settings, grants, signed, policy, beta, release), "beta", selected_fixture=fixture, deploy_scope=True)
+    monkeypatch.setattr(accept, "_source_client", lambda: remote)
+
+    class PublishedPrerequisiteSession(HttpSession):
+        async def call_tool(self, name, arguments):
+            if name == "auto_coder_beta_acceptance_get":
+                self.calls.append(name)
+                assert arguments == {"target_id": fixture.target_ids["beta"], "operation_id": completed.operation_id}
+                value = ManagementRuntime._project_beta_acceptance(projection_runtime, completed)
+                return SimpleNamespace(isError=False, structuredContent=value)
+            return await super().call_tool(name, arguments)
+
+    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", "auto-coder.read auto-coder.deploy")["access_token"]
+        session = PublishedPrerequisiteSession(client, bearer)
+        remote.calls.clear()
+        report = asyncio.run(negative.refusal_probe(live_session(session), fixture, original, "beta-release-refusal", 0, root=tmp_path, policy_path=policy, journal_path=settings.operation_state_root / "management-operations.sqlite3"))
+        assert report.verdict == "PASS" and report.negative_boundary_verified
+        assert report.effect_dispatched is False and report.positive_deployment_proven is False
+        assert session.calls == ["auto_coder_beta_acceptance_get", "auto_coder_promote_accepted_source_release"]
+        retained = json.loads(negative.refusal_ticket("beta-release-refusal", tmp_path).read_text())
+        assert retained["target"] == fixture.target_ids["release"]
+        assert retained["effect_state"] == "REFUSED" and retained["operation_id"] == ""
+        assert retained["refusal_evidence"]["reason"] == "release_policy_denied"
+        assert negative.journal_original_key(settings.operation_state_root / "management-operations.sqlite3", fixture.target_ids["release"], original.idempotency_key) == ()
+        assert remote.calls and all(method == "GET" for method, _ in remote.calls)
+        assert beta.send_calls == release.send_calls == 0
+
+
+def test_beta_release_refusal_requires_real_source_before_ticket_or_request(runtime_boundary, monkeypatch, tmp_path):
+    from tests.test_source_acceptance import Git
+
+    fixture, settings, signed, policy, _beta, app = fixture_app(runtime_boundary, "beta", deploy_scope=True)
+    monkeypatch.setattr(accept, "_source_client", lambda: Git())
+    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", "auto-coder.read auto-coder.deploy")["access_token"]
+        session = HttpSession(client, bearer)
+        with pytest.raises(accept.Blocked, match="exact immutable tested-source"):
+            asyncio.run(negative.refusal_probe(live_session(session), fixture, checkpoint(), "beta-release-refusal", 0, root=tmp_path, policy_path=policy, journal_path=settings.operation_state_root / "management-operations.sqlite3"))
+        assert session.calls == []
+        assert not negative.refusal_ticket("beta-release-refusal", tmp_path).exists()
+
+
+@pytest.mark.parametrize("stage", ["observe", "full"])
+def test_beta_release_probe_requires_explicit_current_beta_stage(stage):
+    with pytest.raises(accept.Blocked, match="operator-selected beta stage"):
+        negative.selected_checkpoint(disposable_fixture(), checkpoint(stage=stage), "beta-release-refusal", stage, "operator-v1", probe=True)
 
 
 def test_unexpected_actual_admission_is_failed_and_original_ticket_remains_held(runtime_boundary, tmp_path):
@@ -234,6 +340,92 @@ class ProjectedOriginal:
         return self.current
 
 
+class ProjectedPublication:
+    """Actual original journal/projections, with no network or publication claim."""
+
+    def __init__(self, journal, record):
+        self.journal = journal
+        self.record = record
+        self.observations = []
+        self.calls = []
+        self.producer = SourceReleaseDispatch(SimpleNamespace(journal=journal, settings=None, _project_operation=ManagementRuntime._project_operation))
+
+    async def call(self, name, arguments, *, mutation=False):
+        assert mutation is False and name == "auto_coder_operation_inspect"
+        self.calls.append((name, arguments))
+        assert arguments == {"target_id": ManagementRuntime._params(self.record)["target_id"], "operation_id": self.record.operation_id}
+        record = self.journal.get(self.record.operation_id).record
+        assert record is not None
+        if record.intent.action == "promote_accepted_source_release":
+            return self.producer.project(record)
+        return ManagementRuntime._project_operation(record)
+
+
+def publication_original(tmp_path, action, *, source_sha=None):
+    fixture = disposable_fixture()
+    role = "release" if action == "promote_accepted_source_release" else "beta"
+    target = ManagedTarget("accepted-source-release" if role == "release" else fixture.target_ids[role], role, accept.TEST_REPOSITORY if role == "release" else accept.BETA_WORK_REPOSITORY)
+    source_sha = source_sha or fixture.source_fixture_sha
+    intent = OperationIntent(target, action, (ActionParameter("target_id", fixture.target_ids[role]), ActionParameter("source_sha", source_sha)), "original-publication-key", "original-process", source_sha)
+    journal = ManagementOperationStore(tmp_path / "journal")
+    record = journal.admit(intent, original_record(fixture).authority).record
+    assert record is not None
+    record = journal.begin_effect(record.operation_id, record.revision, owner_attempt_id="original-owner", attempt_id="original-attempt", correlation_identity="original-correlation").record
+    assert record is not None and record.effect.state is EffectState.SENT_UNKNOWN
+    binding = {"promotion_operation_id" if role == "release" else "beta_operation_id": record.operation_id}
+    saved = checkpoint(**binding, idempotency_key=intent.idempotency_key, pending_operation_id=record.operation_id, pending_effect_state="SENT_UNKNOWN")
+    return fixture, journal, record, saved
+
+
+def test_release_absence_query_includes_actual_canonical_source_lane(tmp_path):
+    fixture, _journal, record, saved = publication_original(tmp_path, "promote_accepted_source_release")
+    assert negative.journal_original_key(tmp_path / "journal/management-operations.sqlite3", fixture.target_ids["release"], saved.idempotency_key) == (record.operation_id,)
+
+
+@pytest.mark.parametrize("action", ["promote_accepted_source_release", "run_beta_acceptance"])
+def test_unknown_publication_uses_real_original_projection_without_dispatch(tmp_path, action):
+    fixture, journal, record, saved = publication_original(tmp_path, action)
+    live = ProjectedPublication(journal, record)
+    report = asyncio.run(negative.original_scenario(live, fixture, saved, "unknown-effect", root=tmp_path, journal_path=tmp_path / "journal/management-operations.sqlite3"))
+    assert report.verdict == "BLOCKED" and report.negative_boundary_verified
+    assert report.operation_id == record.operation_id and report.effect_dispatched is False
+    assert report.positive_deployment_proven is False
+    assert [call[0] for call in live.calls] == ["auto_coder_operation_inspect", "auto_coder_operation_inspect"]
+    assert journal.get(record.operation_id).record == record
+    if action == "run_beta_acceptance":
+        assert report.observations[-1].status == "BOUND"
+
+
+def test_unknown_promotion_cannot_use_release_deployment_binding(tmp_path):
+    fixture, journal, record, saved = publication_original(tmp_path, "promote_accepted_source_release")
+    saved = replace(saved, promotion_operation_id="", release_operation_id=record.operation_id)
+    with pytest.raises(accept.Blocked, match="original action"):
+        asyncio.run(negative.original_scenario(ProjectedPublication(journal, record), fixture, saved, "unknown-effect", root=tmp_path))
+
+
+@pytest.mark.parametrize("action", ["promote_accepted_source_release", "run_beta_acceptance"])
+def test_original_publication_requires_actual_selected_source(tmp_path, action):
+    fixture, journal, record, saved = publication_original(tmp_path, action, source_sha="f" * 40)
+    with pytest.raises(accept.Failed, match="immutable selected source"):
+        asyncio.run(negative.original_scenario(ProjectedPublication(journal, record), fixture, saved, "unknown-effect", root=tmp_path, journal_path=tmp_path / "journal/management-operations.sqlite3"))
+
+
+def test_original_acceptance_requires_independent_fixed_key_intent(tmp_path):
+    fixture, journal, record, saved = publication_original(tmp_path, "run_beta_acceptance")
+    live = ProjectedPublication(journal, record)
+    with pytest.raises(accept.Blocked, match="independently checked"):
+        asyncio.run(negative.original_scenario(live, fixture, saved, "unknown-effect", root=tmp_path, journal_path=tmp_path / "missing.sqlite3"))
+    with pytest.raises(accept.Blocked, match="fixed key"):
+        asyncio.run(negative.original_scenario(live, fixture, replace(saved, idempotency_key="replacement-key"), "unknown-effect", root=tmp_path, journal_path=tmp_path / "journal/management-operations.sqlite3"))
+
+
+@pytest.mark.parametrize("scenario", ["held-drain", "repeated-failure", "data-rollback"])
+def test_publication_does_not_become_a_worker_recovery_scenario(tmp_path, scenario):
+    fixture, journal, record, saved = publication_original(tmp_path, "promote_accepted_source_release")
+    with pytest.raises(accept.Blocked, match="original action"):
+        asyncio.run(negative.original_scenario(ProjectedPublication(journal, record), fixture, saved, scenario, root=tmp_path))
+
+
 def test_unknown_original_remains_blocked_and_never_uses_effectful_get(tmp_path):
     fixture = disposable_fixture()
     record = original_record(fixture)
@@ -292,10 +484,39 @@ def test_missing_recovery_evidence_does_not_create_exhaustion_pass(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def confirmed_prior_runtime_recovery(fixture, tmp_path):
+    journal = ManagementOperationStore(tmp_path / "journal")
+    original = original_record(fixture)
+    snapshot = {"schema_version": 1, "stage": "RECONCILING_PRIOR", "source_sha": fixture.source_fixture_sha, "recovery_attempts": 1, "recovery_state": "CONFIRMED", "restored_worker": {"runtime_id": "previous"}, "heartbeats": [1, 2]}
+    record = journal.admit(original.intent, original.authority, lifecycle_snapshot=snapshot).record
+    assert record is not None
+    record = journal.begin_effect(record.operation_id, record.revision, owner_attempt_id="original-owner", attempt_id="original-attempt", correlation_identity="original-correlation").record
+    assert record is not None
+    producer = WorkerLifecycle(SimpleNamespace(journal=journal, _params=ManagementRuntime._params))
+    version, stored = journal.lifecycle_snapshot(record.operation_id)
+    record = producer._finish(record, version, stored, "FAILED", "new_beta_worker_failed_previous_runtime_restored")
+    _, stored = journal.lifecycle_snapshot(record.operation_id)
+    assert record.phase is OperationPhase.FAILED and record.effect.state is EffectState.CONFIRMED
+    return record, stored
+
+
+def test_confirmed_prior_runtime_still_exhausts_original_failure_budget(tmp_path):
+    fixture = disposable_fixture()
+    record, snapshot = confirmed_prior_runtime_recovery(fixture, tmp_path)
+    live = ProjectedOriginal(record, snapshot)
+    saved = checkpoint(beta_operation_id=record.operation_id, pending_operation_id=record.operation_id, pending_effect_state="SENT_UNKNOWN")
+    report = asyncio.run(negative.original_scenario(live, fixture, saved, "repeated-failure", root=tmp_path))
+    assert report.verdict == "BLOCKED" and report.negative_boundary_verified
+    retained = json.loads((tmp_path / f"dot-recovery-{report.failure_signature}.json").read_text())
+    assert retained["failure"]["reason"] == "new_beta_worker_failed_previous_runtime_restored"
+    assert retained["original_operation_id"] == record.operation_id
+    assert retained["recovery_attempts"] == 1
+
+
 def test_runtime_receipt_cannot_claim_persistent_data_rollback(tmp_path):
     fixture = disposable_fixture()
-    record = original_record(fixture)
-    live = ProjectedOriginal(record, {"stage": "RECOVERED_PREVIOUS", "source_sha": fixture.source_fixture_sha, "recovery_attempts": 1, "recovery_state": "CONFIRMED", "restored_worker": {"runtime_id": "previous"}})
+    record, snapshot = confirmed_prior_runtime_recovery(fixture, tmp_path)
+    live = ProjectedOriginal(record, snapshot)
     saved = checkpoint(beta_operation_id=record.operation_id, pending_operation_id=record.operation_id, pending_effect_state="NEEDS_ATTENTION")
     report = asyncio.run(negative.original_scenario(live, fixture, saved, "data-rollback", root=tmp_path))
     assert report.verdict == "BLOCKED" and "unsupported" in report.reason

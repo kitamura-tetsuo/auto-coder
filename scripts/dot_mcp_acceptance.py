@@ -217,6 +217,56 @@ def ticket_path(scenario: str) -> Path:
     return Path("/fixture/management") / f"dot-fixture-{scenario}-original-send.json"
 
 
+async def check_retained_recovery(live: Live, fixture: Fixture, checkpoint: smoke.DotCheckpoint, action: str, target: str, *, root: Path) -> None:
+    """Keep a consumed original budget across checkpoint/key replacement.
+
+    Terminal FAILED lifecycle operations release the producer's target lane.
+    The companion ledger therefore remains relevant even without a positive
+    send ticket. Inspect only its exact original; never reconcile or retry it.
+    """
+    expected = (action.removeprefix("auto_coder_"), target, checkpoint.source_sha)
+    for path in sorted(root.glob("dot-recovery-*.json")):
+        try:
+            if path.is_symlink():
+                raise ValueError("replaced recovery record")
+            retained = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_pairs)
+        except (OSError, ValueError, UnicodeError) as error:
+            raise Blocked("The retained original recovery budget cannot be checked") from error
+        failure = retained.get("failure") if isinstance(retained, dict) else None
+        if not isinstance(failure, dict):
+            raise Blocked("The retained original recovery identity is unavailable")
+        if (failure.get("action"), failure.get("target"), failure.get("source_sha")) != expected:
+            continue
+        signature = hashlib.sha256(json.dumps(failure, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        operation_id = retained.get("original_operation_id")
+        if (
+            type(retained.get("schema")) is not int
+            or retained["schema"] != 1
+            or retained.get("fixture_nonce") != fixture.fixture_nonce
+            or set(failure) != {"action", "target", "source_sha", "reason"}
+            or not isinstance(failure.get("reason"), str)
+            or smoke.SAFE_ID.fullmatch(failure["reason"]) is None
+            or retained.get("signature") != signature
+            or path.name != f"dot-recovery-{signature}.json"
+            or not isinstance(operation_id, str)
+            or smoke.SAFE_ID.fullmatch(operation_id) is None
+            or type(retained.get("recovery_attempts")) is not int
+            or retained["recovery_attempts"] != 1
+            or retained.get("outcome") != "BLOCKED"
+        ):
+            raise Blocked("The retained original recovery budget has changed or is incomplete")
+        original = await live.call("auto_coder_operation_inspect", {"target_id": target, "operation_id": operation_id})
+        if (original.get("operation_id"), original.get("action"), original.get("target_id"), original.get("reason")) != (operation_id, expected[0], target, failure["reason"]):
+            raise Blocked("The retained exhausted original cannot be independently verified; reconcile that original before any new send")
+        if expected[0].startswith("deploy_") and original.get("source_sha") != checkpoint.source_sha:
+            raise Blocked("The retained exhausted original source cannot be independently verified")
+        if type(original.get("recovery_attempts")) is not int or original["recovery_attempts"] != 1 or (original.get("status"), original.get("phase")) not in {("FAILED", "failed"), ("NEEDS_ATTENTION", "needs_attention")}:
+            raise Blocked("The retained recovery outcome changed; reconcile its original operation before any new send")
+        if original["status"] == "FAILED" and original.get("effect_state") != "confirmed":
+            raise Blocked("The retained failed recovery has no confirmed original producer outcome")
+        raise Blocked(f"Original operation {operation_id} exhausted the recovery budget for this action, target and source; a new key cannot retry failure {signature}")
+
+
 def persist_original_ticket(path: Path, fixture: Fixture, checkpoint: smoke.DotCheckpoint, action: str, args: dict[str, object]) -> None:
     """Fsync original nonsecret intent before an effect, refusing all replays."""
     if path.exists() or path.is_symlink():
@@ -1056,6 +1106,7 @@ async def run_authenticated(fixture: Fixture, checkpoint: smoke.DotCheckpoint, s
                 return Result("PASS", "observe", "Two independent installed workers advanced real heartbeat sequences; no effect sent", tuple(live.observations))
             if retained is not None:
                 return await complete_original(live, fixture, checkpoint, scenario, str(retained["operation_id"]), retained["args"], wait_seconds=wait_seconds)
+            await check_retained_recovery(live, fixture, checkpoint, MUTATIONS[scenario], scenario_target(fixture, scenario), root=ticket_path(scenario).parent)
             arguments = await prepare_arguments(live, fixture, checkpoint, scenario, item_number)
             original_ticket = ticket_path(scenario)
             persist_original_ticket(original_ticket, fixture, checkpoint, MUTATIONS[scenario], arguments)

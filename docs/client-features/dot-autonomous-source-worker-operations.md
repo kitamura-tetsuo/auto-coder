@@ -353,6 +353,18 @@ original send ticket cannot report `effect_dispatched=false`: the report
 carries `effect_dispatched=null`, the original ticket state and verified original
 operation ID when available. Pre-send refusal without a ticket reports false;
 corrupt, replaced or unreadable tickets report UNKNOWN, not a guessed absence.
+Before a new send, the client also reads the companion's durable
+`dot-recovery-<failure-signature>.json` records in the same management state
+directory. For the same action, target and source, it inspects the exact retained
+original operation without reconciliation and verifies the producer's consumed
+recovery count and original failure. A confirmed terminal `FAILED` operation
+may have released the service's target lane, but it does not reset this client
+budget. A new checkpoint, operator revision or idempotency key cannot bypass it,
+even when the original was admitted outside this client and has no send ticket.
+Missing or changed original evidence remains blocked; the retained record is
+never cleared automatically. An unrelated action, target or source does not
+inherit that exhausted signature. Observation and explicit original resumption
+remain available without admitting another operation.
 Live producer observations are hashed for origin tracking. A real reevaluation journal projects terminal acceptance as
 `status=accepted_for_reevaluation`, `phase=succeeded` and
 `effect_state=confirmed` with a JSON-encoded
