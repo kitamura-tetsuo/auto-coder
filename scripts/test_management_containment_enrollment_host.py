@@ -43,7 +43,12 @@ _SYSTEMD_MASK_ROOT = Path("/etc/systemd/system")
 
 
 def _docker(*arguments: str, timeout: int = 30) -> str:
-    result = subprocess.run(("docker", *arguments), check=True, capture_output=True, text=True, timeout=timeout)
+    try:
+        result = subprocess.run(("docker", *arguments), check=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.CalledProcessError as exc:
+        diagnostic = (exc.stderr or "").strip()[:2048]
+        logger.error("Disposable fixture Docker {} failed (exit {}): {}", arguments[0] if arguments else "command", exc.returncode, diagnostic or "<empty stderr>")
+        raise
     return result.stdout.strip()
 
 

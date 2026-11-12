@@ -434,8 +434,7 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
     for name in ("caddy-data", "caddy-config"):
         (case.root / name).mkdir(mode=0o700)
     case.proxy = _docker(
-        "run",
-        "-d",
+        "create",
         "--name",
         case.fixture_id + "-proxy",
         "--network",
@@ -446,6 +445,8 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
         f"type=bind,src={case.root / 'caddy-data'},dst=/data",
         "--mount",
         f"type=bind,src={case.root / 'caddy-config'},dst=/config",
+        "--entrypoint",
+        "caddy",
         caddy_image,
         "run",
         "--config",
@@ -453,6 +454,7 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
         "--adapter",
         "caddyfile",
     )
+    _docker("start", case.proxy)
     case.watcher = WatcherFixture.start(case.root, case.manager, case.manager_image, case.proxy, caddy_image, caddyfile)
     watcher_output = case.root / "evidence" / "actual-watcher-output.log"
     _write_private(watcher_output, case.watcher.stdout.read_bytes())

@@ -5,6 +5,7 @@ These parser tests do not execute Docker or grant a containment verdict.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -125,3 +126,26 @@ def test_host_verifier_does_not_accept_a_route_without_kernel_readback(monkeypat
     monkeypatch.setattr(fixture, "_call_cli", verify)
     assert fixture._verify_after_transient_docker_inventory(Path("/fixture/scope"), Path("/fixture/previous")) is report
     assert called == 1
+
+
+def test_fixture_docker_failure_logs_bounded_stderr_and_preserves_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    message = 'exec: "run": executable file not found in $PATH\n' + "x" * 3000 + "unlogged-tail"
+    failure = subprocess.CalledProcessError(127, ("docker", "start", "fixture-container"), output="unlogged-stdout", stderr=message)
+
+    def failed(*_: object, **__: object) -> object:
+        raise failure
+
+    monkeypatch.setattr(fixture.subprocess, "run", failed)
+    messages: list[str] = []
+    sink = fixture.logger.add(messages.append, format="{message}", level="ERROR")
+    try:
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            fixture._docker("start", "fixture-container")
+    finally:
+        fixture.logger.remove(sink)
+    assert raised.value is failure
+    assert len(messages) == 1
+    assert "Docker start failed (exit 127)" in messages[0]
+    assert message[:2048] in messages[0]
+    assert "unlogged-tail" not in messages[0]
+    assert "unlogged-stdout" not in messages[0]

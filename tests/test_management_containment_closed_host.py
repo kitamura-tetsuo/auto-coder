@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts import containment_quarantine_fixture as quarantine
@@ -205,3 +206,32 @@ def test_preservation_oracle_detects_original_record_mutation_and_worker_death(t
         if worker.poll() is None:
             worker.kill()
             worker.wait(timeout=5)
+
+
+def test_caddy_creation_keeps_exact_id_for_cleanup_when_start_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    created, image = "c" * 64, "sha256:" + "d" * 64
+    case = SimpleNamespace(root=tmp_path, fixture_id="ac-test-pr2829-" + "a" * 32, manager="b" * 64, manager_image="sha256:" + "e" * 64, proxy="", watcher=None, routes=None, owns_manager=False, namespace_fd=-1)
+    calls: list[tuple[str, ...]] = []
+    failure = subprocess.CalledProcessError(127, ("docker", "start", created), stderr="fixture startup failed")
+
+    def docker(*arguments: str, timeout: int = 30) -> str:
+        calls.append(arguments)
+        if arguments[0] == "create":
+            assert arguments[arguments.index("--entrypoint") + 1] == "caddy"
+            assert arguments[arguments.index(image) + 1 :] == ("run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
+            return created
+        if arguments[0] == "start":
+            assert case.proxy == created
+            raise failure
+        assert arguments == ("rm", "-f", created)
+        return created
+
+    monkeypatch.setattr(fixture, "_docker", docker)
+    monkeypatch.setattr(fixture, "APPROVAL_ROOT", tmp_path / "approvals")
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        fixture._close_and_approve(case, image, "fixture-authorization")
+    assert raised.value is failure
+    assert case.proxy == created
+    fixture.Case.cleanup(case)
+    assert [arguments[0] for arguments in calls] == ["create", "start", "rm"]
+    assert case.proxy == ""
