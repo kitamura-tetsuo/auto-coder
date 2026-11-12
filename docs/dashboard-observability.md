@@ -3560,6 +3560,24 @@ remain merge gates; see `client-features/release-worker-source-deployment.md`.
 
 ## Prospective original management-attempt admission
 
+The separate `ordinary-genesis-root-reservation-v1` component emits
+`genesis_reservation`, `genesis_boundary=roots-reserved`, `evidence_only=true`
+only after its one-time root/record fsyncs and final identity checks. Its message
+explicitly says original genesis remains unavailable. It uses the shared Loguru
+console/file sinks and source location metadata. It has no bootstrap consumer,
+job envelope or dashboard event producer; rendering it as readiness or recovery
+success would invent authority. No renderer/schema changes apply to this
+component. Read-only reservation observation emits no success event.
+Run `bash scripts/test.sh --ci-tests-only
+tests/test_management_original_genesis_reservation.py`; the
+`test_new_roots_are_original_reservation_facts_with_explicit_missing_producers`
+oracle asserts its exact diagnostic fields, source location, retained original
+bytes and explicit unavailable producers. The process probes independently
+exercise fsynced interruption and material owner-lock contention. These are
+component probes; the unimplemented ordinary Docker genesis/native-bootstrap
+and successor-entrypoint acceptance remains explicitly listed in
+`client-features/management-original-genesis-reservation.md`.
+
 The optional `fresh-original-attempts-v1` host admission origin emits Loguru
 records with `original_history`, `original_attempt`, `original_boundary` and
 `evidence_only=true` after durable `anchor`, `claimed`, `never-created`,

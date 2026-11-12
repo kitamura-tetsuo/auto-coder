@@ -1,5 +1,9 @@
 # Prospective original management attempt provenance
 
+The separate incomplete #2839 root-reservation prerequisite is documented in
+`management-original-genesis-reservation.md`. It does not extend this profile's
+coverage or replace its external predecessor boundary with proven genesis.
+
 The optional `fresh-original-attempts-v1` profile records original fresh-intent
 admission through `claim_fresh_initialization`, shared by the host fresh command,
 continuous exclusion cutover and bootstrap upgrade. It also gates
