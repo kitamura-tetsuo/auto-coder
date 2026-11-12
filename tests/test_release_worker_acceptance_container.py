@@ -148,7 +148,7 @@ class _InstalledRelease:
     previous: dict[str, object]
 
 
-def _await_initial_stopped_supervisor(client: WorkerNetworkClient) -> WorkerNetworkResult:
+def _await_initial_stopped_supervisor(client: WorkerNetworkClient, *, timeout: float = 45) -> WorkerNetworkResult:
     """Wait for a signed stopped observation, never accepting UNKNOWN as STOPPED."""
     latest: WorkerNetworkResult | None = None
 
@@ -162,7 +162,7 @@ def _await_initial_stopped_supervisor(client: WorkerNetworkClient) -> WorkerNetw
         return latest
 
     try:
-        return _wait_for(observe, timeout=45)
+        return _wait_for(observe, timeout=timeout)
     except AssertionError as error:
         raise AssertionError(f"initial release Supervisor did not prove stopped: {latest}") from error
 
