@@ -694,3 +694,64 @@ def test_nested_local_wrapper_cannot_hide_unbound_module_dispatch(tmp_path: Path
     wrapper.write_text("#!/bin/sh\nexec /usr/bin/python3 -I -B -m unknown_local_module\n")
     with pytest.raises(sources.CommandSourceUnavailable, match="source binding"):
         sources.observe_command_sources(str(wrapper), uid=os.geteuid(), cues=())
+
+
+def test_path_resolved_shell_helper_refuses_stale_unrelated_classification(tmp_path: Path) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    tools = tmp_path / "tools"
+    tools.mkdir(mode=0o700)
+    helper = tools / "maintenance"
+    helper.write_text("#!/bin/sh\necho original\n")
+    helper.chmod(0o700)
+    command = f"ExecStart=/bin/sh -c maintenance\nEnvironment=PATH={tools}\n"
+    observed_before = subprocess.run(["/bin/sh", "-c", "maintenance"], env={"PATH": str(tools)}, check=True, capture_output=True, text=True)
+    assert observed_before.stdout.strip() == "original"
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=("/srv/original-state",))
+
+    helper.write_text("#!/bin/sh\necho /srv/original-state\n")
+    observed_after = subprocess.run(["/bin/sh", "-c", "maintenance"], env={"PATH": str(tools)}, check=True, capture_output=True, text=True)
+    assert observed_after.stdout.strip() == "/srv/original-state"
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=("/srv/original-state",))
+
+
+def test_systemd_source_boundary_refuses_bare_shell_path_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    tools = tmp_path / "tools"
+    tools.mkdir(mode=0o700)
+    helper = tools / "maintenance"
+    helper.write_text("#!/bin/sh\nexec /usr/bin/true\n")
+    helper.chmod(0o700)
+    shown = (
+        "Id=desktop.service\nLoadState=loaded\nUnitFileState=enabled\n"
+        "ActiveState=active\nSubState=running\n"
+        "FragmentPath=/etc/systemd/system/desktop.service\nNeedDaemonReload=no\nMainPID=123\n"
+        f"ExecStart=/bin/sh -c maintenance\nEnvironment=PATH={tools}\n"
+    )
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if "show" in args else "[Service]\nExecStart=/bin/sh -c maintenance\n")
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
+        routes._systemd_unit("desktop.service", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+    helper.write_text("#!/bin/sh\nexec /usr/local/bin/recreate --config /srv/original-state/config.json\n")
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
+        routes._systemd_unit("desktop.service", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "/bin/sh -c maintenance",
+        "/bin/sh -c 'exec maintenance'",
+        '/usr/bin/bash -c "PATH=/opt/tools maintenance"',
+        "/bin/sh -c '/usr/bin/true; maintenance'",
+        "/bin/dash -c '/usr/bin/true && maintenance'",
+    ),
+)
+def test_shell_c_refuses_path_dispatch_and_compound_fallback(command: str) -> None:
+    from auto_coder.management import containment_route_sources as sources
+
+    with pytest.raises(sources.CommandSourceUnavailable, match="dispatch"):
+        sources.observe_command_sources(command, uid=os.geteuid(), cues=())
+    assert sources.observe_command_sources("/bin/sh -c '/usr/bin/true'", uid=os.geteuid(), cues=()) == ((), False)

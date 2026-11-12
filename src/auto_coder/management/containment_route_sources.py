@@ -91,6 +91,14 @@ def _dynamic_local_dispatch(text: str) -> bool:
         or re.search(r"(?:\bexec\s+|\b(?:sh|bash|dash|python[0-9.]*)\s+)(?:\$|`)", text)
         or re.search(r"\b(?:sh|bash|dash|python[0-9.]*|node|perl|ruby)\s+(?:\.\.?/|[A-Za-z0-9_-]+\.(?:sh|py|js|pl|rb)\b)", text)
         or re.search(r"\b(?:sh|bash|dash)\s+-c\s+[\"']?\s*(?:\$|`)", text)
+        # A shell PATH lookup is a mutable local source even when the unit
+        # and its enclosing PATH directory have unchanged metadata.
+        or re.search(
+            r"\b(?:sh|bash|dash)\s+-c\s+(?:[\"']\s*)?(?:exec\s+)?(?!/)[A-Za-z_][A-Za-z0-9_.-]*(?=[\s=;|&\"']|$)",
+            text,
+        )
+        # A subsequent command segment cannot be bound by the first path.
+        or re.search(r"\b(?:sh|bash|dash)\s+-c\s+[^\n]*[;|&<>]", text)
         or re.search(r"\bpython[0-9.]*\s+(?:-[IB]\s+)*-c\s", text)
         or re.search(r"(?:^|[\s\"';|&])(?:exec\s+)?(?:\.\.?/|~/)", text)
         or re.search(r"(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\})/", text)

@@ -219,6 +219,8 @@ operator must audit classifications, supported local inputs, omitted/remote
 origins and inhibition before separately installing an approved record. Neither
 proposal nor observation modifies routes, user sessions or approval records.
 
+An unresolved bare/PATH command dispatched by a shell -c route is unsupported even when the enclosing PATH directory and the unit are unchanged. Compound shell dispatch also refuses; a prior unrelated classification never substitutes for binding an executable source. Direct protected absolute scripts and trusted installed packaged executables retain the existing source-boundary treatment.
+
 ## Original lifetime and kernel checks
 
 The kernel component reopens protected original manager/proxy lifetime evidence
