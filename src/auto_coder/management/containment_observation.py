@@ -239,7 +239,19 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             roles.append("management-command")
         if network_mode == "container:" + scope.management_id:
             roles.append("selected-management-network")
-        classified.append(replace(item, management_route_roles=tuple(roles)))
+        if roles or "ExecIDs" not in obj:
+            classified.append(replace(item, management_route_roles=tuple(roles)))
+        else:
+            # An unrelated container's short-lived `docker exec` identifiers
+            # are not installed controller configuration or a management route.
+            # Keep the complete Docker inspection pinned for any selected or
+            # candidate controller; normalize only this unrelated volatile key.
+            exec_ids = obj["ExecIDs"]
+            if exec_ids is not None and (not isinstance(exec_ids, list) or any(not isinstance(entry, str) or not re.fullmatch(r"[0-9a-f]{64}", entry) for entry in exec_ids)):
+                raise ValueError("unrelated Docker exec inventory is malformed")
+            normalized = dict(obj)
+            normalized["ExecIDs"] = None
+            classified.append(replace(item, inspection_sha256=_digest([normalized]), management_route_roles=()))
     if _docker_ids() != containers:
         raise ValueError("Docker engine inventory changed during observation")
     if _docker_read(("info", "--format", "{{json .ID}}")) != engine:

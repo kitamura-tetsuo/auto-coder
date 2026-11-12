@@ -335,6 +335,33 @@ def test_unrelated_worker_restart_route_is_observed_but_not_treated_as_managemen
     assert "saved-report:docker" in {item.authority for item in verified.unavailable}
 
 
+def test_unrelated_docker_exec_identifiers_do_not_change_installed_route_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unrelated worker's short-lived exec IDs are not controller configuration."""
+    objects, _ = _engine_boundary(monkeypatch)
+    for key in "abc":
+        objects[key * 64]["Image"] = "sha256:" + key * 64
+    worker = objects["c" * 64]
+    worker["Config"]["Cmd"] = ["worker", "--run"]
+    worker["ExecIDs"] = ["d" * 64]
+    saved = json.loads(json.dumps(asdict(observation.observe(_scope()))))
+    worker["ExecIDs"] = ["e" * 64]
+    current = observation.verify(_scope(), saved)
+    assert "saved-report:docker" not in {item.authority for item in current.unavailable}
+    worker["HostConfig"]["RestartPolicy"]["Name"] = "always"
+    changed = observation.verify(_scope(), saved)
+    assert "saved-report:docker" in {item.authority for item in changed.unavailable}
+
+
+def test_management_candidate_exec_identifiers_remain_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    candidate = objects["c" * 64]
+    candidate["ExecIDs"] = ["d" * 64]
+    saved = json.loads(json.dumps(asdict(observation.observe(_scope()))))
+    candidate["ExecIDs"] = ["e" * 64]
+    verified = observation.verify(_scope(), saved)
+    assert "saved-report:docker" in {item.authority for item in verified.unavailable}
+
+
 def test_management_command_alternative_is_reobserved_after_producer_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     objects, _ = _engine_boundary(monkeypatch)
     objects["c" * 64]["Config"]["Cmd"] = ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]

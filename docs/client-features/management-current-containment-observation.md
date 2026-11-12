@@ -451,10 +451,16 @@ did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet
 --no-trunc`, sorted by full ID, rather than only the proposed manager/proxy pair.
 Both selected objects must occur in that inventory. Each object records the engine,
-container and image IDs, complete inspection digest, mount digest, explicit current
+container and image IDs, inspection digest, mount digest, explicit current
 restart policy and retry limit, running/status/PID, Docker start/finish timestamps
 and restart count. `management_route_roles` records detected selected-image,
 bootstrap/serve-command and selected-management-network relationships. An
+installed controller candidate retains the unmodified full inspection digest,
+including its current Docker `ExecIDs`. For unrelated containers only, the
+short-lived `ExecIDs` value is normalized in the inspection digest: a normal
+`docker exec` poll is not a configured management launch or restart route.
+All other inspection fields, including effective command, mounts, restart
+policy, process status and lifetime, remain pinned. An
 unselected match generates `docker-alternative-management:<container-id>`
 until independent installed-controller membership and inhibition are established.
 If a protected enrollment was read, its engine and selected image identities
@@ -465,7 +471,7 @@ correlated kernel lifetimes. Raw configuration, environment and mount contents a
 not emitted.
 
 Enumeration occurs before and after inspection; the entire read is then repeated.
-Engine/context changes, additions/removals, differing inspections, missing selected
+Engine/context changes, additions/removals, differing pinned inspections, missing selected
 objects, unsupported/missing restart policies or lifetime fields, contradictory
 Docker running/PID state, duplicate/short IDs, inspection failure and inventories
 over 512 containers refuse the Docker sub-observation. For a Docker-running
