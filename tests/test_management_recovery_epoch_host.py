@@ -106,6 +106,25 @@ def test_no_child_or_admission_oracle_rejects_any_native_store(tmp_path: Path) -
         fixture._no_target_child(generation, running=False)
 
 
+@pytest.mark.parametrize("inventory", ["a" * 64, "truncated-id", "\n".join(["b" * 64, "b" * 64])])
+def test_removed_target_oracle_rejects_presence_or_incomplete_inventory(monkeypatch: pytest.MonkeyPatch, inventory: str) -> None:
+    monkeypatch.setattr(fixture.Chain, "docker", lambda *_args: inventory)
+    with pytest.raises(AssertionError):
+        fixture._require_target_absent("a" * 64)
+
+
+def test_removed_target_oracle_compares_exact_full_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def docker(*arguments):
+        calls.append(arguments)
+        return "a" * 63 + "b"
+
+    monkeypatch.setattr(fixture.Chain, "docker", docker)
+    fixture._require_target_absent("a" * 64)
+    assert calls == [("ps", "--all", "--quiet", "--no-trunc")]
+
+
 def test_original_fingerprint_binds_inodes_and_bytes(tmp_path: Path) -> None:
     path = tmp_path / "native-original"
     path.write_bytes(b"original")
@@ -204,7 +223,37 @@ def _result() -> dict[str, object]:
         "durable": {"record_sha256": {name: "a" * 64 for name in ("reserved", "intent", "consumed", "receipt")}},
         "peer_observations": {
             "schema": "actual-recovery-native-peer-faults-v1",
-            "cases": [{"case": case, "issuer_returncode": 2, "epoch_unreserved": True, "issuer_endpoint_removed_by_original": True, "consumer_grant_accepted": False, "no_child_or_admission": True, "issuer_syscall": {"bytes_observed": 10}} for case in sorted(fixture.REQUIRED_PEER_CASES)],
+            "cases": [
+                {
+                    "case": case,
+                    "issuer_returncode": 2,
+                    "epoch_unreserved": True,
+                    "issuer_endpoint_removed_by_original": True,
+                    "consumer_grant_accepted": False,
+                    "no_child_or_admission": True,
+                    "issuer_syscall": {"bytes_observed": 10},
+                    "receiver_alive_until_issuer_refusal": True,
+                    "issuer_refused_before_receiver_termination": True,
+                }
+                for case in sorted(fixture.REQUIRED_PEER_CASES)
+            ],
+        },
+        "factory_override_observations": {
+            "schema": "actual-recovery-factory-overrides-v1",
+            "cases": [{"case": case, "returncode": 2, "refusal": "component refusal", "alternate_inputs_sha256": "d" * 64, "epoch_sha256": "e" * 64} for case in sorted(fixture.FACTORY_OBSERVATION_CASES)],
+        },
+        "task_observations": {
+            "schema": "actual-recovery-task-observations-v1",
+            "cases": [
+                {"case": "escaped-old-network-nonleader-refused"},
+                {"case": "escaped-nonleader-current-containment-refused", "status": "unavailable"},
+                {
+                    "case": "measured-exited-nonleader-current-containment-reverified",
+                    "status": "observed-current-recovery-containment",
+                    "after_exit": {"pidfd_readable": True, "nonleader_absent": True, "leader": {"state": "Z", "network_namespace": None}},
+                    "after_verification": {"pidfd_readable": True, "nonleader_absent": True, "leader": {"state": "Z", "network_namespace": None}},
+                },
+            ],
         },
     }
 
@@ -272,6 +321,35 @@ def test_grant_result_requires_the_actual_peer_evidence_inventory(case: str) -> 
         fixture.validate_result(result)
 
 
+@pytest.mark.parametrize("field", ["receiver_alive_until_issuer_refusal", "issuer_refused_before_receiver_termination"])
+@pytest.mark.parametrize("case", ["queued-rights-without-receipt-refused", "received-rights-without-receipt-refused"])
+def test_missing_peer_receipt_cannot_be_masked_by_an_already_dead_receiver(case: str, field: str) -> None:
+    result = _result()
+    fixture.validate_result(result)
+    selected = next(item for item in result["peer_observations"]["cases"] if item["case"] == case)
+    selected[field] = False
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("name", ["factory_override_observations", "task_observations"])
+def test_native_factory_and_task_measurements_are_required(name: str) -> None:
+    result = _result()
+    fixture.validate_result(result)
+    result.pop(name)
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+def test_exited_task_success_requires_the_same_observed_zombie() -> None:
+    result = _result()
+    fixture.validate_result(result)
+    selected = next(item for item in result["task_observations"]["cases"] if item["case"] == "measured-exited-nonleader-current-containment-reverified")
+    selected["after_verification"]["leader"]["state"] = "R"
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
 @pytest.mark.parametrize("scenario", fixture.LATE_MUTATION_SCENARIOS)
 def test_late_mutation_result_names_its_deliberate_preservation_boundary(scenario: str) -> None:
     result = _result()
@@ -282,12 +360,42 @@ def test_late_mutation_result_names_its_deliberate_preservation_boundary(scenari
         preserved_originals_sha256="c" * 64,
         durable={"phase": "intent", "consumer_grant_acknowledged": False, "grant_send_completed": False, "mutation": {"scenario": scenario, "boundary": "after-intent-head", "preservation_baseline": "after-deliberate-fixture-mutation"}, "originals_after_injection_sha256": "c" * 64},
     )
+    if scenario == "late-target-loss":
+        result["durable"]["mutation"]["target_fault"] = {"pidfd_death_observed": True, "exact_docker_id_absent": True, "docker_rm_returncode": 0, "other_docker_ids_preserved": True}
+    elif scenario == "late-original-attempt":
+        result["durable"]["mutation"].update(
+            original_attempt={"instance_id": "D", "outcome": "never-created", "terminal_kind": "never-created", "independent_lineage_verified": True, "retained_intent_lineage_matched": True, "original_file": {"path": "/component/history/00000007.json", "device": 1, "inode": 2, "sha256": "a" * 64}},
+            file_fault={"path": "/component/history/00000007.json", "before": [1, 2, "a" * 64]},
+        )
     fixture.validate_result(result)
     result["preservation_baseline"] = "before-deliberate-fixture-mutation"
     with pytest.raises(AssertionError):
         fixture.validate_result(result)
     result["preservation_baseline"] = "after-deliberate-fixture-mutation"
     result["durable"]["originals_after_injection_sha256"] = "d" * 64
+    with pytest.raises(AssertionError):
+        fixture.validate_result(result)
+
+
+@pytest.mark.parametrize("field", ["pidfd_death_observed", "exact_docker_id_absent", "other_docker_ids_preserved"])
+def test_late_target_loss_requires_death_absence_and_preserved_other_objects(field: str) -> None:
+    scenario = "late-target-loss"
+    result = _result()
+    result.update(
+        scenario=scenario,
+        cases=sorted(fixture.required_cases(scenario)),
+        preservation_baseline="after-deliberate-fixture-mutation",
+        preserved_originals_sha256="c" * 64,
+        durable={
+            "phase": "intent",
+            "consumer_grant_acknowledged": False,
+            "grant_send_completed": False,
+            "mutation": {"scenario": scenario, "boundary": "after-intent-head", "preservation_baseline": "after-deliberate-fixture-mutation", "target_fault": {"pidfd_death_observed": True, "exact_docker_id_absent": True, "docker_rm_returncode": 0, "other_docker_ids_preserved": True}},
+            "originals_after_injection_sha256": "c" * 64,
+        },
+    )
+    fixture.validate_result(result)
+    result["durable"]["mutation"]["target_fault"][field] = False
     with pytest.raises(AssertionError):
         fixture.validate_result(result)
 

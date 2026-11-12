@@ -56,7 +56,9 @@ logger = get_logger(__name__)
 FIXTURE_ROOT = Path("/var/lib/auto-coder/recovery-epoch-fixtures")
 RESULT_SCHEMA = "auto-coder-native-recovery-epoch-result-v1"
 ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "changed-installed-ready-refused", "changed-target-management-config-refused"})
-LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused"})
+LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused", "cross-deployment-original-lineage-refused"})
+FACTORY_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES if case.startswith("factory-"))
+TASK_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES if "nonleader" in case)
 ACCEPTANCE_SCENARIOS = ("grant", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS)
 SCENARIOS = (*ACCEPTANCE_SCENARIOS, "kill-after-intent", "kill-after-consume")
 REQUIRED_CASES = frozenset(
@@ -204,6 +206,14 @@ def _no_target_child(target: Generation, *, running: bool) -> None:
         assert not Path(f"/proc/{pid}/task/{pid}/children").read_text().strip(), "prelaunch target has a child process"
 
 
+def _require_target_absent(target_id: str) -> None:
+    """Prove exact object absence in the actual complete local inventory."""
+    assert re.fullmatch(r"[0-9a-f]{64}", target_id), "the selected target must be an exact Docker ID"
+    identifiers = Chain.docker("ps", "--all", "--quiet", "--no-trunc").splitlines()
+    assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in identifiers) and len(set(identifiers)) == len(identifiers), "the complete Docker inventory is malformed"
+    assert target_id not in identifiers, "the deliberately removed target was recreated or remains present"
+
+
 def _native_refused_branch(chain: Chain, prior: Generation) -> Generation:
     candidate = chain.prepare("D", prior)
     assert candidate.intent is not None and candidate.proxy is not None
@@ -276,6 +286,13 @@ def _check_lineage(chain: Chain, captures: tuple[CapturedGeneration, ...]) -> di
             pass
         else:
             raise AssertionError("a truncated original lineage was accepted as complete")
+        foreign = replace(chain.history_binding, deployment="foreign-deployment-" + uuid.uuid4().hex, history=str(uuid.uuid4()))
+        try:
+            verify_lineage(replace(complete, binding=foreign), chain.history_binding, history, tuple(descriptors))
+        except OriginalEvidenceUnavailable:
+            pass
+        else:
+            raise AssertionError("a lineage report from another deployment/history was accepted")
         outcomes = {item.instance_id: item.outcome for item in complete.generations}
         assert set(outcomes) == {"A", "B", "C", "D"}
         assert outcomes["B"] == "succeeded" and outcomes["C"] in {"launched", "unknown"} and outcomes["D"] == "never-created"
@@ -511,6 +528,15 @@ def inspect_durable_result(root: Path, *, issuer_log: str, consumer_log: str) ->
     }
 
 
+def _observation_cases(value: dict[str, object], name: str, schema: str, expected: frozenset[str]) -> dict[str, dict[str, object]]:
+    document = value.get(name)
+    assert isinstance(document, dict) and document.get("schema") == schema
+    rows = document.get("cases")
+    assert isinstance(rows, list) and len(rows) == len(expected) and all(isinstance(item, dict) for item in rows)
+    assert {item.get("case") for item in rows} == expected
+    return {item["case"]: item for item in rows}
+
+
 def validate_result(value: dict[str, object]) -> None:
     """The CI oracle requires every native case and rejects partial acceptance."""
     assert value.get("schema") == RESULT_SCHEMA and value.get("status") == "passed"
@@ -522,13 +548,23 @@ def validate_result(value: dict[str, object]) -> None:
     assert isinstance(value.get("durable"), dict)
     if scenario == "grant":
         assert set(value["durable"]["record_sha256"]) == {"reserved", "intent", "consumed", "receipt"}
-        peer = value.get("peer_observations", {})
-        assert peer.get("schema") == "actual-recovery-native-peer-faults-v1"
-        assert {item.get("case") for item in peer.get("cases", ())} == REQUIRED_PEER_CASES
-        for item in peer["cases"]:
+        peer = _observation_cases(value, "peer_observations", "actual-recovery-native-peer-faults-v1", REQUIRED_PEER_CASES)
+        for item in peer.values():
             assert item.get("issuer_returncode") == 2 and item.get("epoch_unreserved") is True and item.get("issuer_endpoint_removed_by_original") is True
             assert item.get("consumer_grant_accepted") is False and item.get("no_child_or_admission") is True
             assert item.get("issuer_syscall", {}).get("bytes_observed", 0) > 0
+            if item["case"] in {"queued-rights-without-receipt-refused", "received-rights-without-receipt-refused"}:
+                assert item.get("receiver_alive_until_issuer_refusal") is True and item.get("issuer_refused_before_receiver_termination") is True
+        factory = _observation_cases(value, "factory_override_observations", "actual-recovery-factory-overrides-v1", FACTORY_OBSERVATION_CASES)
+        for item in factory.values():
+            assert item.get("returncode") == 2 and item.get("refusal")
+            assert re.fullmatch(r"[0-9a-f]{64}", item.get("alternate_inputs_sha256", "")) and re.fullmatch(r"[0-9a-f]{64}", item.get("epoch_sha256", ""))
+        tasks = _observation_cases(value, "task_observations", "actual-recovery-task-observations-v1", TASK_OBSERVATION_CASES)
+        assert tasks["escaped-nonleader-current-containment-refused"]["status"] == "unavailable"
+        exited = tasks["measured-exited-nonleader-current-containment-reverified"]
+        assert exited["status"] == "observed-current-recovery-containment" and exited["after_exit"] == exited["after_verification"]
+        assert exited["after_exit"]["pidfd_readable"] is True and exited["after_exit"]["nonleader_absent"] is True
+        assert exited["after_exit"]["leader"]["state"] == "Z" and exited["after_exit"]["leader"]["network_namespace"] is None
     elif scenario in BOUNDARY_SCENARIOS:
         publication, when = parse_boundary(scenario)
         assert value["durable"]["publication"] == publication and value["durable"]["when"] == when
@@ -543,6 +579,17 @@ def validate_result(value: dict[str, object]) -> None:
         assert value.get("preservation_baseline") == "after-deliberate-fixture-mutation"
         assert value["durable"]["mutation"]["preservation_baseline"] == value["preservation_baseline"]
         assert value["preserved_originals_sha256"] == value["durable"]["originals_after_injection_sha256"]
+        if scenario == "late-target-loss":
+            target_fault = value["durable"]["mutation"]["target_fault"]
+            assert target_fault["pidfd_death_observed"] is True and target_fault["exact_docker_id_absent"] is True and target_fault["docker_rm_returncode"] == 0
+            assert target_fault["other_docker_ids_preserved"] is True
+        elif scenario == "late-original-attempt":
+            attempt = value["durable"]["mutation"]["original_attempt"]
+            changed = value["durable"]["mutation"]["file_fault"]
+            assert (attempt["instance_id"], attempt["outcome"], attempt["terminal_kind"]) == ("D", "never-created", "never-created")
+            assert attempt["independent_lineage_verified"] is True and attempt["retained_intent_lineage_matched"] is True
+            assert attempt["original_file"]["path"] == changed["path"] and attempt["original_file"]["sha256"] == changed["before"][-1]
+            assert (attempt["original_file"]["device"], attempt["original_file"]["inode"]) == tuple(changed["before"][:2])
     else:
         assert value["durable"]["phase"] == ("intent" if scenario == "kill-after-intent" else "consumed" if scenario == "kill-after-consume" else "receipt")
         assert value["durable"]["consumer_grant_acknowledged"] is False
@@ -740,8 +787,11 @@ def _late_mutation(
         check_workers()
         barrier.release()
         assert issuer.wait(timeout=1800) == 2, "the actual issuer did not refuse the changed post-intent authority"
-        _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "late refusal ends the exact current consumer lifetime", timeout=120)
-        assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
+        if scenario == "late-target-loss":
+            _require_target_absent(target.generation.container)
+        else:
+            _wait(lambda: Chain.docker("inspect", "--format", "{{.State.Running}}", target.generation.container) == "false", "late refusal ends the exact current consumer lifetime", timeout=120)
+            assert Chain.docker("inspect", "--format", "{{.State.ExitCode}}", target.generation.container) == "1"
         _no_target_child(target.generation, running=False)
         assert "Recovery custody acknowledged" not in consumer_log.read_text() and "One consumed recovery epoch grant send completed" not in issuer_log.read_text()
         assert _snapshot((EPOCH_ROOT,)) == epoch, "late mutation reached consumption or rewrote original epoch evidence"
@@ -749,6 +799,8 @@ def _late_mutation(
         check_workers()
         replay = subprocess.run([sys.executable, "-B", "-m", "auto_coder.management.recovery_epoch"], capture_output=True, text=True, timeout=30)
         assert replay.returncode == 2 and _snapshot((EPOCH_ROOT,)) == epoch, "the uncertain original intent was repaired or reissued"
+        if scenario == "late-target-loss":
+            _require_target_absent(target.generation.container)
         assert _snapshot(retained_roots) == injected
         check_workers()
         result = {
@@ -866,6 +918,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
 
             cases.extend(LINEAGE_REPORT_CASES)
             cases.extend(run_native_negatives(native_context, lambda label: _issuer_refusal(native_context, target, label), preservation))
+            result["factory_override_observations"] = json.loads((root / "native-factory-override-observations.json").read_bytes())
             cases.extend(_original_negatives(native_context, target, chain, preservation))
             cases.extend(run_native_peer_cases(native_context, preservation))
             result["peer_observations"] = json.loads((root / "native-peer-observations.json").read_bytes())
@@ -893,6 +946,7 @@ def run_fixture(*, authorization_id: str, source_repository: Path, source_token_
         cases.append("genuine-installed-ready-in-target")
         if scenario == "grant":
             cases.extend(verify_native_containment_reports(native_context, issuer.pid))
+            result["task_observations"] = json.loads((root / "native-task-observations.json").read_bytes())
             assert _snapshot(retained_roots) == preserved
             workers.preserved(*worker_before)
         consumer_log = target.generation.path("state") / "logs" / "recovery-epoch-bootstrap.log"

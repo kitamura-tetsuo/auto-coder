@@ -7,7 +7,9 @@ The separately authorized VM runs every production-issuer and report-CLI case.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import select
 import signal
 import stat
 import subprocess
@@ -125,6 +127,65 @@ def test_modified_injection_is_retained_instead_of_destructively_restored(tmp_pa
     assert fixture._projection(backup) == original
 
 
+def test_missing_owner_injection_never_creates_a_substitute_and_restores_the_original(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    path, backup = tmp_path / "owner.lock", tmp_path / "owner.original"
+    _write_private(path, b"original owner")
+    before = fixture._projection(path)
+    with fixture._missing_original(context.epoch_root, path, backup):
+        assert not path.exists()
+        assert fixture._projection(backup) == before
+        fixture.assert_unreserved_epoch(context.epoch_root)
+    assert fixture._projection(path) == before
+    assert not backup.exists()
+
+
+def test_issuer_recreated_missing_owner_is_retained_as_a_failure(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    path, backup = tmp_path / "owner.lock", tmp_path / "owner.original"
+    _write_private(path, b"original owner")
+    before = fixture._projection(path)
+    with pytest.raises(AssertionError, match="recreated"):
+        with fixture._missing_original(context.epoch_root, path, backup):
+            _write_private(path, b"unexpected replacement")
+    assert fixture._projection(backup) == before
+    assert path.read_bytes() == b"unexpected replacement"
+    assert path.stat().st_ino != backup.stat().st_ino
+
+
+def test_publication_during_missing_owner_case_never_restores_or_retries(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    path, backup = tmp_path / "owner.lock", tmp_path / "owner.original"
+    _write_private(path, b"original owner")
+    before = fixture._projection(path)
+    with pytest.raises(fixture.EpochAlreadyPublished, match="never repair or retry"):
+        with fixture._missing_original(context.epoch_root, path, backup):
+            _write_private(context.epoch_root / "reserved.json", b"uncertain original publication")
+    assert not path.exists()
+    assert fixture._projection(backup) == before
+    assert (context.epoch_root / "reserved.json").read_bytes() == b"uncertain original publication"
+
+
+@pytest.mark.parametrize("change", ["contents", "inode", "added-entry", "removed-entry"])
+def test_alternate_authority_snapshot_detects_real_file_or_membership_changes(tmp_path: Path, change: str) -> None:
+    root = tmp_path / "alternate"
+    root.mkdir(mode=0o700)
+    path = root / "inventory.json"
+    _write_private(path, b"original alternate input")
+    before = fixture._alternate_input_snapshot(root)
+    assert fixture._alternate_input_snapshot(root) == before
+    if change == "contents":
+        path.write_bytes(b"modified alternate input")
+    elif change == "inode":
+        path.rename(tmp_path / "retained-original")
+        _write_private(path, b"original alternate input")
+    elif change == "added-entry":
+        _write_private(root / "reserved.json", b"unexpected publication")
+    else:
+        path.unlink()
+    assert fixture._alternate_input_snapshot(root) != before
+
+
 def test_each_refusal_compares_injected_and_restored_original_state(tmp_path: Path) -> None:
     context = _context(tmp_path)
     original, backup = tmp_path / "owner", tmp_path / "owner.original"
@@ -203,6 +264,45 @@ def test_malformed_real_process_readiness_is_a_failure() -> None:
             pytest.fail("an invalid native barrier was accepted")
 
 
+def test_exited_nonleader_control_retains_the_same_real_zombie_for_an_independent_reader() -> None:
+    code = "import json,threading;event=threading.Event();\ndef occupy():\n print(json.dumps({'tid':threading.get_native_id()}),flush=True);event.wait()\nthread=threading.Thread(target=occupy);thread.start();thread.join()"
+    process = subprocess.Popen((sys.executable, "-I", "-B", "-c", code), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    descriptor = os.pidfd_open(process.pid, 0)
+    try:
+        assert process.stdout is not None and select.select((process.stdout,), (), (), 10)[0]
+        tid = json.loads(process.stdout.readline())["tid"]
+        leader = fixture._task_observation(process.pid, process.pid)
+        nonleader = fixture._task_observation(process.pid, tid)
+        assert leader.pid == nonleader.pid and leader.tid != nonleader.tid
+        assert leader.network_namespace == nonleader.network_namespace == os.readlink("/proc/self/ns/net")
+        assert leader.state not in {"Z", "X", "x"} and nonleader.state not in {"Z", "X", "x"}
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        exited = fixture._wait_unreaped_exit(process.pid, descriptor, leader.start_token, tid)
+        assert exited.leader.start_token == leader.start_token and exited.leader.state == "Z"
+        assert exited.leader.network_namespace is None and exited.nonleader_absent
+        assert exited.remaining_tids == (process.pid,) and exited.pidfd_readable
+        assert (exited.wait_code, exited.wait_status) == (os.CLD_KILLED, signal.SIGTERM)
+        probe = (
+            "import json,os,sys;from pathlib import Path;p=Path('/proc')/sys.argv[1];s=(p/'stat').read_text().rsplit(')',1)[1].split();"
+            "assert s[0]=='Z' and s[19]==sys.argv[2];assert sorted(x.name for x in (p/'task').iterdir())==[sys.argv[1]];\n"
+            "try: os.readlink(p/'ns/net')\nexcept FileNotFoundError: print(json.dumps({'state':s[0],'start':s[19],'namespace':None}))\n"
+            "else: raise AssertionError('exited task retained nsproxy')"
+        )
+        observed = subprocess.run((sys.executable, "-I", "-B", "-c", probe, str(process.pid), leader.start_token), capture_output=True, text=True, timeout=10, check=True)
+        assert json.loads(observed.stdout) == {"state": "Z", "start": leader.start_token, "namespace": None}
+        assert fixture._wait_unreaped_exit(process.pid, descriptor, leader.start_token, tid) == exited
+        with pytest.raises(AssertionError, match="measured namespace-free zombie"):
+            fixture._wait_unreaped_exit(process.pid, descriptor, str(int(leader.start_token) + 1), tid)
+        assert process.wait(timeout=10) == -signal.SIGTERM
+        with pytest.raises(ChildProcessError):
+            fixture._wait_unreaped_exit(process.pid, descriptor, leader.start_token, tid)
+    finally:
+        if process.poll() is None:
+            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+        process.communicate(timeout=10)
+        os.close(descriptor)
+
+
 _RESOURCE_HOLDER = """
 import fcntl
 import os
@@ -270,9 +370,10 @@ def test_native_entry_refuses_unapproved_roots_before_any_fixture_effect(tmp_pat
 
 
 def test_native_case_oracles_distinguish_actual_issuer_and_separate_report_work() -> None:
-    assert len(fixture.REQUIRED_NEGATIVE_CASES) == 9
-    assert len(fixture.REQUIRED_REPORT_CASES) == 4
+    assert len(fixture.REQUIRED_NEGATIVE_CASES) == 17
+    assert len(fixture.REQUIRED_REPORT_CASES) == 6
     assert fixture.REQUIRED_NEGATIVE_CASES.isdisjoint(fixture.REQUIRED_REPORT_CASES)
-    assert {"busy-original-owner-refused", "busy-controller-fence-refused", "replaced-epoch-lock-refused", "retained-old-network-task-and-listener-refused", "old-published-listener-refused"} <= fixture.REQUIRED_NEGATIVE_CASES
-    assert {"forged-native-containment-refused", "cross-deployment-containment-refused", "stale-native-containment-refused"} <= fixture.REQUIRED_REPORT_CASES
+    assert {"busy-original-owner-refused", "busy-controller-fence-refused", "missing-original-owner-refused", "replaced-epoch-lock-refused", "retained-old-network-task-and-listener-refused", "escaped-old-network-nonleader-refused", "old-published-listener-refused"} <= fixture.REQUIRED_NEGATIVE_CASES
+    assert {"forged-native-containment-refused", "cross-deployment-containment-refused", "stale-native-containment-refused", "escaped-nonleader-current-containment-refused", "measured-exited-nonleader-current-containment-reverified"} <= fixture.REQUIRED_REPORT_CASES
+    assert {"factory-root-argument-refused", "factory-inventory-argument-refused", "factory-epoch-root-environment-refused", "factory-inventory-environment-refused", "factory-authorization-environment-refused", "factory-containment-environment-refused"} <= fixture.REQUIRED_NEGATIVE_CASES
     assert stat.S_IMODE(Path(fixture.__file__).stat().st_mode) & 0o111 == 0

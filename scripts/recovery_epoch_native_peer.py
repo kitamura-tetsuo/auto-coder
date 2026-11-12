@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -33,7 +34,8 @@ from scripts.test_management_containment_enrollment_host import _docker, _system
 from auto_coder.logger_config import get_logger
 from auto_coder.management.bootstrap_supervisor import BootstrapConfig
 from auto_coder.management.containment_route_manifest import _systemd_unit
-from auto_coder.management.original_attempts import canonical
+from auto_coder.management.original_attempt_evidence import OriginalLineageEvidence, derive_lineage, observe, verify_lineage
+from auto_coder.management.original_attempts import canonical, read_original
 from auto_coder.management.recovery_epoch_authorization import AUTHORIZATION_FILE, PEER_SOCKET, EpochAuthorization
 from auto_coder.management.recovery_epoch_consumer import GRANT_SCHEMA, ConsumerConfiguration, parse_consumer_configuration
 from auto_coder.management.recovery_epoch_peer import CHALLENGE_SCHEMA, MAX_MESSAGE_BYTES, MAX_RESOURCES, OFFER_SCHEMA, RECEIPT_SCHEMA, inspect_kernel_lock
@@ -51,6 +53,7 @@ LATE_MUTATION_SCENARIOS = (
     "late-original-fence",
     "late-target-fence",
     "late-controller-fence",
+    "late-target-loss",
 )
 _SYS_SENDTO = 44
 _SYS_SENDMSG = 46
@@ -138,6 +141,63 @@ class DockerTraceProcess:
             self.resume()
             os.close(self.pidfd)
             self.pidfd = -1
+
+
+def _container_ids(encoded: str) -> tuple[str, ...]:
+    """Require complete real Docker identities before interpreting absence."""
+    values = tuple(encoded.splitlines())
+    if len(values) > 4096 or len(values) != len(set(values)) or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in values):
+        raise AssertionError("the actual Docker inventory has incomplete or conflicting identities")
+    return tuple(sorted(values))
+
+
+def _verify_target_loss(pidfd: int, identifier: str, before: tuple[str, ...], after: tuple[str, ...]) -> None:
+    """Require both kernel death and removal of exactly the selected object."""
+    if before.count(identifier) != 1 or after != tuple(value for value in before if value != identifier):
+        raise AssertionError("the exact target was not removed without changing other Docker objects")
+    poll = select.poll()
+    poll.register(pidfd, select.POLLIN)
+    if not poll.poll(0):
+        raise AssertionError("the original target pidfd has not independently reported death")
+
+
+@contextmanager
+def _remove_target(context: NativeNegativeContext) -> Iterator[dict[str, object]]:
+    """Remove only the pinned disposable target and retain that loss on exit."""
+    target = DockerTraceProcess(context)
+    try:
+        identifier = context.enrollment.target.management_id
+        before = _container_ids(_docker("ps", "--all", "--quiet", "--no-trunc"))
+        if identifier not in before:
+            raise AssertionError("the exact target is missing before its deliberate removal")
+        target.check()
+        # _docker checks the actual command return code. Neither a failed
+        # removal nor Docker's stopped flag supplies kernel lifetime evidence.
+        removed = _docker("rm", "--force", identifier, timeout=60)
+        if removed != identifier:
+            raise AssertionError("the actual Docker removal did not identify the selected target")
+        _wait(target.dead, "the original target pidfd reports actual death")
+        after = _container_ids(_docker("ps", "--all", "--quiet", "--no-trunc"))
+        _verify_target_loss(target.pidfd, identifier, before, after)
+        observation = {
+            "target_id": identifier,
+            "pid": target.pid,
+            "start_token": target.start_token,
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            "docker_started_at": target.docker_started_at,
+            "docker_rm_returncode": 0,
+            "pidfd_death_observed": True,
+            "exact_docker_id_absent": True,
+            "other_docker_ids_preserved": True,
+            "container_ids_before_sha256": hashlib.sha256(canonical(before)).hexdigest(),
+            "container_ids_after_sha256": hashlib.sha256(canonical(after)).hexdigest(),
+        }
+        yield observation
+        # The driver must retain the injected loss through the original
+        # refusal and fixed-root replay; it must never recreate this target.
+        _verify_target_loss(target.pidfd, identifier, before, _container_ids(_docker("ps", "--all", "--quiet", "--no-trunc")))
+    finally:
+        target.close()
 
 
 def _consumer_configuration(context: NativeNegativeContext) -> ConsumerConfiguration:
@@ -241,6 +301,59 @@ def _require_publication_prefix(context: NativeNegativeContext, issuer_pid: int,
         raise AssertionError("the durable original prefix belongs to another issuer lifetime")
 
 
+def _failed_terminal(lineage: OriginalLineageEvidence) -> tuple[Path, dict[str, object]]:
+    """Select a failed original only from the complete, independently read set."""
+    branches = [generation for generation in lineage.generations if generation.outcome == "never-created"]
+    if lineage.unavailable or len(branches) != 1:
+        raise AssertionError("the actual fixture has no unique complete never-created failed branch")
+    branch = branches[0]
+    matches = []
+    for original in lineage.originals:
+        path = Path(original.path)
+        if path.parent != Path(lineage.binding.root) or path.suffix != ".json":
+            continue
+        encoded, file_id = read_original(path)
+        if file_id != (original.device, original.inode) or hashlib.sha256(encoded).hexdigest() != original.sha256:
+            raise AssertionError("the selected failed-branch original changed after independent derivation")
+        value = json.loads(encoded)
+        if isinstance(value, dict) and value.get("kind") == "never-created" and value.get("attempt") == branch.request_id:
+            matches.append((path, original))
+    if len(matches) != 1:
+        raise AssertionError("the actual failed branch has no unique matched original terminal record")
+    path, original = matches[0]
+    return path, {"instance_id": branch.instance_id, "request_id": branch.request_id, "outcome": branch.outcome, "frontier": lineage.frontier, "terminal_kind": "never-created", "original_file": asdict(original)}
+
+
+def _failed_branch_original(context: NativeNegativeContext) -> tuple[Path, dict[str, object]]:
+    """Reverify real L evidence and bind the fault to the issuer's saved input."""
+    authorization = EpochAuthorization.parse(json.loads(read_original(AUTHORIZATION_FILE)[0]))
+    if authorization.target_id != context.enrollment.target.management_id:
+        raise AssertionError("the current authorization selects another target")
+    with ExitStack() as held:
+        descriptors = []
+        for original in context.enrollment.originals:
+            owner = original.owner
+            if owner is None:
+                continue
+            _, identity = read_original(Path(owner.path))
+            descriptor = os.open(owner.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            held.callback(os.close, descriptor)
+            if identity != (owner.device, owner.inode) or (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino) != identity:
+                raise AssertionError("the actual original owner changed before independent lineage verification")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            descriptors.append(descriptor)
+        history = held.enter_context(observe(authorization.history))
+        current = derive_lineage(authorization.history, history, tuple(descriptors))
+        verify_lineage(current, authorization.history, history, tuple(descriptors))
+        intent = json.loads(read_original(context.epoch_root / "intent.json")[0])
+        saved = json.loads(intent["binding"]["evidence_json"])["lineage"]
+        if canonical(asdict(current)) != canonical(saved):
+            raise AssertionError("the independently verified failed-branch scope differs from the actual retained intent")
+        path, observation = _failed_terminal(current)
+        observation.update(independent_lineage_verified=True, retained_intent_lineage_matched=True)
+        return path, observation
+
+
 def _mutation_file(context: NativeNegativeContext, scenario: str) -> Path:
     target = context.enrollment.target
     if scenario == "late-management-config":
@@ -257,12 +370,6 @@ def _mutation_file(context: NativeNegativeContext, scenario: str) -> Path:
     authorization = EpochAuthorization.parse(json.loads(AUTHORIZATION_FILE.read_bytes()))
     if authorization.target_id != target.management_id:
         raise AssertionError("the actual fixed authorization selects a different target")
-    if scenario == "late-original-attempt":
-        path = Path(authorization.history.root) / "00000000.json"
-        original = json.loads(path.read_bytes())
-        if original.get("kind") != "anchor":
-            raise AssertionError("the selected first event is not an actual original attempt")
-        return path
     if scenario == "late-ready-receipt":
         return Path(authorization.ready_receipt.path)
     if scenario == "late-installed-source":
@@ -279,7 +386,9 @@ def mutate_after_intent(context: NativeNegativeContext, scenario: str, issuer_pi
     _require_publication_prefix(context, issuer_pid, "intent")
     observation: dict[str, object] = {"scenario": scenario, "issuer_pid": issuer_pid, "issuer_start_token": _token(issuer_pid), "boundary": "after-intent-head", "preservation_baseline": "after-deliberate-fixture-mutation"}
     with ExitStack() as held:
-        if scenario.endswith("-fence"):
+        if scenario == "late-target-loss":
+            observation["target_fault"] = held.enter_context(_remove_target(context))
+        elif scenario.endswith("-fence"):
             pid = issuer_pid
             if scenario == "late-controller-fence":
                 lock, mode = context.enrollment.watchers[0].lock, "WRITE"
@@ -304,7 +413,10 @@ def mutate_after_intent(context: NativeNegativeContext, scenario: str, issuer_pi
                 raise AssertionError("the real controller did not become startable without starting a process")
             observation["controller_fault"] = {"unit": unit, "before": asdict(before), "after": asdict(after)}
         else:
-            path = _mutation_file(context, scenario)
+            if scenario == "late-original-attempt":
+                path, observation["original_attempt"] = _failed_branch_original(context)
+            else:
+                path = _mutation_file(context, scenario)
             if not path.is_relative_to(context.fixture_root) or path != path.resolve(strict=True):
                 raise PermissionError("late mutation escaped the separately authorized fixture root")
             before = _projection(path)
@@ -557,6 +669,18 @@ def _descriptor_snapshot(pid: int) -> tuple[tuple[int, int, int, str], ...]:
     return tuple(result)
 
 
+def _stopped_receiver(pid: int, start_token: str, pidfd: int, descriptors: tuple[tuple[int, int, int, str], ...]) -> dict[str, object]:
+    """Prove refusal preceded receiver death or any userspace acknowledgment."""
+    poll = select.poll()
+    poll.register(pidfd, select.POLLIN)
+    if poll.poll(0) or _token(pid) != start_token:
+        raise AssertionError("the receiver lifetime ended before the original issuer refused")
+    state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    if state not in {"T", "t"} or _descriptor_snapshot(pid) != descriptors:
+        raise AssertionError("the receipt-free receiver is not still stopped with its exact descriptors")
+    return {"pid": pid, "start_token": start_token, "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "state": state, "descriptor_sha256": hashlib.sha256(canonical(descriptors)).hexdigest(), "pidfd_alive": True}
+
+
 def _assert_no_target_admission(context: NativeNegativeContext, *, running_pid: int | None = None) -> None:
     state = Path(context.enrollment.target.owner.path).parent
     config = BootstrapConfig.read(Path(context.enrollment.target.bootstrap_config.path))
@@ -610,6 +734,7 @@ def _run_peer_case(context: NativeNegativeContext, case: str) -> dict[str, objec
     target: DockerTraceProcess | None = None
     replacement: DockerTraceProcess | None = None
     paused_snapshot: tuple[tuple[int, int, int, str], ...] | None = None
+    unacknowledged_snapshot: tuple[tuple[int, int, int, str], ...] | None = None
     with ExitStack() as held:
         output = held.enter_context(log.open("xb"))
         try:
@@ -644,8 +769,7 @@ def _run_peer_case(context: NativeNegativeContext, case: str) -> dict[str, objec
                     raise AssertionError("the successful native send did not precede actual receiver custody")
                 observations["receiver_before_and_after_enqueue"] = paused_snapshot
                 _assert_no_target_admission(context, running_pid=target.pid)
-                target.kill()
-                target.wait(30)
+                unacknowledged_snapshot = paused_snapshot
                 host_barrier.release()
             elif receiving_offer:
                 target = DockerTraceProcess(context)
@@ -658,7 +782,7 @@ def _run_peer_case(context: NativeNegativeContext, case: str) -> dict[str, objec
                 observations["receiver_syscall"] = asdict(received)
                 assert_unreserved_epoch(context.epoch_root)
                 _assert_no_target_admission(context, running_pid=target.pid)
-                target_barrier.kill()
+                unacknowledged_snapshot = _descriptor_snapshot(target.pid)
             elif case == "changed-target-lifetime-refused":
                 target = DockerTraceProcess(context)
                 observations["original_target_lifetime"] = {"pid": target.pid, "start_token": target.start_token}
@@ -680,6 +804,21 @@ def _run_peer_case(context: NativeNegativeContext, case: str) -> dict[str, objec
             issuer.wait(timeout=120)
             if issuer.returncode != 2:
                 raise AssertionError("the actual issuer did not refuse the incomplete native custody")
+            if unacknowledged_snapshot is not None:
+                assert target is not None
+                # Keep the exact live receiver blocked until the issuer's
+                # genuine receipt timeout refuses. Killing it beforehand would
+                # let a dead-peer check hide missing acknowledgment enforcement.
+                target.check()
+                observations["live_receiver_after_issuer_refusal"] = _stopped_receiver(target.pid, target.start_token, target.pidfd, unacknowledged_snapshot)
+                assert_unreserved_epoch(context.epoch_root)
+                _assert_no_target_admission(context, running_pid=target.pid)
+                observations.update(receiver_alive_until_issuer_refusal=True, issuer_refused_before_receiver_termination=True)
+                if target_barrier is not None:
+                    target_barrier.kill()
+                else:
+                    target.kill()
+                    target.wait(30)
             _wait(lambda: _target_state(context).get("Running") is False, "the actual refused consumer exits", timeout=90)
             _assert_no_target_admission(context)
             if PEER_SOCKET.exists() or PEER_SOCKET.is_symlink():

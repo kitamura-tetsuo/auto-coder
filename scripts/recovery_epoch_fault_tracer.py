@@ -37,6 +37,7 @@ _WAIT_ALL = 0x40000000
 _AUDIT_ARCH_X86_64 = 0xC000003E
 _SYS_OPENAT = 257
 _SYS_FSYNC = 74
+_BARRIER_ACTION_TIMEOUT = 1800
 
 
 class _Entry(ctypes.Structure):
@@ -234,7 +235,7 @@ class KernelPublicationBarrier:
             if not os.WIFSTOPPED(status):
                 raise AssertionError("actual issuer exited before the initial trace barrier")
             self._ready.set()
-            if not self._resume.wait(180):
+            if not self._resume.wait(_BARRIER_ACTION_TIMEOUT):
                 raise TimeoutError("the actual target probe did not release the initial barrier")
             self._ptrace(_PTRACE_SYSCALL)
             while True:
@@ -245,7 +246,7 @@ class KernelPublicationBarrier:
                 if delivered == signal.SIGTRAP | 0x80:
                     if self._observe_call():
                         self._record()
-                        if not self._action.wait(180):
+                        if not self._action.wait(_BARRIER_ACTION_TIMEOUT):
                             raise TimeoutError("the observed publication was not explicitly released or killed")
                         if self._decision == "release":
                             self._ptrace(_PTRACE_DETACH)

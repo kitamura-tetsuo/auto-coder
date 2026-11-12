@@ -54,12 +54,16 @@ python3 -m venv /opt/fixture-tools
 mkdir -m 700 /opt/recovery-fixture /opt/reviewed-source
 tar --extract --gzip --file "$input/source.tar.gz" --directory /opt/recovery-fixture
 cd /opt/recovery-fixture
-/opt/fixture-tools/bin/uv sync --locked --no-editable --no-dev --extra test
+/opt/fixture-tools/bin/uv sync --locked --no-editable --no-dev --extra test --link-mode copy
 .venv/bin/python - <<'PY'
 from pathlib import Path
 import auto_coder.management.proxy_watch_cli as watcher
 
-Path(watcher.__file__).chmod(0o600)
+source = Path(watcher.__file__)
+source.chmod(0o600)
+identity = source.stat()
+assert identity.st_uid == 0 and identity.st_nlink == 1
+print("Installed watcher source is a private, independently copied file.")
 PY
 docker compose version
 install -m 600 "$input/source-token" /run/recovery-fixture-source-token

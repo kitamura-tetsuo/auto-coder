@@ -198,3 +198,32 @@ observable contention, missing/mutated/forged prerequisites, all-controller/task
 listener refusals and interruption/host-death boundaries. Passing the component
 selection alone does not establish those native obligations or applicability to
 a current incident with missing originals.
+
+### Maintained native acceptance
+
+`scripts/test_management_recovery_epoch_host.py` owns the actual host-entrypoint
+driver and each scenario's required outcomes. The
+`Management Recovery Epoch Acceptance` workflow derives its complete matrix from
+that driver's `ACCEPTANCE_SCENARIOS`; its final job requires every scenario to
+succeed. A missing case, failed VM, unavailable native kernel operation or failed
+preservation check cannot become a passed result. The VM runner and reviewed
+reproduction procedure are documented in `scripts/recovery_vm/README.md`.
+
+| Contract | Actual fixture action and independent outcome |
+| --- | --- |
+| AS-B01 | Run genuine genesis, successful successor, never-created failed branch and unresolved successor producers. Verify full original lineage, reject forged/cross-deployment/stale reports, remove an original journal, and mutate the retained failed branch's exact terminal evidence after intent. Refusal must preserve the original uncertainty and stores. |
+| AS-B02 | Install the ordinary service/timer/watcher/alternate-root fixture routes, bind them in approved enrollment and verify their actual inhibition. Exercise unknown/omitted/startable controllers, retained namespace listeners, an escaped nonleader task and independently measured exit. Repeat the real containment verifier in a separate process and preserve unrelated worker claims and effect counters. |
+| AS-B03 | Use the real host and Docker bootstrap processes, kernel peer credentials/pidfds and independent SH/target EX acquisition. Refuse busy/replaced/missing fences, a foreign acquiring process, queued rights without acknowledgment, received rights before acknowledgment, and a changed target lifetime. Later successful issuance must retain the complete observed custody. |
+| AS-B04 | Reject actual CLI/environment root and inventory overrides. Stop the real issuer at its fsynced reservation head while a contender runs, then test conflicting target/preparation binding. In separate fresh VMs, SIGKILL the original process before and after every record/head publication and inspect the exact retained prefix and refused replay. |
+| AS-B05 | After the original intent head, change exact configuration, READY, installed source, original evidence, watcher/controller state, fence acquisition or target lifetime. Require refusal before consumption. Separately stop the receiver, require the real grant send to succeed, prove issuer death through its pidfd, then resume the receiver and require unavailable current custody with no replay. |
+
+Publication and protocol fault helpers only observe real syscall entry/exit and
+kernel descriptors. They do not replace system-call results, inject verifier
+verdicts or alter production code. Deliberate late fixture mutations remain
+present through refusal and replay; their exported preservation baseline is
+explicitly the state after that injection. The successful path measures original
+OAuth/history/journal bytes and identities, unrelated beta/release/agent-table
+worker ownership and effect requests, and the absence of any replacement child
+or application admission. The current PR's custody endpoint and a separately
+qualified installed READY are exercised independently; these checks do not claim
+that the separate #2825 management-child launch/readiness contract is complete.

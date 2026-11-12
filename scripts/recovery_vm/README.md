@@ -27,6 +27,8 @@ before its first daemon start and verifies both imported images retain their
 exact approved IDs. Importing between these stores can change the meaning of
 Docker's image ID; a changed ID is a preparation failure, not a reason to select
 another image or weaken the production source checks.
+Docker documents the [fresh-install storage default](https://docs.docker.com/engine/storage/containerd/)
+and the [cross-store image-ID behavior](https://github.com/docker/cli/issues/6670).
 
 ## Reproduce a reviewed scenario
 
@@ -61,7 +63,7 @@ any management fixture. It refuses a populated engine or earlier fixture roots.
 scenario oracle. CI derives its matrix directly from this list and requires
 every matrix job to pass. The two `kill-after-*` debug aliases select boundaries
 already present in the matrix and do not add independent cases. All before/after
-publication cases and all ten mutations after the original intent head run on
+publication cases and all eleven mutations after the original intent head run on
 independent fresh VMs. They
 use real ptrace syscall stops around the actual exclusive record/head creation
 and successful file/directory fsync, with a pinned SIGKILL and no syscall-result
