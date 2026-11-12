@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -268,7 +269,32 @@ async def check_retained_recovery(live: Live, fixture: Fixture, checkpoint: smok
 
 
 def persist_original_ticket(path: Path, fixture: Fixture, checkpoint: smoke.DotCheckpoint, action: str, args: dict[str, object]) -> None:
-    """Fsync original nonsecret intent before an effect, refusing all replays."""
+    """Serialize action-specific original admission across independent clients.
+
+    O_EXCL protects a single action path, not two different actions racing
+    on the same target. Hold the stable, cross-process directory lock through
+    scanning prior intent records and fsyncing the new original ticket.
+    """
+    lock_path = path.parent / ".dot-fixture-original-send.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as error:
+        raise Blocked("The disposable original admission lock is unavailable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            raise Blocked("The disposable original admission lock is untrusted")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as error:
+            raise Blocked("Cannot establish exclusive original admission custody") from error
+        _persist_original_ticket_locked(path, fixture, checkpoint, action, args)
+    finally:
+        os.close(descriptor)
+
+
+def _persist_original_ticket_locked(path: Path, fixture: Fixture, checkpoint: smoke.DotCheckpoint, action: str, args: dict[str, object]) -> None:
+    """Fsync original nonsecret intent before a send, under the directory lock."""
     if path.exists() or path.is_symlink():
         raise Blocked("A previous admission may have been sent; reconcile its original ticket before retry")
     target = args.get("target_id")

@@ -305,8 +305,13 @@ needed by the separate release activation. A green promotion cannot report
 Each scenario has one private original-send ticket. The next permitted action
 uses its own immutable idempotency key; it cannot reuse a key from another action
 on the same target. Any unresolved same-target ticket blocks a new action even
-with a different key. A negative probe can release that local fence only after
-the actual refusal plus independent real-journal absence has been recorded as
+with a different key. Independent fixture clients serialize original-ticket
+admission through one private, stable Linux file lock in the management fixture
+directory, covering the prior-ticket scan and durable ticket creation across
+different action names. A missing, replaced or unprotected lock refuses before
+a mutation; the lock is not a management grant or a substitute for the producer
+journal. A negative probe can release that local fence only after the actual
+refusal plus independent real-journal absence has been recorded as
 `REFUSED`; a refusal response by itself is insufficient. BUSY/CONFLICT responses
 can include an occupying operation ID, which is never adopted as this send's ID.
 

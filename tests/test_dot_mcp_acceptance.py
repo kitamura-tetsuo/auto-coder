@@ -967,3 +967,88 @@ def test_retained_exhaustion_keeps_exact_original_inspection_and_resumption(tmp_
     assert [name for name, _ in calls] == ["auto_coder_whoami", "auto_coder_targets", "auto_coder_operation_inspect"]
     assert ledger.read_bytes() == before
     assert json.loads(ticket.read_text())["operation_id"] == record.operation_id
+
+
+def test_concurrent_distinct_action_tickets_cannot_both_admit_one_target(monkeypatch, tmp_path):
+    """Two independent fixture clients must not bypass the same-target original fence."""
+    import concurrent.futures
+    import threading
+
+    selected_fixture = fixture()
+    beta = selected_fixture.target_ids["beta"]
+    first_seen = threading.Event()
+    second_seen = threading.Event()
+    real_open = accept.os.open
+
+    def simultaneous_original_ticket_open(path, flags, mode=0o777, **kwargs):
+        if str(path).endswith("-original-send.json") and flags & os.O_CREAT:
+            if not first_seen.is_set():
+                first_seen.set()
+                second_seen.wait(timeout=0.6)
+            else:
+                second_seen.set()
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(accept.os, "open", simultaneous_original_ticket_open)
+
+    def reserve(scenario, key):
+        path = tmp_path / f"dot-fixture-{scenario}-original-send.json"
+        source = checkpoint(idempotency_key=key)
+        try:
+            accept.persist_original_ticket(
+                path,
+                selected_fixture,
+                source,
+                accept.MUTATIONS[scenario],
+                {"target_id": beta, "idempotency_key": key},
+            )
+        except accept.Blocked:
+            return "BLOCKED"
+        return "RESERVED"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(reserve, "reevaluate", "first-original-key")
+        b = pool.submit(reserve, "beta-source", "second-original-key")
+        outcomes = [a.result(timeout=5), b.result(timeout=5)]
+
+    assert sorted(outcomes) == ["BLOCKED", "RESERVED"]
+    assert len(list(tmp_path.glob("dot-fixture-*-original-send.json"))) == 1
+
+
+@pytest.mark.parametrize("invalid_lock", ["symlink", "group-writable"])
+def test_original_admission_refuses_replaced_or_unprotected_lock(tmp_path, invalid_lock):
+    """An unsafe original-admission guard cannot authorize a new effect."""
+    lock = tmp_path / ".dot-fixture-original-send.lock"
+    if invalid_lock == "symlink":
+        target = tmp_path / "replacement"
+        target.write_text("")
+        lock.symlink_to(target)
+    else:
+        lock.write_text("")
+        lock.chmod(0o660)
+
+    path = tmp_path / "dot-fixture-reevaluate-original-send.json"
+    with pytest.raises(accept.Blocked, match="admission lock"):
+        accept.persist_original_ticket(
+            path,
+            fixture(),
+            checkpoint(),
+            accept.MUTATIONS["reevaluate"],
+            {"target_id": fixture().target_ids["beta"], "idempotency_key": "original-key"},
+        )
+    assert not path.exists()
+
+
+def test_distinct_target_original_intents_remain_independently_admissible(tmp_path):
+    """The fixture lock must not classify two physical targets as one effect."""
+    selected = fixture()
+    for role, scenario in (("beta", "reevaluate"), ("release", "release-source")):
+        path = tmp_path / f"dot-fixture-{scenario}-original-send.json"
+        accept.persist_original_ticket(
+            path,
+            selected,
+            checkpoint(idempotency_key=f"original-key-{role}"),
+            accept.MUTATIONS[scenario],
+            {"target_id": selected.target_ids[role], "idempotency_key": f"original-key-{role}"},
+        )
+        assert path.is_file()
