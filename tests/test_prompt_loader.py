@@ -1157,3 +1157,19 @@ class TestConditionalPrompts:
         )
         assert "A" in result
         assert "B" in result
+
+
+@pytest.mark.parametrize(
+    "unsafe_payload",
+    [
+        "payload: !!python/name:os.system\n",
+        'payload: !!python/object/apply:os.system ["true"]\n',
+    ],
+)
+def test_prompt_loader_refuses_python_constructor_tags(tmp_path, unsafe_payload):
+    """Accelerated YAML parsing must retain SafeLoader's constructor boundary."""
+    path = tmp_path / "unsafe-prompts.yaml"
+    path.write_text(unsafe_payload, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="Failed to parse prompt configuration"):
+        prompt_loader.load_prompts(str(path))

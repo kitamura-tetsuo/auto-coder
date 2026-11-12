@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parent / "prompts.yaml"
 
 _PROMPTS_CACHE: Dict[Path, Dict[str, Any]] = {}
+# Prefer LibYAML's safe parser for bounded prompt-load CPU cost.
+# Fall back to the same safe constructors when the extension is unavailable.
+_SAFE_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 _ISSUE_POLICY_PROMPTS = frozenset(
     {
@@ -119,7 +122,7 @@ def load_prompts(path: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         with resolved.open("r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
+            data = yaml.load(handle, Loader=_SAFE_YAML_LOADER) or {}
     except FileNotFoundError as exc:
         msg = f"Prompt configuration file not found: {resolved}"
         logger.critical(msg)
