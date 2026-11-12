@@ -58,6 +58,19 @@ def test_disposable_systemd_identities_reject_unrelated_names_without_effects() 
         fixture.DisposableSystemdRoutes.install(fixture_id="production-watcher", manager_id="a" * 64)
 
 
+def test_disposable_systemd_masks_are_persistent_but_sources_are_runtime_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    name = "ac-test-pr2829-" + "a" * 32 + "-management.service"
+    routes = fixture.DisposableSystemdRoutes((name,), ())
+    actions: list[tuple[str, ...]] = []
+    monkeypatch.setattr(fixture, "_systemctl", lambda *arguments: actions.append(arguments))
+    monkeypatch.setattr(fixture, "_verify_expected", lambda *_: {"route_manifest": None})
+    monkeypatch.setattr(routes, "assert_inhibited", lambda: None)
+    assert fixture._SYSTEMD_UNIT_ROOT == Path("/run/systemd/system")
+    assert fixture._SYSTEMD_MASK_ROOT == Path("/etc/systemd/system")
+    routes.temporarily_unmask_and_verify_refusal(Path("/fixture/scope"), Path("/fixture/previous"))
+    assert actions == [("unmask", name), ("mask", name)]
+
+
 def test_reviewed_source_requires_actual_image_readback() -> None:
     with pytest.raises(AssertionError, match="reviewed original-source readback is unavailable"):
         fixture._assert_reviewed_ordinary_source({"installed_bootstrap_source": None, "unavailable": [{"authority": "installed-bootstrap-source", "reason": "absent"}]})

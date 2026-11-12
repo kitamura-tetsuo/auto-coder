@@ -38,8 +38,8 @@ APPROVAL_ROOT = Path("/var/lib/auto-coder/approved-containment-enrollments")
 FIXTURE_ROOT = Path("/var/lib/auto-coder/containment-readback-fixtures")
 IMAGE_TAG = "auto-coder:management-local-abc65544"
 INSTALLED_BOOTSTRAP = "/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/management/bootstrap_supervisor.py"
-_SYSTEMD_UNIT_ROOT = Path("/etc/systemd/system")
-_SYSTEMD_RUNTIME_ROOT = Path("/run/systemd/system")
+_SYSTEMD_UNIT_ROOT = Path("/run/systemd/system")
+_SYSTEMD_MASK_ROOT = Path("/etc/systemd/system")
 
 
 def _docker(*arguments: str, timeout: int = 30) -> str:
@@ -220,7 +220,7 @@ def _systemctl(*arguments: str) -> None:
 
 @dataclass
 class DisposableSystemdRoutes:
-    """Three test-only installed restarters, runtime-masked until removal."""
+    """Three runtime-only restarters protected by persistent test-only masks."""
 
     names: tuple[str, ...]
     sources: tuple[tuple[Path, int, str], ...]
@@ -232,7 +232,7 @@ class DisposableSystemdRoutes:
 
         if not re.fullmatch(r"ac-test-pr2829-[0-9a-f]{32}", fixture_id) or not re.fullmatch(r"[0-9a-f]{64}", manager_id):
             raise ValueError("disposable systemd fixture identity differs")
-        if not _SYSTEMD_UNIT_ROOT.is_dir() or not _SYSTEMD_RUNTIME_ROOT.is_dir():
+        if not _SYSTEMD_UNIT_ROOT.is_dir() or not _SYSTEMD_MASK_ROOT.is_dir():
             raise ValueError("installed systemd directories are unavailable")
         prefix = fixture_id + "-management"
         names = (prefix + ".service", prefix + ".timer", prefix + ".socket")
@@ -244,7 +244,7 @@ class DisposableSystemdRoutes:
             "[Unit]\nDescription=Disposable PR2829 manager restart socket\n" "[Socket]\nListenStream=/run/" + prefix + ".sock\nService=" + names[0] + "\n",
         )
         for name in names:
-            for root in (_SYSTEMD_UNIT_ROOT, _SYSTEMD_RUNTIME_ROOT, Path("/usr/lib/systemd/system"), Path("/lib/systemd/system")):
+            for root in (_SYSTEMD_UNIT_ROOT, _SYSTEMD_MASK_ROOT, Path("/usr/lib/systemd/system"), Path("/lib/systemd/system")):
                 path = root / name
                 if path.exists() or path.is_symlink():
                     raise ValueError("disposable systemd unit name already exists")
@@ -260,7 +260,10 @@ class DisposableSystemdRoutes:
                 identity = path.lstat()
                 state.sources += ((path, identity.st_ino, hashlib.sha256(content.encode("utf-8")).hexdigest()),)
             _systemctl("daemon-reload")
-            _systemctl("mask", "--runtime", *names)
+            # A runtime mask reports masked-runtime, which cannot satisfy the
+            # independently specified protected permanent-mask requirement.
+            # The unit fragments themselves exist only for this runtime fixture.
+            _systemctl("mask", *names)
             state.masked = True
             state.assert_inhibited()
             return state
@@ -277,22 +280,22 @@ class DisposableSystemdRoutes:
 
     def temporarily_unmask_and_verify_refusal(self, scope: Path, previous: Path) -> None:
         target = self.names[0]
-        _systemctl("unmask", "--runtime", target)
+        _systemctl("unmask", target)
         try:
             observed = _verify_expected(scope, previous, {"approved-route-manifest", "saved-report:route_manifest"})
             if observed.get("route_manifest") is not None:
                 raise AssertionError("enabled disposable systemd restarter was accepted")
             logger.info("Unmasking only the disposable manager service invalidated independent route verification")
         finally:
-            _systemctl("mask", "--runtime", target)
+            _systemctl("mask", target)
         self.assert_inhibited()
 
     def cleanup(self) -> None:
         # Never remove an unexpected path or changed file from the host.
         for name in self.names:
-            mask = _SYSTEMD_RUNTIME_ROOT / name
+            mask = _SYSTEMD_MASK_ROOT / name
             if mask.is_symlink() and os.readlink(mask) == "/dev/null":
-                _systemctl("unmask", "--runtime", name)
+                _systemctl("unmask", name)
             elif mask.exists() or mask.is_symlink():
                 raise AssertionError("disposable systemd mask was externally replaced")
         for path, inode, digest in reversed(self.sources):
@@ -303,7 +306,7 @@ class DisposableSystemdRoutes:
         if self.sources:
             _systemctl("daemon-reload")
         for name in self.names:
-            if (_SYSTEMD_UNIT_ROOT / name).exists() or (_SYSTEMD_UNIT_ROOT / name).is_symlink() or (_SYSTEMD_RUNTIME_ROOT / name).exists() or (_SYSTEMD_RUNTIME_ROOT / name).is_symlink():
+            if (_SYSTEMD_UNIT_ROOT / name).exists() or (_SYSTEMD_UNIT_ROOT / name).is_symlink() or (_SYSTEMD_MASK_ROOT / name).exists() or (_SYSTEMD_MASK_ROOT / name).is_symlink():
                 raise AssertionError("disposable systemd unit remained after cleanup")
 
 

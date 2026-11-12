@@ -325,11 +325,14 @@ With **separate explicit host approval for test-only systemd mutations**, add
 `--exercise-disposable-systemd` together with `--exercise-test-route-manifest`.
 This opt-in path creates only UUID-qualified `ac-test-pr2829-*` service, timer
 and socket units, whose service would start only the disposable fixture
-manager. It runtime-masks all three, independently reads the protected
+manager. It places their temporary fragments under `/run/systemd/system` and
+installs protected `/etc/systemd/system` masks for all three (not
+`masked-runtime`, which does not meet the verifier's permanent-mask rule).
+It independently reads the protected
 full-route manifest from the production `observe` and separate `verify`
 entrypoints, then temporarily unmasks **only the disposable service** and
 requires the verifier to refuse its changed/enabled route. It restores the
-mask, removes only its own verified unit files/runtime mask links and reloads
+mask, removes only its own verified runtime fragments and permanent mask links, and reloads
 the systemd catalog to eliminate test-unit references. It does not operate
 on installed Auto-Coder services or authorize any full-profile acceptance.
 The host systemd catalog and its daemon-reload are shared host facilities,
