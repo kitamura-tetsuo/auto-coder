@@ -465,6 +465,27 @@ def verify_current_operator(identity: dict[str, Any], fixture: Fixture, scenario
         raise Blocked("The original fixture OAuth client, identity, resource or current scopes are not verified")
 
 
+def verify_current_targets(value: dict[str, Any], fixture: Fixture) -> None:
+    """Require two unambiguous current policy targets, without discarding entries."""
+    selected = value.get("targets")
+    expected = {
+        fixture.target_ids["beta"]: ("beta", TEST_REPOSITORY),
+        fixture.target_ids["release"]: ("release", "fixture/" + fixture.fixture_id + "-release"),
+    }
+    if value.get("status") != "OK" or not isinstance(selected, list) or len(selected) != len(expected):
+        raise Blocked("The current policy must expose exactly two disposable worker targets")
+    actual: dict[str, tuple[str, str]] = {}
+    for entry in selected:
+        if not isinstance(entry, dict) or any(not isinstance(entry.get(key), str) or not entry[key] for key in ("target_id", "channel", "repository")):
+            raise Blocked("The current policy contains an incomplete physical target binding")
+        target = entry["target_id"]
+        if target in actual:
+            raise Blocked("The current policy contains a duplicate physical target binding")
+        actual[target] = (entry["channel"], entry["repository"])
+    if actual != expected:
+        raise Blocked("The current policy target map cannot prove the two disposable workers")
+
+
 class Live:
     def __init__(self, session: Any, registered: set[str]):
         self.session = session
@@ -560,23 +581,17 @@ async def run_authenticated(fixture: Fixture, checkpoint: smoke.DotCheckpoint, s
             identity = await live.call("auto_coder_whoami", {})
             verify_current_operator(identity, fixture, scenario, mutation=mutate)
             targets = await live.call("auto_coder_targets", {})
-            expected = {
-                fixture.target_ids["beta"]: ("beta", TEST_REPOSITORY),
-                fixture.target_ids["release"]: ("release", "fixture/" + fixture.fixture_id + "-release"),
-            }
-            actual = {entry["target_id"]: (entry["channel"], entry["repository"]) for entry in targets.get("targets", []) if isinstance(entry, dict) and all(name in entry for name in ("target_id", "channel", "repository"))}
-            if targets.get("status") != "OK" or actual != expected:
-                raise Blocked("The current policy target map cannot prove the two disposable workers")
+            verify_current_targets(targets, fixture)
             beta = await observed_target(live, fixture.target_ids["beta"], "beta", TEST_REPOSITORY)
             if scenario == "inspect-original":
                 return await inspect_original(live, checkpoint, fixture)
             if not mutate:
-                release = await observed_target(live, fixture.target_ids["release"], "release", expected[fixture.target_ids["release"]][1])
+                release = await observed_target(live, fixture.target_ids["release"], "release", "fixture/" + fixture.fixture_id + "-release")
                 await await_advancing_worker_heartbeats(
                     live,
                     [
                         (fixture.target_ids["beta"], "beta", TEST_REPOSITORY, beta, checkpoint.source_sha),
-                        (fixture.target_ids["release"], "release", expected[fixture.target_ids["release"]][1], release, ""),
+                        (fixture.target_ids["release"], "release", "fixture/" + fixture.fixture_id + "-release", release, ""),
                     ],
                 )
                 return Result("PASS", "observe", "Two independent installed workers advanced real heartbeat sequences; no effect sent", tuple(live.observations))

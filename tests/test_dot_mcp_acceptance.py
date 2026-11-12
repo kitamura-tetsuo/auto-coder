@@ -357,6 +357,28 @@ def test_authenticated_identity_is_bound_to_fixture_resource_client_and_current_
             accept.verify_current_operator({**identity, **change}, fixture(), "reevaluate", mutation=True)
 
 
+def test_current_fixture_policy_requires_exactly_two_distinct_complete_target_bindings():
+    selected = fixture()
+    beta = {"target_id": selected.target_ids["beta"], "channel": "beta", "repository": selected.repository}
+    release = {"target_id": selected.target_ids["release"], "channel": "release", "repository": "fixture/" + selected.fixture_id + "-release"}
+    accept.verify_current_targets({"status": "OK", "targets": [beta, release]}, selected)
+    accept.verify_current_targets({"status": "OK", "targets": [release, beta]}, selected)
+    for invalid in (
+        {"status": "UNAVAILABLE", "targets": [beta, release]},
+        {"status": "OK", "targets": [beta]},
+        {"status": "OK", "targets": [beta, release, beta]},
+        {"status": "OK", "targets": [beta, release, "invalid"]},
+        {"status": "OK", "targets": [beta, beta]},
+        {"status": "OK", "targets": [beta, {**release, "repository": "production/worker"}]},
+        {"status": "OK", "targets": [beta, {**release, "target_id": 123}]},
+        {"status": "OK", "targets": [beta, {"target_id": selected.target_ids["release"], "channel": "release"}]},
+        {"status": "OK", "targets": [beta, "invalid"]},
+        {"status": "OK", "targets": None},
+    ):
+        with pytest.raises(accept.Blocked, match="current policy"):
+            accept.verify_current_targets(invalid, selected)
+
+
 def _confirmed_reevaluation_projection():
     """Match the real ManagementRuntime._project_operation response shape."""
     return {

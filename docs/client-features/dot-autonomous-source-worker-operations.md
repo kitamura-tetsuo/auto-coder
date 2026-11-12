@@ -232,7 +232,10 @@ docker compose -f .agent-tmp/pr2835-sandbox-20261112/compose.yaml exec -T manage
 ```
 
 Without an **exact fixture-specific** `AUTO_CODER_MCP_ACCESS_TOKEN`, the client
-returns `BLOCKED` before opening an MCP connection. Even with OAuth,
+returns `BLOCKED` before opening an MCP connection. An authenticated
+`auto_coder_targets` result must contain exactly two distinct, complete
+beta/release fixture bindings; duplicate IDs, omitted or extra entries, and
+malformed targets refuse before any mutating request. Even with OAuth,
 `observe` needs two independently advancing verified worker heartbeats. Both
 samples for each worker must retain the exact original Supervisor generation,
 process-run ID, runtime ID, deployment generation, and installed source binding.
