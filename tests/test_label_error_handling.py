@@ -136,7 +136,7 @@ class TestInvalidYAMLConfiguration:
 class TestNetworkFailures:
     """Test handling of network failures during configuration loading."""
 
-    @patch("src.auto_coder.prompt_loader.yaml.safe_load")
+    @patch("src.auto_coder.prompt_loader.yaml.load")
     def test_network_error_during_yaml_loading(self, mock_yaml_load):
         """Test handling of network-related errors during YAML loading."""
         mock_yaml_load.side_effect = requests.exceptions.ConnectionError("Network error")
