@@ -429,7 +429,9 @@ def test_production_acceptance_covers_real_ready_and_offline_production_cli() ->
     assert re.search(r'"--entrypoint",\s*"python"', acceptance)
     assert "supervisor_offline_pid1.py" in acceptance
     assert '"process-issues"' in offline
-    assert '"--github-token"' in offline
+    assert "activate_scoped_fixture_token(" in offline
+    assert 'os.environ["GITHUB_TOKEN"] = token' in offline
+    assert '"--github-token"' not in offline
     assert '"--skip-codex-auth-secret-sync"' in offline
     assert "os.execv(sys.executable, command)" in offline
     assert "WorkerVersionPreparer(" in preparer
