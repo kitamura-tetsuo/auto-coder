@@ -398,11 +398,12 @@ class Case:
                 raise AssertionError("positive report substituted the original reviewed source profile")
         return report
 
-    def positive_pair(self) -> None:
+    def positive_pair(self) -> tuple[dict[str, object], dict[str, object]]:
         first = self.command("observe", accepted=True, verify=False)
         self.previous = self.root / "evidence" / "observe.json"
         second = self.command("verify", accepted=True)
         _assert_independent(first, second)
+        return first, second
 
     def refusal_pair(self, label: str, *, authority: str) -> tuple[dict[str, object], dict[str, object]]:
         """Require both real entrypoints to reobserve the same extant fault."""
@@ -1278,6 +1279,145 @@ def _negative_cases(case: Case) -> None:
     case.refusal_pair("released-original-namespace-pin", authority="kernel-subcomponent")
 
 
+def _cleanup_case_lifetime(case: Case) -> None:
+    """Release this control's runtime resources while retaining its evidence."""
+    try:
+        case.cleanup()
+    finally:
+        if case.owner_fd >= 0:
+            os.close(case.owner_fd)
+            case.owner_fd = -1
+
+
+def _quarantine_runtime_lineage(prepared: PreparedQuarantine) -> dict[str, object]:
+    configuration_bytes = prepared.bootstrap_config.read_bytes()
+    configuration = json.loads(configuration_bytes)
+    mounts = {destination: (source, writable) for source, destination, writable in prepared.mounts}
+    if any(sum(destination == name for _, destination, _ in prepared.mounts) != 1 for name in ("/management-source", "/management-versions")):
+        raise AssertionError("paired quarantine source/runtime mount identities are ambiguous")
+    return {
+        "image_id": prepared.image_id,
+        "reviewed_bootstrap_source_sha256": _REVIEWED_QUARANTINED_SOURCE_SHA256,
+        "bootstrap_configuration_sha256": hashlib.sha256(configuration_bytes).hexdigest(),
+        "management_configuration_sha256": hashlib.sha256(prepared.management_config.read_bytes()).hexdigest(),
+        "instance_id": configuration["instance_id"],
+        "initial_runtime": configuration["initial_runtime"],
+        "fresh_runtime_binding": configuration["fresh_runtime_binding"],
+        "source_repository": mounts["/management-source"][0],
+        "sealed_versions": mounts["/management-versions"][0],
+        "source_mount_read_only": not mounts["/management-source"][1],
+        "versions_mount_read_only": not mounts["/management-versions"][1],
+    }
+
+
+def _quarantine_variant_pair(
+    *,
+    root: Path,
+    variant: str,
+    template: PreparedQuarantine,
+    ordinary: Case,
+    source_repository: Path,
+    caddy_image: str,
+    authorization_id: str,
+    worker: subprocess.Popen[str],
+    worker_config: Path,
+    stock_routes: InhibitedStockRoutes,
+    cron_dispatch: CronDispatchFixture,
+    custom_cron: MaskedCronController,
+    cases: list[Case],
+) -> dict[str, object]:
+    """Run a fresh genuine supported control before one immutable-input fault."""
+    from scripts.containment_quarantine_fixture import NEGATIVE_VARIANTS, prepare_quarantine
+
+    if variant not in NEGATIVE_VARIANTS or template.prior is None or ordinary.prior_evidence is None:
+        raise ValueError("paired quarantine variant requires actual original evidence")
+
+    def prepare(selected: str, source: PreparedQuarantine) -> PreparedQuarantine:
+        return prepare_quarantine(
+            root=root / ("quarantine-" + variant + ("-control" if selected == "supported" else "")),
+            name="ac-test-pr2829-" + uuid.uuid4().hex,
+            image_id=template.image_id,
+            source_repository=source_repository,
+            predecessor=ordinary.prior_manager,
+            prior_evidence_path=ordinary.prior_evidence,
+            prior_lock=ordinary.state / ".supervisor-owner.lock",
+            host_listener_port=template.prior.published_port,
+            docker=_docker,
+            variant=selected,
+            runtime_template=source,
+        )
+
+    def capture(prepared: PreparedQuarantine) -> Case:
+        case = _quarantine_case(prepared, worker, worker_config)
+        case.stock_routes, case.cron_dispatch, case.custom_cron = stock_routes, cron_dispatch, custom_cron
+        case.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
+        cases.append(case)
+        return case
+
+    with prepare("supported", template) as control, ExitStack() as cleanup:
+        control_case = capture(control)
+        cleanup.callback(_cleanup_case_lifetime, control_case)
+        _close_and_approve(control_case, caddy_image, authorization_id, stop_manager=control.stop)
+        first, second = control_case.positive_pair()
+        lineage = _quarantine_runtime_lineage(control)
+        if lineage != _quarantine_runtime_lineage(template) or lineage["source_mount_read_only"] is not True or lineage["versions_mount_read_only"] is not True:
+            raise AssertionError("paired supported control changed the genuine original runtime lineage")
+    if not control.stopped or control_case.owner_fd >= 0 or control_case.namespace_fd >= 0 or control.guard.pidfd >= 0 or control.guard.listener.fileno() >= 0 or _docker("ps", "-aq", "--no-trunc"):
+        raise AssertionError("paired supported control resources remain before the invalid variant")
+
+    with prepare(variant, control) as altered, ExitStack() as cleanup:
+        variant_case = capture(altered)
+        cleanup.callback(_cleanup_case_lifetime, variant_case)
+        _close_and_approve(variant_case, caddy_image, authorization_id, stop_manager=altered.stop)
+        reports = variant_case.refusal_pair(variant, authority="installed-bootstrap-mount-profile")
+        for report in reports:
+            source = report.get("installed_bootstrap_source")
+            if not isinstance(report.get("approved_enrollment"), dict) or not isinstance(source, dict) or source.get("source_sha256") != _REVIEWED_QUARANTINED_SOURCE_SHA256 or source.get("reviewed_lock_before_launch") is not True:
+                raise AssertionError("unsupported quarantine variant did not reach the actual enrolled original-source profile")
+        variant_lineage = _quarantine_runtime_lineage(altered)
+        expected_lineage = {**lineage, "source_mount_read_only": False} if variant == "writable-support-mount" else lineage
+        if variant_lineage != expected_lineage:
+            raise AssertionError("paired invalid variant changed the genuine source/config/runtime lineage")
+        if control_case.manager == variant_case.manager or control_case.fixture_id == variant_case.fixture_id or second["finished_monotonic_ns"] > reports[0]["started_monotonic_ns"]:
+            raise AssertionError("paired control and invalid variant do not have distinct ordered lifetimes")
+        evidence = variant_case.root / "evidence" / "paired-supported-control.json"
+        mapping = {
+            "schema": "genuine-quarantine-variant-control-v1",
+            "variant": variant,
+            "lineage": lineage,
+            "control": {
+                "manager_id": control_case.prior_manager.container_id,
+                "pid": control_case.prior_manager.pid,
+                "start_token": control_case.prior_manager.start_token,
+                "boot_id": control_case.pin.holder_boot_id,
+                "enrollment_id": control_case.fixture_id,
+                "observe": str(control_case.root / "evidence" / "observe.json"),
+                "verify": str(control_case.root / "evidence" / "verify.json"),
+                "observation_ids": [first["observation_id"], second["observation_id"]],
+                "finished_monotonic_ns": second["finished_monotonic_ns"],
+                "runtime_resources_released_before_variant": True,
+            },
+            "invalid_configuration": {
+                "manager_id": variant_case.prior_manager.container_id,
+                "pid": variant_case.prior_manager.pid,
+                "start_token": variant_case.prior_manager.start_token,
+                "boot_id": variant_case.pin.holder_boot_id,
+                "enrollment_id": variant_case.fixture_id,
+                "observe": str(variant_case.root / "evidence" / (variant + "-observe.json")),
+                "verify": str(variant_case.root / "evidence" / (variant + "-verify.json")),
+                "observation_ids": [report["observation_id"] for report in reports],
+                "started_monotonic_ns": reports[0]["started_monotonic_ns"],
+                "required_refusal": "installed-bootstrap-mount-profile",
+                "lineage": variant_lineage,
+                "live_capture": str(altered.root / "variant-live-capture.json"),
+            },
+            "artifact_path": str(evidence),
+        }
+        _write_private(evidence, _json(mapping))
+        variant_case.artifacts.append(evidence)
+        return mapping
+
+
 def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str, quarantine_image: str | None = None, source_repository: Path | None = None) -> Path:
     if (quarantine_image is None) != (source_repository is None):
         raise ValueError("quarantine image and genuine reviewed source checkout must be selected together")
@@ -1308,7 +1448,8 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     stock_evidence: list[Path] = []
     completed_profiles: list[str] = []
     refused_variants: list[str] = []
-    result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "quarantine_refused_variants": refused_variants, "artifact_paths": []}
+    variant_pairs: list[dict[str, object]] = []
+    result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "quarantine_refused_variants": refused_variants, "quarantine_variant_pairs": variant_pairs, "artifact_paths": []}
     try:
         stock_routes = InhibitedStockRoutes.install()
         result["stock_systemd_inhibition"] = stock_routes.evidence()
@@ -1375,36 +1516,23 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
             template = prepared
             assert template.prior is not None
             for variant in NEGATIVE_VARIANTS:
-                with (
-                    prepare_quarantine(
-                        root=root / ("quarantine-" + variant),
-                        name="ac-test-pr2829-" + uuid.uuid4().hex,
-                        image_id=quarantine_image,
-                        source_repository=source_repository,
-                        predecessor=ordinary.prior_manager,
-                        prior_evidence_path=ordinary.prior_evidence,
-                        prior_lock=ordinary.state / ".supervisor-owner.lock",
-                        host_listener_port=template.prior.published_port,
-                        docker=_docker,
-                        variant=variant,
-                        runtime_template=template,
-                    ) as altered,
-                    ExitStack() as cleanup,
-                ):
-                    variant_case = _quarantine_case(altered, worker, worker_config)
-                    variant_case.stock_routes = stock_routes
-                    variant_case.cron_dispatch = cron_dispatch
-                    variant_case.custom_cron = custom_cron
-                    variant_case.extra_protected += (cron_dispatch.source, custom_cron.source, custom_cron.mask)
-                    cases.append(variant_case)
-                    cleanup.callback(variant_case.cleanup)
-                    _close_and_approve(variant_case, caddy_image, authorization_id, stop_manager=altered.stop)
-                    reports = variant_case.refusal_pair(variant, authority="installed-bootstrap-mount-profile")
-                    for report in reports:
-                        source = report.get("installed_bootstrap_source")
-                        if not isinstance(report.get("approved_enrollment"), dict) or not isinstance(source, dict) or source.get("source_sha256") != _REVIEWED_QUARANTINED_SOURCE_SHA256 or source.get("reviewed_lock_before_launch") is not True:
-                            raise AssertionError("unsupported quarantine variant did not reach the actual enrolled original-source profile")
-                    refused_variants.append(variant)
+                paired = _quarantine_variant_pair(
+                    root=root,
+                    variant=variant,
+                    template=template,
+                    ordinary=ordinary,
+                    source_repository=source_repository,
+                    caddy_image=caddy_image,
+                    authorization_id=authorization_id,
+                    worker=worker,
+                    worker_config=worker_config,
+                    stock_routes=stock_routes,
+                    cron_dispatch=cron_dispatch,
+                    custom_cron=custom_cron,
+                    cases=cases,
+                )
+                variant_pairs.append(paired)
+                refused_variants.append(variant)
         result["status"] = "passed"
     except BaseException as exc:
         result["failure"] = type(exc).__name__ + ": " + str(exc)

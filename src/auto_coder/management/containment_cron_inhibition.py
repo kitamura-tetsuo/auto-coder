@@ -71,6 +71,31 @@ class CronInhibitionUnavailable(ValueError):
     """The bounded stock cron execution scope is not currently closed."""
 
 
+class CronScopeRetainsTasks(CronInhibitionUnavailable):
+    """A measured task predicate failed, with a separate safe scope field."""
+
+    def __init__(self, message: str, *, scope: str | None = None) -> None:
+        super().__init__(message)
+        self.scope = scope
+
+    @property
+    def public_reason(self) -> str:
+        reason = "inhibited stock cron scope retains tasks"
+        scope = self.scope
+        if scope == _USER_SCOPE:
+            return reason + ": " + scope
+        if not isinstance(scope, str) or len(scope) > 512 or not scope.startswith("/"):
+            return reason
+        parts = scope[1:].split("/")
+        if not 1 <= len(parts) <= 16 or any(len(part) > 255 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.slice", part) for part in parts[:-1]):
+            return reason
+        try:
+            _validate_service_units(tuple(sorted({"cron.service", parts[-1]})))
+        except CronInhibitionUnavailable:
+            return reason
+        return reason + ": " + scope
+
+
 @dataclass(frozen=True)
 class CgroupDirectoryIdentity:
     path: str
@@ -210,6 +235,19 @@ def _required_scope_roots(paths: tuple[str, ...], units: tuple[str, ...]) -> tup
     return tuple(sorted({_USER_SCOPE, *("/system.slice/" + unit for unit in units)} | {path for path in paths if Path(path).name in units}))
 
 
+def _retained_task_scope(group: str, roots: tuple[str, ...], units: tuple[str, ...]) -> str | None:
+    matches = tuple(root for root in roots if group == root or group.startswith(root + "/"))
+    if matches:
+        return min(matches, key=len)
+    # A new matching group can appear after directory enumeration. Preserve
+    # the current known controller component without publishing task details.
+    parts = Path(group).parts
+    for index, part in enumerate(parts):
+        if part in units:
+            return str(Path(*parts[: index + 1]))
+    return None
+
+
 def _inhibited_service_bindings(systemd_facts: tuple[object, ...]) -> tuple[tuple[str, str], ...]:
     bindings = []
     for fact in systemd_facts:
@@ -274,7 +312,7 @@ def _mount(root: Path, mountinfo: Path) -> tuple[int, str]:
     return matches[0]
 
 
-def _empty_group(path: Path, relative: str) -> EmptyCgroupFact:
+def _empty_group(path: Path, relative: str, *, scope: str | None = None) -> EmptyCgroupFact:
     procs = _read(path / "cgroup.procs", 1024 * 1024).split()
     threads = _read(path / "cgroup.threads", 1024 * 1024).split()
     events = _read(path / "cgroup.events", 4096).splitlines()
@@ -283,7 +321,7 @@ def _empty_group(path: Path, relative: str) -> EmptyCgroupFact:
         raise CronInhibitionUnavailable("stock cron cgroup event evidence is incomplete")
     values = dict(pairs)
     if procs or threads or values["populated"] != "0":
-        raise CronInhibitionUnavailable("inhibited stock cron scope retains tasks: " + relative)
+        raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: " + relative, scope=scope)
     return EmptyCgroupFact(relative, (), (), 0, int(values["frozen"]))
 
 
@@ -307,7 +345,7 @@ def _proc_scopes_empty(roots: tuple[str, ...], *, proc: Path = Path("/proc"), in
                 raise CronInhibitionUnavailable("stock cron task cgroup membership is unsupported")
             group = groups[0][3:]
             if any(group == root or group.startswith(root + "/") for root in roots) or any(part in inhibited_units for part in Path(group).parts):
-                raise CronInhibitionUnavailable("inhibited stock cron scope retains tasks: pid=" + pid + " tid=" + tid + " state=" + tail[0] + " start=" + tail[19])
+                raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: pid=" + pid + " tid=" + tid + " state=" + tail[0] + " start=" + tail[19], scope=_retained_task_scope(group, roots, inhibited_units))
             after = _read(task / "stat", 16384).rpartition(")")[2].split()
             if len(after) < 20 or after[19] != tail[19] or _read(task / "cgroup", 16384).splitlines() != groups:
                 raise CronInhibitionUnavailable("stock cron task changed during scope inspection")
@@ -322,7 +360,7 @@ def _proc_scopes_empty(roots: tuple[str, ...], *, proc: Path = Path("/proc"), in
         if command:
             executable = os.readlink(proc / pid / "exe")
             if executable.removesuffix(" (deleted)") in ("/usr/sbin/cron", *_OTHER_EXECUTABLES):
-                raise CronInhibitionUnavailable("inhibited stock cron scope retains tasks: scheduler pid=" + pid)
+                raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: scheduler pid=" + pid)
     if pids != tuple(sorted(path.name for path in proc.iterdir() if path.name.isdecimal())):
         raise CronInhibitionUnavailable("stock cron process inventory changed during inspection")
 
@@ -357,7 +395,7 @@ def _cgroup_snapshot(*, root: Path = _CGROUP_ROOT, mountinfo: Path = Path("/proc
     if "/system.slice" not in paths:
         raise CronInhibitionUnavailable("stock cron system slice authority is unavailable")
     roots = _required_scope_roots(tuple(sorted(paths)), inhibited_units)
-    empty = tuple(_empty_group(root / item.path.lstrip("/"), item.path) for item in ordered if any(item.path == scope or item.path.startswith(scope + "/") for scope in roots))
+    empty = tuple(_empty_group(root / item.path.lstrip("/"), item.path, scope=_retained_task_scope(item.path, roots, inhibited_units)) for item in ordered if any(item.path == scope or item.path.startswith(scope + "/") for scope in roots))
     _proc_scopes_empty(roots, proc=proc, inhibited_units=inhibited_units)
     for item in ordered:
         if _directory(root / item.path.lstrip("/"), item.path) != item:

@@ -257,6 +257,13 @@ fresh reads. A process running a scheduler outside its normal service also
 refuses. This initial profile conservatively refuses unrelated masked services
 that retain work as well.
 
+A detected remaining task has a typed refusal at the route boundary. Its public
+diagnostic contains fixed text and a bounded validated controller-scope identifier
+so an independent consumer can distinguish the canonical and differently named
+controller cases. Arbitrary exception text, command/environment content and
+kernel PID details are not copied into that diagnostic. Unexpected filesystem
+and subprocess failures retain the sanitized generic refusal.
+
 Cron files, periodic directories and scheduler executables remain relevance cues
 for host systemd, user controllers and local wrappers. An alternative `run-parts`
 controller cannot be excluded by approving it as unrelated. Empty current scopes
@@ -393,6 +400,15 @@ identities remain unchanged. Other negatives deliberately misclassify a real, fu
 `run-parts` controller and unmask cron. The observer must report the relevant
 route/task authority in each case. Cleanup signals only independently retained
 fixture task lifetimes and removes only the unchanged fixture source and masks.
+
+Each immutable quarantine command or mount variant also has its own immediately
+preceding supported original-profile control. The control uses genuine prepared
+source/runtime lineage and separate complete production observe/verify calls;
+its runtime, proxy, namespace pin and owner resources are closed before the
+invalid variant begins. The resulting evidence pairs the distinct container and
+enrollment lifetimes instead of pretending that Docker configuration changed
+inside one immutable container. The mutable support-directory permission case
+retains its direct same-case positive baseline.
 
 The concrete VM package is under `scripts/containment_vm/`. Preparation exports
 only immutable preexisting images and the committed source; it does not launch

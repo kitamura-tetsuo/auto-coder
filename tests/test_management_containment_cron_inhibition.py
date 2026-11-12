@@ -105,8 +105,11 @@ def test_masked_controller_cannot_hide_real_scope_population(scope_tree, state: 
         target = root / "other.slice/cron.service"
         _write_group(root / "other.slice")
     _write_group(target, processes="1089\n" if state != "thread" and state != "event-only" else "", threads="1090\n" if state == "thread" else "", populated="1" if state == "event-only" else "0")
-    with pytest.raises(cron.CronInhibitionUnavailable, match="inhibited stock cron scope retains tasks"):
+    with pytest.raises(cron.CronScopeRetainsTasks, match="inhibited stock cron scope retains tasks") as failure:
         _scope(scope_tree)
+    expected_scope = "/user.slice" if state == "user-session" else "/other.slice/cron.service" if state == "alternative-slice" else "/system.slice/cron.service"
+    assert failure.value.scope == expected_scope
+    assert failure.value.public_reason == "inhibited stock cron scope retains tasks: " + expected_scope
 
 
 def test_empty_nested_and_alternative_scopes_keep_all_directory_identities(scope_tree) -> None:
@@ -126,8 +129,9 @@ def test_proc_zombie_membership_cannot_become_an_empty_scope(scope_tree) -> None
     task.mkdir(parents=True)
     (task / "stat").write_text("1089 (job) Z " + "0 " * 18 + "777 0\n")
     (task / "cgroup").write_text("0::/system.slice/cron.service\n")
-    with pytest.raises(cron.CronInhibitionUnavailable, match="state=Z start=777"):
+    with pytest.raises(cron.CronScopeRetainsTasks, match="state=Z start=777") as failure:
         _scope(scope_tree)
+    assert failure.value.public_reason == "inhibited stock cron scope retains tasks: /system.slice/cron.service"
 
 
 def test_deleted_or_unreadable_cgroup_authority_does_not_become_empty(scope_tree) -> None:
@@ -145,8 +149,8 @@ def test_changed_cgroup_directory_identity_refuses(scope_tree, monkeypatch: pyte
     _write_group(target)
     read = cron._empty_group
 
-    def replace_after_empty_read(path: Path, relative: str):
-        result = read(path, relative)
+    def replace_after_empty_read(path: Path, relative: str, **kwargs):
+        result = read(path, relative, **kwargs)
         target.rename(root / "retained-old-group")
         _write_group(target)
         return result
@@ -343,8 +347,9 @@ def test_masked_alternative_service_binds_scope_and_refuses_retained_job(scope_t
     # existing child still makes both fresh observations refuse this profile.
     _write_group(target, processes="1089\n", threads="1089\n", populated="1")
     for _ in range(2):
-        with pytest.raises(cron.CronInhibitionUnavailable, match="inhibited stock cron scope retains tasks"):
+        with pytest.raises(cron.CronScopeRetainsTasks, match="inhibited stock cron scope retains tasks") as failure:
             cron.observe_inhibited_stock_cron_scope(facts)
+        assert failure.value.public_reason == "inhibited stock cron scope retains tasks: /" + parent + "/" + alternative.unit
 
 
 def test_alternative_service_mapping_uses_exact_components(scope_tree) -> None:
@@ -395,5 +400,12 @@ def test_proc_alternative_controller_child_refuses_when_cgroup_files_look_empty(
     task.mkdir(parents=True)
     (task / "stat").write_text("1089 (job) Z " + "0 " * 18 + "777 0\n")
     (task / "cgroup").write_text("0::/other.slice/ac-other-scheduler.service/retained-job\n")
-    with pytest.raises(cron.CronInhibitionUnavailable, match="state=Z start=777"):
+    with pytest.raises(cron.CronScopeRetainsTasks, match="state=Z start=777") as failure:
         _scope(scope_tree, ("ac-other-scheduler.service", "cron.service"))
+    assert failure.value.public_reason == "inhibited stock cron scope retains tasks: /other.slice/ac-other-scheduler.service"
+
+
+@pytest.mark.parametrize("scope", (None, "/private/ENV_SECRET_TOKEN/cron.service", "/system.slice/cron.service\nENV_SECRET_TOKEN", "/system.slice/cpu.service", "/system.slice/foo@.service", "/" + "s" * 513 + ".slice/cron.service"))
+def test_public_task_reason_does_not_export_unvalidated_scope_or_raw_detail(scope: str | None) -> None:
+    error = cron.CronScopeRetainsTasks("private command/environment diagnostic ENV_SECRET_TOKEN", scope=scope)
+    assert error.public_reason == "inhibited stock cron scope retains tasks"

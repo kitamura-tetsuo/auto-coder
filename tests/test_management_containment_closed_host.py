@@ -10,10 +10,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -468,11 +470,21 @@ def test_cron_task_refusal_oracle_requires_both_actual_reasons() -> None:
 
 @pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
 def test_fixture_task_pins_real_lifetime_and_refuses_wrong_start_before_signalling() -> None:
-    child = subprocess.Popen(("/usr/bin/sleep", "120"), text=True)
-    task = fixture.BoundFixtureTask.capture(child.pid)
+    command = (sys.executable, "-I", "-B", "-c", "import signal; print('ready', flush=True); signal.pause()")
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    task = None
     try:
+        # Popen returning does not establish userspace command-line readiness.
+        # The actual child acknowledges startup before the kernel capture.
+        assert child.stdout is not None
+        readable, _, _ = select.select((child.stdout,), (), (), 5)
+        assert readable and child.stdout.readline() == "ready\n", "owned child did not acknowledge startup"
+        assert child.poll() is None
+        task = fixture.BoundFixtureTask.capture(child.pid)
         assert task.pid == child.pid and task.parent == os.getpid()
-        assert task.command == ("/usr/bin/sleep", "120")
+        assert task.command == command
+        assert task.start_token == fixture._start_token(child.pid)
+        assert task.cgroup == Path(f"/proc/{child.pid}/cgroup").read_text(encoding="ascii")
         task.send(signal.SIGSTOP)
         deadline = time.monotonic() + 3
         while Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T":
@@ -489,7 +501,10 @@ def test_fixture_task_pins_real_lifetime_and_refuses_wrong_start_before_signalli
         if child.poll() is None:
             child.kill()
             child.wait(timeout=5)
-        task.close()
+        if task is not None:
+            task.close()
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 def _cron_approval_mask_change(tmp_path: Path) -> tuple[dict[str, object], dict[str, object], Path]:
@@ -624,3 +639,128 @@ def test_cron_task_fault_never_targets_an_unowned_service() -> None:
     case = SimpleNamespace(custom_cron=None)
     with pytest.raises(ValueError, match="unowned cron controller"):
         fixture._cron_task_negative(case, controller="another.service")
+
+
+@pytest.mark.parametrize("failed_stage", ("approval", "positive-pair"))
+def test_quarantine_variant_never_starts_when_its_own_supported_control_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_stage: str) -> None:
+    """This failure-only orchestration test supplies no successful observation."""
+    events: list[str] = []
+    variants: list[str] = []
+    owner_path, namespace_path = tmp_path / "owner", tmp_path / "namespace"
+    owner_path.write_bytes(b"owned control descriptor")
+    namespace_path.write_bytes(b"owned control descriptor")
+    owner_fd = os.open(owner_path, os.O_RDONLY)
+    namespace_fd = os.open(namespace_path, os.O_RDONLY)
+    control_case = SimpleNamespace(owner_fd=owner_fd, namespace_fd=namespace_fd, extra_protected=())
+
+    def cleanup_case() -> None:
+        events.append("case-cleanup")
+        os.close(control_case.namespace_fd)
+        control_case.namespace_fd = -1
+
+    def positive_pair() -> object:
+        events.append("positive-pair")
+        raise AssertionError("required real positive pair failed")
+
+    control_case.cleanup = cleanup_case
+    control_case.positive_pair = positive_pair
+
+    @contextmanager
+    def prepare(**arguments: object):
+        variants.append(arguments["variant"])
+        events.append("prepare")
+        try:
+            yield SimpleNamespace(stop=lambda: None)
+        finally:
+            events.append("manager-cleanup")
+
+    def approve(*_: object, **__: object) -> None:
+        events.append("approval")
+        if failed_stage == "approval":
+            raise AssertionError("required real approval failed")
+
+    monkeypatch.setattr(quarantine, "prepare_quarantine", prepare)
+    monkeypatch.setattr(fixture, "_quarantine_case", lambda *args: control_case)
+    monkeypatch.setattr(fixture, "_close_and_approve", approve)
+    original = SimpleNamespace(prior_evidence=tmp_path / "actual-prior.json", prior_manager=object(), state=tmp_path)
+    template = SimpleNamespace(prior=SimpleNamespace(published_port=19001), image_id="sha256:" + "a" * 64)
+    captured: list[fixture.Case] = []
+    try:
+        with pytest.raises(AssertionError, match="required real"):
+            fixture._quarantine_variant_pair(
+                root=tmp_path,
+                variant="effective-command",
+                template=template,
+                ordinary=original,
+                source_repository=tmp_path,
+                caddy_image="sha256:" + "b" * 64,
+                authorization_id="fixture",
+                worker=object(),
+                worker_config=tmp_path / "worker.json",
+                stock_routes=object(),
+                cron_dispatch=SimpleNamespace(source=tmp_path / "cron-entry"),
+                custom_cron=SimpleNamespace(source=tmp_path / "custom-source", mask=tmp_path / "custom-mask"),
+                cases=captured,
+            )
+        assert variants == ["supported"]
+        assert events[-2:] == ["case-cleanup", "manager-cleanup"]
+        assert ("positive-pair" in events) == (failed_stage == "positive-pair")
+        assert control_case.owner_fd == control_case.namespace_fd == -1
+        with pytest.raises(OSError):
+            os.fstat(owner_fd)
+        with pytest.raises(OSError):
+            os.fstat(namespace_fd)
+        assert captured == [control_case]
+    finally:
+        for descriptor in (control_case.owner_fd, control_case.namespace_fd):
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _quarantine_lineage_files(tmp_path: Path) -> SimpleNamespace:
+    config, management = tmp_path / "config.json", tmp_path / "management.yml"
+    config.write_text(json.dumps({"instance_id": "original-instance", "initial_runtime": "real-prepared-runtime", "fresh_runtime_binding": {"initial_ready_identity": "original-receipt"}}))
+    management.write_bytes(b"exact original management configuration")
+    return SimpleNamespace(image_id="sha256:" + "a" * 64, bootstrap_config=config, management_config=management, mounts=((str(tmp_path / "source"), "/management-source", False), (str(tmp_path / "sealed-versions"), "/management-versions", False)))
+
+
+def test_quarantine_pair_lineage_records_actual_configuration_and_sealed_store(tmp_path: Path) -> None:
+    prepared = _quarantine_lineage_files(tmp_path)
+    original = fixture._quarantine_runtime_lineage(prepared)
+    assert original["instance_id"] == "original-instance"
+    assert original["initial_runtime"] == "real-prepared-runtime"
+    assert original["source_mount_read_only"] is True
+    assert original["versions_mount_read_only"] is True
+    assert original["source_repository"] == str(tmp_path / "source")
+    assert original["sealed_versions"] == str(tmp_path / "sealed-versions")
+    prepared.management_config.write_bytes(b"different management configuration")
+    changed = fixture._quarantine_runtime_lineage(prepared)
+    assert changed["management_configuration_sha256"] != original["management_configuration_sha256"]
+
+
+def test_quarantine_pair_lineage_keeps_the_actual_invalid_mount_permission(tmp_path: Path) -> None:
+    prepared = _quarantine_lineage_files(tmp_path)
+    original = fixture._quarantine_runtime_lineage(prepared)
+    source, destination, _ = prepared.mounts[0]
+    prepared.mounts = ((source, destination, True), prepared.mounts[1])
+    changed = fixture._quarantine_runtime_lineage(prepared)
+    assert changed == {**original, "source_mount_read_only": False}
+    prepared.mounts += ((source, destination, False),)
+    with pytest.raises(AssertionError, match="ambiguous"):
+        fixture._quarantine_runtime_lineage(prepared)
+
+
+def test_control_cleanup_releases_owned_fence_even_when_runtime_cleanup_refuses(tmp_path: Path) -> None:
+    path = tmp_path / "control-owner"
+    path.write_bytes(b"actual descriptor")
+    descriptor = os.open(path, os.O_RDONLY)
+
+    def failed_cleanup() -> None:
+        raise AssertionError("a control resource was externally replaced")
+
+    case = SimpleNamespace(cleanup=failed_cleanup, owner_fd=descriptor)
+    with pytest.raises(AssertionError, match="externally replaced"):
+        fixture._cleanup_case_lifetime(case)
+    assert case.owner_fd == -1
+    with pytest.raises(OSError):
+        os.fstat(descriptor)

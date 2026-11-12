@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
 
+from auto_coder.management import containment_cron_inhibition as cron
 from auto_coder.management import containment_observation as observation
+from auto_coder.management import containment_route_manifest as routes
 from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation
 from auto_coder.management.containment_kernel_subobservation import KernelSubObservation
 from auto_coder.management.containment_route_manifest import ApprovedRouteManifest, RouteManifestObservation, SystemdRoute
@@ -158,3 +162,77 @@ def test_current_success_does_not_accept_a_saved_launch_grant(closed_components:
     result = observation.verify(closed_components, saved)
     assert result.status == "unavailable"
     assert "saved-report" in {item.authority for item in result.unavailable}
+
+
+@pytest.mark.parametrize("failure_kind", ("retained-cron", "retained-custom", "generic-cron", "os-error", "subprocess-error"))
+def test_public_observe_and_verify_preserve_only_typed_cron_scope_reason(tmp_path: Path, closed_components: observation.ProposedScope, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_kind: str) -> None:
+    """Exercise the public JSON boundary with component fixtures, not native acceptance."""
+    scope_path = tmp_path / "scope.json"
+    scope_path.write_text(json.dumps(asdict(closed_components)))
+    previous_path = tmp_path / "previous.json"
+
+    def invoke(command: str):
+        arguments = ["containment-observation", command, "--scope", str(scope_path)]
+        if command == "verify":
+            arguments += ["--previous", str(previous_path)]
+        monkeypatch.setattr(sys, "argv", arguments)
+        code = observation.main()
+        output = capsys.readouterr()
+        assert output.err == ""
+        return code, output.out, json.loads(output.out)
+
+    code, _, baseline = invoke("observe")
+    assert code == 0 and baseline["status"] == observation.OBSERVED
+    previous_path.write_text(json.dumps(baseline))
+    private_detail = "PRIVATE_COMMAND_ENV_TOKEN_782c"
+    native = json.loads((Path(__file__).parent / "fixtures/management-stock-cron-sources.json").read_text())
+    stock_path = tmp_path / "stock-input"
+    stock_path.write_text(native["/etc/cron.daily/apport"])
+    stock_path.chmod(0o600)
+    monkeypatch.setitem(cron.STOCK_INPUTS, str(stock_path), cron.STOCK_INPUTS["/etc/cron.daily/apport"])
+    controller = "cron.service" if failure_kind == "retained-cron" else "ac-test-pr2829-abcd-custom-cron.service"
+    controller_scope = "/system.slice/" + controller
+    group = tmp_path / "cgroup-readback"
+    group.mkdir()
+    (group / "cgroup.procs").write_text("31415\n")
+    (group / "cgroup.threads").write_text("31415\n")
+    (group / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+    calls = []
+
+    def profile_failure(_facts):
+        calls.append(failure_kind)
+        if failure_kind.startswith("retained-"):
+            cron._empty_group(group, controller_scope + "/" + private_detail, scope=controller_scope)
+            pytest.fail("populated component cgroup was accepted")
+        if failure_kind == "generic-cron":
+            raise cron.CronInhibitionUnavailable("inhibited stock cron scope retains tasks: " + controller_scope + "\n" + private_detail)
+        if failure_kind == "os-error":
+            raise PermissionError(private_detail)
+        raise subprocess.CalledProcessError(1, ["systemctl", private_detail], output=private_detail, stderr=private_detail)
+
+    original_routes = observation.observe_approved_route_manifest
+
+    def fresh_routes(*args):
+        routes._cron_catalog(roots=(stock_path,), trusted_uid=stock_path.stat().st_uid, inspect_local_inputs=True, source_formats=((stock_path, "shell"),))
+        return original_routes(*args)
+
+    monkeypatch.setattr(routes, "observe_inhibited_stock_cron_scope", profile_failure)
+    monkeypatch.setattr(observation, "observe_approved_route_manifest", fresh_routes)
+    for command in ("observe", "verify"):
+        code, raw, report = invoke(command)
+        assert code == 2 and report["status"] == "unavailable"
+        assert report["observation_id"] != baseline["observation_id"]
+        reasons = {item["authority"]: item["reason"] for item in report["unavailable"]}
+        reason = reasons["approved-route-manifest"]
+        assert private_detail not in raw
+        assert str(group) not in raw
+        assert "31415" not in reason
+        if failure_kind.startswith("retained-"):
+            assert reason == "The installed exhaustive route authority or its independently observed inhibition is unavailable (RouteManifestUnavailable): inhibited stock cron scope retains tasks: " + controller_scope
+        else:
+            assert "inhibited stock cron scope retains tasks" not in reason
+            assert controller_scope not in reason
+            assert reason.startswith("The installed exhaustive route authority or independent route readback is unavailable (")
+        if command == "verify":
+            assert "saved-report:unavailable" in reasons
+    assert calls == [failure_kind, failure_kind]

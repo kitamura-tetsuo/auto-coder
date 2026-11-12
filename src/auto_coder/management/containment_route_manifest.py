@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .archived_exclusions import unique_pairs
-from .containment_cron_inhibition import CRON_ROUTE_CUES, STOCK_INPUTS, CronInhibitedSource, exact_stock_source, observe_inhibited_stock_cron_scope
+from .containment_cron_inhibition import CRON_ROUTE_CUES, STOCK_INPUTS, CronInhibitedSource, CronScopeRetainsTasks, exact_stock_source, observe_inhibited_stock_cron_scope
 from .containment_enrollment import (
     ENROLLMENT_ROOT,
     EnrollmentObservation,
@@ -765,7 +765,12 @@ def _cron_catalog(
                 if info.st_uid != trusted_uid or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
                     raise RouteManifestUnavailable("inhibited stock cron source is not owner-protected")
                 if stock_inhibition is None:
-                    stock_inhibition = observe_inhibited_stock_cron_scope(systemd_facts)
+                    try:
+                        stock_inhibition = observe_inhibited_stock_cron_scope(systemd_facts)
+                    except CronScopeRetainsTasks as exc:
+                        # Only a typed current-task predicate exposes its bounded
+                        # scope. Raw OS, command and diagnostic text stays private.
+                        raise RouteManifestUnavailable(exc.public_reason) from exc
                 inhibited_source = stock_inhibition
                 local_sources, candidate = (), True
             else:
