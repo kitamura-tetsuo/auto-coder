@@ -280,7 +280,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     started = time.monotonic_ns()
     unavailable = [
         Unavailable("ordinary-route-closure", "No authoritative installed-route inventory is available for watcher/reconcile, services/timers, socket activation, Docker restart, configured local/remote scripts, repair/recreate and alternative roots; none are excluded from scope."),
-        Unavailable("original-source-profile", "No reviewed exact original source/configuration binding is registered for " + scope.profile + "; current installation bytes cannot establish original lock-before-launch evidence."),
+        Unavailable("original-source-profile", "Present-time original source/configuration readback cannot establish historical deployed execution provenance or original lock-before-launch evidence for " + scope.profile + "."),
         Unavailable("kernel-containment", "No original task/boot lifetime capture with retained namespace object pins and exact owner-file fence is supplied; stopped Docker state and saved namespace inode strings cannot establish absence."),
     ]
     approved_enrollment = None
@@ -310,7 +310,12 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     installed_bootstrap_source = None
     installed_mount_profile = None
     if scope.profile == "quarantined-original-v1":
-        unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
+        unavailable.append(
+            Unavailable(
+                "quarantined-original-profile",
+                "An optional exact current bootstrap file-mount, no-new-privileges and approved support-directory component cannot establish the support mount's actual execution effects across the original lifetime or complete quarantined original provenance; replacement admission is unchanged.",
+            )
+        )
     watcher_systemd = None
     try:
         watcher_systemd = observe_watcher_unit()

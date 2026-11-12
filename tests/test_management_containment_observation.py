@@ -63,7 +63,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     assert "supplied identities and file lists select scope only" in reasons["deployment-enrollment"]
     assert "watcher/reconcile, services/timers, socket activation, Docker restart" in reasons["ordinary-route-closure"]
     assert "configured local/remote scripts, repair/recreate and alternative roots" in reasons["ordinary-route-closure"]
-    assert "current installation bytes cannot establish original lock-before-launch evidence" in reasons["original-source-profile"]
+    assert "cannot establish historical deployed execution provenance or original lock-before-launch evidence" in reasons["original-source-profile"]
     assert "saved namespace inode strings cannot establish absence" in reasons["kernel-containment"]
     assert ("quarantined-original-profile" in reasons) == (profile == "quarantined-original-v1")
     assert report["resource_limit"] == ("Observer-owned descriptors are released before return; a separately enrolled namespace FD holder, if any, must still exist when a consumer reopens and independently verifies it. No owner fence or launch grant is retained.")

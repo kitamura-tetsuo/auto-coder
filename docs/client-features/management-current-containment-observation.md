@@ -14,10 +14,12 @@ bootstrap bytes were the original deployed bytes. The ordinary source currently
 in this checkout takes `.supervisor-owner.lock` exclusively in
 `ManagementBootstrapSupervisor.run` before calling `_run_owned`; that source inspection
 does not bind an original deployment to that implementation or owner inode.
-The quarantine selector additionally reports the absent exact bootstrap file
-mounts, `no-new-privileges` setting, and support-mount purpose, source, destination,
-read-only and execution binding. It does not accept a quarantine configuration as
-a replacement profile or loosen the existing replacement checks.
+The quarantine selector continues to report unresolved original lifetime,
+support-mount execution-effect and provenance authority. A narrowly reviewed
+*current* command, `no-new-privileges` and file/directory bind-mount component
+can now be inspected when separately enrolled protected evidence exists; this
+does not accept a quarantine configuration as a replacement profile or loosen
+the existing replacement checks.
 
 ## Interface and available facts
 
@@ -229,23 +231,25 @@ revision `1b23f3be30ca47926462e7d261ef98e79bb82728` (Git blob
 `594bec30aafa56852b9d9db3035718c7a1f9e887`). This image contains
 exclusive `.supervisor-owner.lock` acquisition before `_run_owned`.
 
-Read-only original-host checks also established that the selected quarantined
+Read-only original-host checks established that the selected stopped quarantined
 candidate's child runtime has `execution_kind=management-installed`, its
 executable/source root are under `/management-versions/`, and its arguments
 include `/bootstrap/management.yml`. The separate `/management-source` mount
-was not referenced by those executable/source/argument paths. It is a
-directory mount, whereas the current `support-source` enrollment field covers
-only protected regular files. **Neither** the digest match nor the observed
-path categories validate exact effective bootstrap mounts, absence of path
-shadowing, support-mount execution effect, all controllers or kernel containment.
-The quarantined profile still emits `quarantined-original-profile` unavailable
-and can never become a successful containment verdict in the present adapter.
+was not referenced by those recorded executable/source/argument paths. It is a
+directory mount, so it cannot be validated as a protected regular file directly.
+The optional quarantined mount component described below now admits an
+independently installed **regular-file descriptor** of that directory's exact
+path, identity and declared purpose. **Neither** a current image digest, runtime
+path check nor approved descriptor proves actual original-time execution effect,
+controller closure or kernel containment. The quarantined profile still emits
+`quarantined-original-profile` unavailable and cannot return a successful
+containment verdict in the present adapter.
 This review does not authorize replacing or launching a quarantined image.
 Any checked image file is current-byte evidence only, not proof it was
 historically executed; the full installed route, mount, owner-lock, kernel,
 and positive test requirements remain unresolved.
 
-### Reviewed ordinary bootstrap effective mount/config component (v10)
+### Reviewed original bootstrap effective mount/config components (v10)
 
 If the protected enrollment, original prior-container evidence and matching
 reviewed ordinary image source are available, the optional
@@ -262,16 +266,55 @@ identified. That file's instance/state/OAuth references and every configured
 management runtime's `--config` path are independently compared with the
 protected original `management-config` under the same bootstrap mount.
 
+For `quarantined-original-v1`, the optional reader separately checks the exact
+original *current* bootstrap command with `--fresh-initialization`, the selected
+manager's `no-new-privileges` and read-only root filesystem, captured whole-mount
+digests for both manager and proxy, proxy network binding, and read-only
+individual file mounts at `/bootstrap/config.json` and
+`/bootstrap/management.yml`. It checks writable state/OAuth mounts, read-only
+`/management-versions` and `/management-source` directory mounts, and refuses
+shadowing beneath those protected destinations. The two bootstrap file sources
+and their hashes must match re-read protected enrollment and prior evidence.
+The exact runtime's isolated Python executable/source must be under
+`/management-versions/` and its arguments must reference the mounted management
+config, not `/management-source`.
+
+Because the support mount is a directory, its `support-source` original-file
+entry points to a separately installed, root-protected **regular JSON file**,
+not to the directory itself. The file must contain exactly the fields shown
+below, with the current Docker source path and the independently observed
+directory device and inode in the two numeric fields:
+
+```json
+{
+  "schema": "approved-quarantine-support-directory-v1",
+  "purpose": "non-executed-bootstrap-reference",
+  "source": "/absolute/root-protected/source/directory",
+  "destination": "/management-source",
+  "read_only": true,
+  "device": 123,
+  "inode": 456
+}
+```
+
+The reader rejects noncanonical/mutable directory paths, changed identities,
+unexpected mount effects or runtime commands. The descriptor's purpose is an
+**approved claim** supported by a lexical runtime-path check; it is not proof
+that no imported module, symlink, config hook or prior process ever executed
+from that directory. An authoritative original capture is still required: a
+freshly created descriptor cannot retroactively prove original deployment.
+
 The separate consumer repeats the entire current inspection and protected
-config readback, compares the new component, and refuses modified mounts,
-commands or config. Unsupported configurations or uninspectable files add
-`installed-bootstrap-mount-profile`. The component is a narrow *ordinary*
-command/mount/config validation, not a historical source provenance claim, a
-proxy effective-config validation, a quarantine original profile, an immutable
-mount reservation, or complete controller/kernel closure. The quarantined
-profile deliberately has no positive mount/config component until its exact
-source/destination/effect and no-new-privileges profile can be independently
-reviewed. Both full entrypoints still return status 2 and unavailable.
+config readback, compares the same component, and refuses modified mounts,
+commands, directory identities or config. Unsupported configurations or
+uninspectable files add `installed-bootstrap-mount-profile`. The components are
+bounded present-time command/config/mount checks, not a historical source
+provenance claim, a proxy effective-config validation, immutable mount
+reservation or complete controller/kernel closure. Existing capture tooling
+does not yet support the quarantined live original's individual-file mounts,
+so this optional quarantined reader has unit validation only, **not** a
+host-accepted original quarantine fixture. Both full entrypoints still return
+status 2 and unavailable.
 
 ### Original-kernel sub-observation (introduced in v7, external pin in v8)
 
@@ -473,8 +516,8 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v10` report extends v9 with ordinary original
-mount/configuration readback; v9 introduced protected
+The `current-containment-prerequisites-v10` report extends v9 with optional original
+ordinary/quarantined mount/configuration readback; v9 introduced protected
 ordinary-route observations. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes
