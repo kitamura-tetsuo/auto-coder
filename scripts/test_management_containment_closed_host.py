@@ -42,7 +42,7 @@ from auto_coder.management.containment_kernel_subobservation import capture_orig
 from auto_coder.management.containment_observation import OBSERVED
 from auto_coder.management.containment_observation import _docker as inspect_complete_docker
 from auto_coder.management.containment_observation import read_scope
-from auto_coder.management.containment_route_manifest import _systemd_catalog, propose_unapproved_route_draft
+from auto_coder.management.containment_route_manifest import SystemdRouteFact, _systemd_catalog, _systemd_unit, propose_unapproved_route_draft
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import PriorContainer, _assert_pid_flock
 from auto_coder.management.installed_bootstrap_source import _REVIEWED_ORDINARY_SOURCE_SHA256, _REVIEWED_QUARANTINED_SOURCE_SHA256
@@ -54,6 +54,8 @@ if TYPE_CHECKING:
 MARKER = Path("/etc/auto-coder-disposable-containment-host.json")
 RESULT_ROOT = Path("/var/lib/auto-coder/containment-closed-host-results")
 MARKER_SCHEMA = "auto-coder-disposable-containment-host-v1"
+STOCK_UNITS = ("motd-news.timer", "motd-news.service")
+STOCK_MASK_ROOT = Path("/etc/systemd/system")
 _IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
@@ -174,6 +176,96 @@ def _footprint(paths: tuple[Path, ...], worker: subprocess.Popen[str]) -> tuple[
     return tuple(values)
 
 
+def _stock_mask_identity(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if not stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or os.readlink(path) != "/dev/null":
+        raise AssertionError("stock fixture mask is not a protected /dev/null link: " + str(path))
+    return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+@dataclass
+class InhibitedStockRoutes:
+    """Inhibit only the fixed installed stock routes in the authorized VM."""
+
+    identities: dict[Path, tuple[int, ...]] = field(default_factory=dict)
+    created: set[Path] = field(default_factory=set)
+    initial_facts: tuple[SystemdRouteFact, ...] = ()
+
+    @classmethod
+    def install(cls) -> InhibitedStockRoutes:
+        if not set(STOCK_UNITS) <= set(_systemd_catalog()):
+            raise AssertionError("required stock service/timer are absent from the installed catalog")
+        initial = tuple(_systemd_unit(name) for name in STOCK_UNITS)
+        if any(fact.unit_file_state not in {"enabled", "disabled", "static", "masked"} for fact in initial):
+            raise AssertionError("required stock service/timer has no supported installed unit state")
+        state = cls(initial_facts=initial)
+        for name in STOCK_UNITS:
+            path = STOCK_MASK_ROOT / name
+            if path.exists() or path.is_symlink():
+                state.identities[path] = _stock_mask_identity(path)
+        try:
+            for name in STOCK_UNITS:
+                path = STOCK_MASK_ROOT / name
+                if path not in state.identities:
+                    # Exclusive link creation leaves existing fragments and
+                    # preexisting masks untouched, including on setup failure.
+                    path.symlink_to("/dev/null")
+                    state.identities[path] = _stock_mask_identity(path)
+                    state.created.add(path)
+            _systemctl("daemon-reload")
+            _systemctl("stop", *STOCK_UNITS)
+            state.assert_inhibited()
+            logger.info("Inhibited the installed stock fixture routes: {}", ", ".join(STOCK_UNITS))
+            return state
+        except BaseException:
+            state.cleanup()
+            raise
+
+    @property
+    def mask_paths(self) -> tuple[Path, ...]:
+        return tuple(STOCK_MASK_ROOT / name for name in STOCK_UNITS)
+
+    def assert_inhibited(self) -> tuple[SystemdRouteFact, ...]:
+        facts = []
+        for path in self.mask_paths:
+            if _stock_mask_identity(path) != self.identities.get(path):
+                raise AssertionError("stock fixture mask identity changed: " + str(path))
+            fact = _systemd_unit(path.name)
+            if not fact.inhibited:
+                raise AssertionError("stock fixture route is not masked and inactive: " + path.name)
+            facts.append(fact)
+        return tuple(facts)
+
+    def evidence(self) -> dict[str, object]:
+        facts = self.assert_inhibited()
+        return {"initial_units": [asdict(fact) for fact in self.initial_facts], "units": [asdict(fact) for fact in facts], "masks": [{"path": str(path), "identity": list(self.identities[path]), "created_by_fixture": path in self.created} for path in self.mask_paths]}
+
+    def cleanup(self) -> None:
+        failures = []
+        removed = False
+        for path, identity in tuple(self.identities.items()):
+            try:
+                if path not in self.created:
+                    if _stock_mask_identity(path) != identity:
+                        raise AssertionError("preexisting stock mask identity changed: " + str(path))
+                    continue
+                if _stock_mask_identity(path) != identity:
+                    raise AssertionError("fixture-created stock mask was externally replaced: " + str(path))
+                path.unlink()
+                self.created.remove(path)
+                del self.identities[path]
+                removed = True
+            except (OSError, AssertionError) as exc:
+                failures.append(str(exc))
+        if removed:
+            try:
+                _systemctl("daemon-reload")
+            except AssertionError as exc:
+                failures.append(str(exc))
+        if failures:
+            raise AssertionError("stock fixture mask cleanup failed: " + repr(failures))
+
+
 @dataclass
 class WatcherFixture:
     """Run the real installed watcher before inhibiting its real unit."""
@@ -251,6 +343,7 @@ class Case:
     owner_fd: int = -1
     watcher: WatcherFixture | None = None
     routes: DisposableSystemdRoutes | None = None
+    stock_routes: InhibitedStockRoutes | None = None
     artifacts: list[Path] = field(default_factory=list)
     protected: tuple[Path, ...] = ()
     scope: Path | None = None
@@ -428,6 +521,23 @@ def _prepare_ordinary(root: Path, image: str, worker: subprocess.Popen[str], wor
         raise
 
 
+def _classify_fixture_restarter_routes(case: Case, draft: dict[str, object]) -> None:
+    if case.routes is None or case.stock_routes is None:
+        raise AssertionError("the fixture restarter prerequisites are missing")
+    case.stock_routes.assert_inhibited()
+    expected = {*case.routes.names, WATCHER_UNIT, *STOCK_UNITS}
+    routes = draft["systemd_routes"]
+    if not isinstance(routes, list):
+        raise AssertionError("route proposal has no actual systemd catalog")
+    seen = set()
+    for route in routes:
+        if route["unit"] in expected:
+            route["role"] = "restarter"
+            seen.add(route["unit"])
+    if seen != expected:
+        raise AssertionError("a real fixture watcher/service/timer/socket or inhibited stock route is absent from the complete catalog")
+
+
 def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, stop_manager: Callable[[], None] | None = None) -> None:
     caddyfile = case.root / "Caddyfile"
     _write_private(caddyfile, b'{\n admin off\n auto_https off\n}\n:8080 {\n respond "synthetic-containment-fixture" 200\n}\n')
@@ -540,22 +650,13 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
     draft = propose_unapproved_route_draft(approval, inspect_complete_docker(scope), closed_profile=True)
     if draft["complete_ordinary_routes_attested"] is not False or draft["local_script_routes"] or draft["remote_script_origins"]:
         raise AssertionError("route proposal unexpectedly acquired independent approval")
-    expected_routes = {*case.routes.names, WATCHER_UNIT}
-    seen = set()
-    systemd_routes = draft["systemd_routes"]
-    if not isinstance(systemd_routes, list):
-        raise AssertionError("route proposal has no actual systemd catalog")
-    for route in systemd_routes:
-        if route["unit"] in expected_routes:
-            route["role"] = "restarter"
-            seen.add(route["unit"])
-    if seen != expected_routes:
-        raise AssertionError("the real watcher/service/timer/socket are absent from the complete catalog")
+    _classify_fixture_restarter_routes(case, draft)
     # The separately authorized VM is synthetic and initially empty. Fixture
     # setup owns all management origins and explicitly approves that closed
     # construction; the producer only reads this preexisting root authority.
     draft["complete_ordinary_routes_attested"] = True
     _write_private(APPROVAL_ROOT / (case.fixture_id + ".routes.json"), _json(draft))
+    assert case.stock_routes is not None
     case.protected = (
         case.state,
         case.oauth,
@@ -566,6 +667,7 @@ def _close_and_approve(case: Case, caddy_image: str, authorization_id: str, *, s
         case.scope,
         APPROVAL_ROOT / (case.fixture_id + ".json"),
         APPROVAL_ROOT / (case.fixture_id + ".routes.json"),
+        *case.stock_routes.mask_paths,
         *(Path(item.path) for item in originals),
         *case.extra_protected,
     )
@@ -675,10 +777,7 @@ def _reapprove_restored_mask(case: Case, manifest: Path) -> None:
     routes = current["systemd_routes"]
     if not isinstance(routes, list):
         raise AssertionError("restored route approval has no systemd catalog")
-    fixture_names = {*case.routes.names, WATCHER_UNIT}
-    for route in routes:
-        if route["unit"] in fixture_names:
-            route["role"] = "restarter"
+    _classify_fixture_restarter_routes(case, current)
     target = case.routes.names[0]
     changed = [route for route in routes if route["unit"] == target]
     if len(changed) != 1:
@@ -832,11 +931,19 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
     _write_private(worker_config, _json({"fixture": "unrelated-preserved-worker", "backend": "none"}))
     worker = subprocess.Popen((sys.executable, "-I", "-B", "-c", "import signal; signal.pause()"), text=True)
     cases: list[Case] = []
+    stock_routes: InhibitedStockRoutes | None = None
+    stock_evidence: list[Path] = []
     completed_profiles: list[str] = []
     refused_variants: list[str] = []
     result: dict[str, object] = {"schema": "disposable-current-containment-acceptance-v1", "status": "failed", "authorization": authorization, "profiles": completed_profiles, "quarantine_refused_variants": refused_variants, "artifact_paths": []}
     try:
+        stock_routes = InhibitedStockRoutes.install()
+        result["stock_systemd_inhibition"] = stock_routes.evidence()
+        stock_record = root / "stock-systemd-inhibition.json"
+        _write_private(stock_record, _json(result["stock_systemd_inhibition"]))
+        stock_evidence.append(stock_record)
         ordinary = _prepare_ordinary(root / "ordinary", ordinary_image, worker, worker_config)
+        ordinary.stock_routes = stock_routes
         cases.append(ordinary)
         _close_and_approve(ordinary, caddy_image, authorization_id)
         ordinary.positive_pair()
@@ -866,6 +973,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                 ExitStack() as cleanup,
             ):
                 case = _quarantine_case(prepared, worker, worker_config)
+                case.stock_routes = stock_routes
                 cases.append(case)
                 # Remove the proxy before the helper removes the manager that
                 # supplies its network namespace, including assertion failures.
@@ -895,6 +1003,7 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
                     ExitStack() as cleanup,
                 ):
                     variant_case = _quarantine_case(altered, worker, worker_config)
+                    variant_case.stock_routes = stock_routes
                     cases.append(variant_case)
                     cleanup.callback(variant_case.cleanup)
                     _close_and_approve(variant_case, caddy_image, authorization_id, stop_manager=altered.stop)
@@ -919,9 +1028,14 @@ def run_fixture(*, authorization_id: str, ordinary_image: str, caddy_image: str,
             if case.owner_fd >= 0:
                 os.close(case.owner_fd)
                 case.owner_fd = -1
+        if stock_routes is not None:
+            try:
+                stock_routes.cleanup()
+            except (OSError, ValueError, AssertionError, subprocess.SubprocessError) as exc:
+                cleanup_errors.append(type(exc).__name__ + ": " + str(exc))
         worker.terminate()
         worker.wait(timeout=15)
-        result["artifact_paths"] = [str(path) for case in cases for path in case.artifacts] + [str(root / "test.log")]
+        result["artifact_paths"] = [str(path) for case in cases for path in case.artifacts] + [str(path) for path in stock_evidence] + [str(root / "test.log")]
         if cleanup_errors:
             result["cleanup_errors"] = cleanup_errors
             result["status"] = "failed"

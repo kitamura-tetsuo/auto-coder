@@ -280,6 +280,18 @@ an otherwise empty Docker inventory, an absent fixed watcher and an actual
 QEMU/KVM VM. The driver does not install its own authorization marker or turn a
 production host into a disposable test environment.
 
+The supported Ubuntu fixture also requires the already installed
+`motd-news.service` and `motd-news.timer`. After authorization, fixture setup
+stops both and installs protected persistent masks, retaining them across all
+ordinary and quarantine cases. Both appear explicitly as inhibited restarter
+routes in every approval; their exact mask identities are preserved during each
+CLI observation and recorded in the result and a separate evidence artifact.
+Cleanup removes only unchanged masks created by this fixture, preserving
+preexisting masks and vendor fragments; the disposable VM is then discarded.
+Unknown dynamic command sources still refuse until their actual controller is
+separately inhibited. Other routes that reach such sources remain subject to
+the same ordinary source inspection.
+
 The concrete VM package is under `scripts/containment_vm/`. Preparation exports
 only immutable preexisting images and the committed source; it does not launch
 a VM. Its Ubuntu cloud disk is SHA-256 pinned. The runner uses Docker Compose,

@@ -235,3 +235,139 @@ def test_caddy_creation_keeps_exact_id_for_cleanup_when_start_fails(tmp_path: Pa
     fixture.Case.cleanup(case)
     assert [arguments[0] for arguments in calls] == ["create", "start", "rm"]
     assert case.proxy == ""
+
+
+def _stock_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, inhibited: bool = True) -> list[tuple[str, ...]]:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(fixture, "STOCK_MASK_ROOT", tmp_path)
+    monkeypatch.setattr(fixture, "_systemd_catalog", lambda: fixture.STOCK_UNITS)
+    monkeypatch.setattr(fixture, "_systemctl", lambda *args: calls.append(args))
+
+    def unit(name: str) -> fixture.SystemdRouteFact:
+        if not calls:
+            return fixture.SystemdRouteFact(name, "b" * 64, "static" if name.endswith(".service") else "enabled", "inactive", 0, False)
+        assert calls[:2] == [("daemon-reload",), ("stop", *fixture.STOCK_UNITS)]
+        assert (tmp_path / name).is_symlink()
+        return fixture.SystemdRouteFact(name, "a" * 64, "masked", "inactive", 0, inhibited)
+
+    monkeypatch.setattr(fixture, "_systemd_unit", unit)
+    return calls
+
+
+def test_stock_inhibition_requires_authorized_host_before_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unauthorized(_: str) -> dict[str, object]:
+        raise PermissionError("unmatched disposable marker")
+
+    def unexpected() -> object:
+        raise AssertionError("stock mutation preceded host authorization")
+
+    monkeypatch.setattr(fixture, "require_disposable_host", unauthorized)
+    monkeypatch.setattr(fixture.InhibitedStockRoutes, "install", unexpected)
+    with pytest.raises(PermissionError, match="unmatched disposable marker"):
+        fixture.run_fixture(authorization_id="fixture", ordinary_image="sha256:" + "a" * 64, caddy_image="sha256:" + "b" * 64)
+
+
+def test_stock_masks_are_observed_recorded_and_removed_by_exact_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+    stock = fixture.InhibitedStockRoutes.install()
+    evidence = stock.evidence()
+    assert {entry["unit_file_state"] for entry in evidence["initial_units"]} == {"static", "enabled"}
+    assert {entry["unit"] for entry in evidence["units"]} == set(fixture.STOCK_UNITS)
+    assert all(entry["inhibited"] for entry in evidence["units"])
+    assert {entry["path"] for entry in evidence["masks"]} == {str(tmp_path / name) for name in fixture.STOCK_UNITS}
+    assert all(entry["created_by_fixture"] for entry in evidence["masks"])
+    assert all(entry["identity"][1] == Path(entry["path"]).lstat().st_ino for entry in evidence["masks"])
+    assert stock.mask_paths == tuple(tmp_path / name for name in fixture.STOCK_UNITS)
+    stock.cleanup()
+    stock.cleanup()
+    assert not list(tmp_path.iterdir())
+    assert calls == [("daemon-reload",), ("stop", *fixture.STOCK_UNITS), ("daemon-reload",)]
+
+
+def test_preexisting_stock_mask_is_preserved_with_its_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stock_routes(tmp_path, monkeypatch)
+    existing = tmp_path / fixture.STOCK_UNITS[0]
+    existing.symlink_to("/dev/null")
+    before = existing.lstat()
+    stock = fixture.InhibitedStockRoutes.install()
+    recorded = {entry["path"]: entry for entry in stock.evidence()["masks"]}
+    assert recorded[str(existing)]["created_by_fixture"] is False
+    stock.cleanup()
+    assert existing.is_symlink()
+    after = existing.lstat()
+    assert (before.st_dev, before.st_ino, before.st_ctime_ns) == (after.st_dev, after.st_ino, after.st_ctime_ns)
+    assert os.readlink(existing) == "/dev/null"
+    assert not (tmp_path / fixture.STOCK_UNITS[1]).is_symlink()
+
+
+def test_absent_stock_route_refuses_before_creating_any_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+    monkeypatch.setattr(fixture, "_systemd_catalog", lambda: fixture.STOCK_UNITS[:1])
+    with pytest.raises(AssertionError, match="absent from the installed catalog"):
+        fixture.InhibitedStockRoutes.install()
+    assert calls == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_referenced_but_uninstalled_stock_route_never_gets_a_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+    monkeypatch.setattr(fixture, "_systemd_unit", lambda name: fixture.SystemdRouteFact(name, "a" * 64, "", "inactive", 0, False))
+    with pytest.raises(AssertionError, match="no supported installed unit state"):
+        fixture.InhibitedStockRoutes.install()
+    assert calls == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_stock_source_collision_is_preserved_before_any_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+    existing = tmp_path / fixture.STOCK_UNITS[1]
+    existing.write_bytes(b"[Service]\nExecStart=/usr/bin/true\n")
+    before = existing.lstat()
+    with pytest.raises(AssertionError, match="not a protected /dev/null link"):
+        fixture.InhibitedStockRoutes.install()
+    assert existing.lstat() == before
+    assert calls == []
+    assert list(tmp_path.iterdir()) == [existing]
+
+
+def test_stock_active_or_incomplete_state_rolls_back_owned_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch, inhibited=False)
+    with pytest.raises(AssertionError, match="not masked and inactive"):
+        fixture.InhibitedStockRoutes.install()
+    assert not list(tmp_path.iterdir())
+    assert calls[-1] == ("daemon-reload",)
+
+
+def test_stock_cleanup_refuses_replaced_mask_without_removing_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stock_routes(tmp_path, monkeypatch)
+    stock = fixture.InhibitedStockRoutes.install()
+    changed = stock.mask_paths[0]
+    changed.rename(tmp_path / "moved-original-mask")
+    changed.symlink_to("/dev/null")
+    replacement = changed.lstat()
+    with pytest.raises(AssertionError, match="externally replaced"):
+        stock.cleanup()
+    assert changed.lstat() == replacement
+    assert changed.is_symlink()
+    assert not stock.mask_paths[1].is_symlink()
+
+
+@pytest.mark.parametrize("omitted", (None, *fixture.STOCK_UNITS))
+def test_every_approval_requires_both_inhibited_stock_restarter_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omitted: str | None) -> None:
+    _stock_routes(tmp_path, monkeypatch)
+    stock = fixture.InhibitedStockRoutes.install()
+    names = ("fixture.service", "fixture.timer", "fixture.socket")
+    case = SimpleNamespace(routes=SimpleNamespace(names=names), stock_routes=stock)
+    expected = {*names, fixture.WATCHER_UNIT, *fixture.STOCK_UNITS}
+    routes = [{"unit": name, "role": "unrelated", "sha256": "a" * 64} for name in sorted(expected | {"unrelated.service"}) if name != omitted]
+    draft = {"systemd_routes": routes}
+    try:
+        if omitted is not None:
+            with pytest.raises(AssertionError, match="absent from the complete catalog"):
+                fixture._classify_fixture_restarter_routes(case, draft)
+        else:
+            fixture._classify_fixture_restarter_routes(case, draft)
+            assert {route["unit"] for route in routes if route["role"] == "restarter"} == expected
+            assert next(route for route in routes if route["unit"] == "unrelated.service")["role"] == "unrelated"
+    finally:
+        stock.cleanup()
