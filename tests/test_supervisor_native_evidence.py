@@ -452,13 +452,17 @@ def test_real_planned_pytest_shards_produce_complete_native_aggregate(tmp_path: 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(f"def {name}(): assert True" for name in names) + "\n", encoding="utf-8")
     for filename, test_name, variants in (
-        ("test_management_archived_cutover_container.py", "test_real_second_cutover_preserves_all_owner_and_key_exclusions", ("complete", "host-interrupted", "omitted-ancestor", "stopped-prior")),
+        ("test_management_archived_cutover_container.py", "test_real_second_cutover_preserves_all_owner_and_key_exclusions", ("complete", "host-interrupted", "omitted-ancestor", "stopped-prior", "original-lineage")),
         ("test_management_installed_fresh_container.py", "test_installed_initial_abc_real_handoff", ("complete", "before-stop", "before-forward-start", "ready-corrupt", "host-interrupted", "source-unavailable")),
+        (
+            "test_management_fresh_end_to_end.py",
+            "test_fresh_first_launch_via_host_guard_and_authenticated_http",
+            ("False-False-None-True-False-False-True", "False-True-None-True-False-False-True", "False-False-after-claim-False-False-False-True"),
+        ),
+        ("test_management_fresh_end_to_end.py", "test_original_host_durable_boundaries", ("anchor", "claimed", "never-created", "grant-possible")),
     ):
-        (project / "tests" / filename).write_text(
-            "import pytest\n" f"@pytest.mark.parametrize('variant', {list(variants)!r}, ids={list(variants)!r})\n" f"def {test_name}(variant): assert variant\n",
-            encoding="utf-8",
-        )
+        with (project / "tests" / filename).open("a", encoding="utf-8") as stream:
+            stream.write("import pytest\n" f"@pytest.mark.parametrize('variant', {list(variants)!r}, ids={list(variants)!r})\n" f"def {test_name}(variant): assert variant\n")
     (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8")
     (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     for name in HARNESS:

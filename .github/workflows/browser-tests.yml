@@ -14,7 +14,9 @@ concurrency:
 jobs:
   browser-tests:
     name: Browser Tests
-    runs-on: ubuntu-latest
+    # Pin a stable apt source during the Ubuntu 26.04 latest-image rollout.
+    # Keep real Chromium installation, preflight and all browser tests required.
+    runs-on: ubuntu-24.04
     env:
       # Absolute and workspace-rooted so browser installation stays
       # discoverable even though the pytest test harness rewrites `HOME` to a
@@ -40,7 +42,12 @@ jobs:
 
       - name: Install Playwright Chromium
         run: |
-          uv run playwright install --with-deps chromium
+          # The runner may already have sufficient OS libraries for Chromium.
+          # Attempt a real browser launch before depending on external apt DNS.
+          uv run playwright install chromium
+          if ! uv run python scripts/browser_preflight.py; then
+            uv run playwright install-deps chromium
+          fi
 
       - name: Preflight - verify a real headless Chromium launches
         run: |

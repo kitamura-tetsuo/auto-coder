@@ -104,6 +104,35 @@ def read_original(path: Path) -> tuple[bytes, tuple[int, int]]:
         os.close(fd)
 
 
+def require_claimed_intent(encoded: bytes, expected: FreshInitializationIntent) -> None:
+    """Reject a claim whose original bytes do not name the anchored intent."""
+    try:
+        claimed = parse_fresh_intent(json.loads(encoded))
+    except (ValueError, TypeError, KeyError) as error:
+        raise OriginalEvidenceUnavailable("original claim intent differs") from error
+    if claimed != expected or encoded != canonical(asdict(expected)):
+        raise OriginalEvidenceUnavailable("original claim intent differs")
+
+
+def validate_original_lifetime(value: object) -> None:
+    """Require the exact original Linux lifetime, before any successor or grant."""
+    if not isinstance(value, dict) or set(value) != {"pid", "start", "boot", "nonce"}:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    if type(value["pid"]) is not int or value["pid"] <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    start = value["start"]
+    if not isinstance(start, str) or not start.isascii() or not start.isdecimal() or str(int(start)) != start or int(start) <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    for field in ("boot", "nonce"):
+        token = value[field]
+        try:
+            valid = isinstance(token, str) and str(uuid.UUID(token)) == token
+        except (ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+
+
 def _sync(root: Path) -> None:
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -172,11 +201,15 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         raise OriginalEvidenceUnavailable("partial, omitted or conflicting frontier")
     previous = ""
     events = []
+    branches: dict[str, list[str]] = {}
+    anchors: dict[str, dict[str, object]] = {}
     for index in range(frontier["count"]):
         encoded, _ = read_original(root / f"{index:08d}.json")
         event = json.loads(encoded)
         if not isinstance(event, dict) or set(event) != {"previous", "sequence", "kind", "attempt", "value"} or event["previous"] != previous or type(event["sequence"]) is not int or event["sequence"] != index or canonical(event) != encoded:
             raise OriginalEvidenceUnavailable("corrupt or cyclic original frontier")
+        if not isinstance(event["kind"], str) or not isinstance(event["attempt"], str):
+            raise OriginalEvidenceUnavailable("unsupported original event boundary")
         if event["kind"] == "anchor":
             anchor = event["value"]
             if not isinstance(anchor, dict) or set(anchor) != {"intent", "lifetime", "stores", "state", "journal", "pristine"}:
@@ -187,8 +220,114 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("incomplete original anchor") from error
             if original_intent.request_id != event["attempt"]:
                 raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
+            if original_intent.original_history != binding.root or original_intent.original_history_id != binding.history:
+                raise OriginalEvidenceUnavailable("original anchor history identity differs")
+            try:
+                validate_original_lifetime(anchor["lifetime"])
+            except (ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original anchor lifetime invalid") from error
+            if anchor["stores"] != expected_stores(original_intent) or anchor["state"] != [original_intent.state_device, original_intent.state_inode] or anchor["journal"] != [original_intent.journal_device, original_intent.journal_inode] or type(anchor["pristine"]) is not bool:
+                raise OriginalEvidenceUnavailable("original anchor binding invalid")
+            anchors[event["attempt"]] = anchor
+        elif event["kind"] == "claimed":
+            claim = event["value"]
+            if (
+                not isinstance(claim, dict)
+                or set(claim) != {"identity", "sha256"}
+                or not isinstance(claim["identity"], list)
+                or len(claim["identity"]) != 2
+                or any(type(value) is not int or value < 0 for value in claim["identity"])
+                or claim["identity"][1] == 0
+                or not isinstance(claim["sha256"], str)
+                or len(claim["sha256"]) != 64
+                or any(char not in "0123456789abcdef" for char in claim["sha256"])
+            ):
+                raise OriginalEvidenceUnavailable("original claimed boundary is malformed")
+            anchor = anchors.get(event["attempt"])
+            if anchor is None:
+                raise OriginalEvidenceUnavailable("original claimed boundary has no anchor")
+            try:
+                original_intent = parse_fresh_intent(anchor["intent"])
+                encoded_claim, original_id = read_original(Path(original_intent.host_state_root) / "fresh-initialization.json")
+                require_claimed_intent(encoded_claim, original_intent)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original claimed boundary source unavailable: " + str(error)) from error
+            if claim != {
+                "identity": list(original_id),
+                "sha256": hashlib.sha256(encoded_claim).hexdigest(),
+            }:
+                raise OriginalEvidenceUnavailable("original claimed boundary differs from source")
+        elif event["kind"] == "never-created":
+            anchor = anchors.get(event["attempt"])
+            if anchor is None or anchor["pristine"] is not True or event["value"] != {"lifetime": anchor["lifetime"], "stores": anchor["stores"]}:
+                raise OriginalEvidenceUnavailable("original terminal boundary differs from anchor")
+        elif event["kind"] == "unresolved" and event["value"] != {}:
+            raise OriginalEvidenceUnavailable("original terminal boundary is malformed")
+        elif event["kind"] == "grant-possible":
+            value = event["value"]
+            if not isinstance(value, dict) or set(value) != {"lifetime"}:
+                raise OriginalEvidenceUnavailable("original grant lifetime incomplete")
+            try:
+                validate_original_lifetime(value["lifetime"])
+            except (ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original grant lifetime incomplete") from error
+        branches.setdefault(event["attempt"], []).append(event["kind"])
         previous = hashlib.sha256(encoded).hexdigest()
         events.append(HistoryEvent(event["previous"], index, event["kind"], event["attempt"], canonical(event["value"]).decode()))
+    allowed_branches = (
+        ["anchor"],
+        ["anchor", "never-created"],
+        ["anchor", "unresolved"],
+        ["anchor", "claimed"],
+        ["anchor", "claimed", "grant-possible"],
+    )
+    if any(kinds not in allowed_branches for kinds in branches.values()):
+        raise OriginalEvidenceUnavailable("conflicting original attempt boundaries")
+    if any("claimed" in kinds and anchors[attempt]["pristine"] is not True for attempt, kinds in branches.items()):
+        raise OriginalEvidenceUnavailable("original anchor was not pristine before claim")
+
+    # All prior anchors must form one admissible forward history, including
+    # failed branches. Checking only a new claim against its immediate parent
+    # would accept an unrelated rewritten ancestor elsewhere in the frontier.
+    baseline: tuple[str, str] | None = None
+    known_predecessors: set[tuple[str, str]] = set()
+    seen_targets: set[str] = set()
+    seen_roots: set[tuple[int, int]] = set()
+    earlier_predecessor_names: set[str] = set()
+    for event in events:
+        if event.kind == "claimed":
+            # A later claim cannot authorize an earlier descendant anchor.
+            # Eligibility begins at this event, not at the parent's anchor.
+            claimed_intent = parse_fresh_intent(anchors[event.attempt]["intent"])
+            known_predecessors.add((claimed_intent.new_instance, claimed_intent.new_container_id))
+            continue
+        if event.kind != "anchor":
+            continue
+        anchor = anchors[event.attempt]
+        intent = parse_fresh_intent(anchor["intent"])
+        if baseline is None:
+            baseline = (intent.old_instance, intent.old_container_id)
+            known_predecessors.add(baseline)
+        if (intent.old_instance, intent.old_container_id) not in known_predecessors:
+            raise OriginalEvidenceUnavailable("original lineage has uncovered or refused predecessor")
+        target_keys = {intent.new_instance, intent.new_container_id, intent.host_state_root, intent.host_journal_root}
+        if target_keys & seen_targets or intent.new_instance == baseline[0] or intent.new_container_id == baseline[1] or intent.new_instance in earlier_predecessor_names:
+            raise OriginalEvidenceUnavailable("original target aliases or cycles covered history")
+        state_id = (intent.state_device, intent.state_inode)
+        journal_id = (intent.journal_device, intent.journal_inode)
+        if state_id == journal_id or state_id in seen_roots or journal_id in seen_roots:
+            raise OriginalEvidenceUnavailable("original target reuses a protected root")
+        try:
+            actual_state = identity(Path(intent.host_state_root), directory=True)
+            actual_journal = identity(Path(intent.host_journal_root), directory=True)
+        except (OSError, ValueError) as error:
+            raise OriginalEvidenceUnavailable("original anchor directory identity unavailable") from error
+        if actual_state != state_id or actual_journal != journal_id:
+            raise OriginalEvidenceUnavailable("original anchor directory identity differs")
+        seen_targets.update(target_keys)
+        seen_roots.update((state_id, journal_id))
+        earlier_predecessor_names.add(intent.old_instance)
+
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")
     return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"])), events
@@ -282,6 +421,7 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
             raise
         else:
             encoded, file_id = read_original(Path(intent.host_state_root) / "fresh-initialization.json")
+            require_claimed_intent(encoded, intent)
             _append(root, "claimed", intent.request_id, {"identity": file_id, "sha256": hashlib.sha256(encoded).hexdigest()})
 
 
@@ -300,6 +440,7 @@ def grant_boundary(intent: FreshInitializationIntent) -> Iterator[None]:
         if [event.kind for event in branch] != ["anchor", "claimed"] or json.loads(branch[0].value_json)["intent"] != asdict(intent):
             raise OriginalEvidenceUnavailable("grant has no original complete one-time admission")
         encoded, file_id = read_original(Path(intent.host_state_root) / "fresh-initialization.json")
+        require_claimed_intent(encoded, intent)
         if json.loads(branch[-1].value_json) != {"identity": list(file_id), "sha256": hashlib.sha256(encoded).hexdigest()}:
             raise OriginalEvidenceUnavailable("original claim changed before grant")
         # Persist before any supported callback can launch a supervisor or grant.

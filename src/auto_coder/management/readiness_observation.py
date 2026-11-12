@@ -13,12 +13,11 @@ import stat
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from .action_scopes import READ_SCOPE, validate_scope_set
 from .bootstrap_store import ChildPhase, ChildRecord
 from .bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
-from .oauth_config import ManagementSettings, load_management_settings
+from .oauth_config import ManagementSettings, load_management_settings, management_listener_binding_matches
 from .oauth_grants import AuthenticatedGrant
 from .self_update_handoff import HandoffStore, observe_supervisor, runtime_for_receipt
 
@@ -159,17 +158,7 @@ def publish_authenticated_readback(settings: ManagementSettings, grant: Authenti
         scopes = validate_scope_set(grant.scopes)
         if grant.principal.project_id != settings.oauth.firebase_project_id or grant.resource != settings.oauth.resource or client is None or READ_SCOPE not in scopes or not set(scopes) <= set(client.allowed_scopes):
             return
-        endpoint = urlsplit(config.listener_url)
-        if (
-            config.oauth_root != settings.state_root
-            or config.journal_root != settings.operation_state_root
-            or endpoint.hostname != settings.bind_host
-            or endpoint.port != settings.port
-            or endpoint.path != "/mcp"
-            or endpoint.query
-            or endpoint.fragment
-            or (config.management_config is not None and config.management_config != settings.config_path)
-        ):
+        if config.oauth_root != settings.state_root or config.journal_root != settings.operation_state_root or not management_listener_binding_matches(config, settings) or (config.management_config is not None and config.management_config != settings.config_path):
             return
         live = _live(config)
         if live is None:

@@ -1,7 +1,9 @@
-"""Trusted host operator entry points for one fresh management cutover.
+"""Trusted local entry points for prior cutover and genuinely NEW bootstrap.
 
-These commands only inspect Docker; starting and stopping services remains an
-explicit operator action. Evidence and state must be new protected directories.
+Assessment commands never authorize a launch. The separate, explicit NEW
+Docker start command is effectful and one-shot; it requires a protected origin,
+selected isolated container and durable first-start claim. No command resets
+an existing owner or reconstructs missing recovery history.
 """
 
 from __future__ import annotations
@@ -10,9 +12,13 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 import stat
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
+
+import yaml
 
 from .fresh_host_observation import (
     HostObservationUnavailable,
@@ -86,8 +92,29 @@ def _evidence(path: Path) -> tuple[PriorContainer, PriorContainer, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fresh management host evidence; no Docker mutation")
+    parser = argparse.ArgumentParser(description="Fresh management trusted-local host authority; Docker starts require an explicit selected command")
     commands = parser.add_subparsers(dest="command", required=True)
+    preflight = commands.add_parser("preflight", help="Read-only NEW-instance assessment; never launch authority")
+    preflight.add_argument("--request-file", required=True, type=Path)
+    begin = commands.add_parser("begin", help="Record a protected NEW origin; no launch or grant")
+    begin.add_argument("--request-file", required=True, type=Path)
+    inspect = commands.add_parser("inspect-begin", help="Independent read-only verification of a NEW origin")
+    inspect.add_argument("--request-file", required=True, type=Path)
+    inspect_profile = commands.add_parser("inspect-profile", help="Independent read-only NEW runtime/configuration/OAuth profile verification; no launch")
+    inspect_profile.add_argument("--request-file", required=True, type=Path)
+    probe_fence = commands.add_parser("probe-admission-fence", help="Probe transient exclusive NEW admission serialization; no launch authority")
+    probe_fence.add_argument("--request-file", required=True, type=Path)
+    docker_created = commands.add_parser("inspect-new-container", help="Read-only Docker CREATED-scope observation; not first-launch authority")
+    docker_created.add_argument("--request-file", required=True, type=Path)
+    docker_created.add_argument("--container-id", required=True)
+    docker_created.add_argument("--image-id", required=True)
+    docker_start = commands.add_parser("start-new-container", help="Consume one NEW Docker first-start claim; never retry an uncertain effect")
+    docker_start.add_argument("--request-file", required=True, type=Path)
+    docker_start.add_argument("--container-id", required=True)
+    docker_start.add_argument("--image-id", required=True)
+    docker_start.add_argument("--timeout", type=float, default=120)
+    docker_start.add_argument("--private-root", type=Path, required=True)
+    docker_start.add_argument("--outer-socket", type=Path, default=Path("/var/run/docker.sock"))
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -106,7 +133,37 @@ def main() -> None:
     guard.add_argument("--bootstrap-config", type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "capture":
+        if args.command == "preflight":
+            from .fresh_preflight import assess_new_instance
+
+            print(json.dumps(asdict(assess_new_instance(args.request_file)), sort_keys=True))
+        elif args.command == "begin":
+            from .fresh_begin import begin_new_instance
+
+            print(json.dumps(asdict(begin_new_instance(args.request_file)), sort_keys=True))
+        elif args.command == "inspect-begin":
+            from .fresh_begin import inspect_new_instance_origin
+
+            print(json.dumps(asdict(inspect_new_instance_origin(args.request_file)), sort_keys=True))
+        elif args.command == "inspect-profile":
+            from .fresh_new_profile import inspect_new_instance_profile
+
+            print(json.dumps(asdict(inspect_new_instance_profile(args.request_file)), sort_keys=True))
+        elif args.command == "probe-admission-fence":
+            from .fresh_new_admission_fence import hold_new_admission_fence
+
+            with hold_new_admission_fence(args.request_file) as observation:
+                receipt = asdict(observation)
+            print(json.dumps(receipt, sort_keys=True))
+        elif args.command == "inspect-new-container":
+            from .fresh_new_docker import inspect_created_new_docker
+
+            print(json.dumps(inspect_created_new_docker(args.request_file, args.container_id, args.image_id), sort_keys=True))
+        elif args.command == "start-new-container":
+            from .fresh_new_host_start import start_new_docker_once
+
+            print(json.dumps(start_new_docker_once(args.request_file, args.container_id, args.image_id, timeout=args.timeout, private_root=args.private_root, outer_socket=args.outer_socket), sort_keys=True))
+        elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
                 raise ValueError("approved mount profile is malformed")
@@ -163,7 +220,7 @@ def main() -> None:
                 serve_one_fresh_grant(args.guard_dir / "fresh-guard.sock", intent, management, proxy, fence, args.prior_network_fd, bootstrap_config=args.bootstrap_config)
             finally:
                 os.close(fence)
-    except (OSError, ValueError, TypeError, KeyError, HostObservationUnavailable) as exc:
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, yaml.YAMLError, HostObservationUnavailable, subprocess.SubprocessError) as exc:
         parser.exit(1, f"fresh host observation unavailable: {exc}\n")
 
 
