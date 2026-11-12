@@ -16,6 +16,22 @@ import time
 from pathlib import Path
 
 
+def activate_scoped_fixture_token(token_path: Path, repository: str) -> bool:
+    """Load only an explicitly mounted test-repository token into the child environment."""
+    if not token_path.exists() and not token_path.is_symlink():
+        return False
+    if repository != "kitamura-tetsuo/auto-coder-test":
+        raise ValueError("Scoped fixture token is restricted to the test repository")
+    token_stat = token_path.lstat()
+    if not token_path.is_file() or token_path.is_symlink() or token_stat.st_mode & 0o077:
+        raise ValueError("Scoped fixture token file is not a private regular file")
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token.startswith("github_pat_"):
+        raise ValueError("Scoped fixture token must be a fine-grained PAT")
+    os.environ["GITHUB_TOKEN"] = token
+    return True
+
+
 def main() -> None:
     if os.environ.get("AUTO_CODER_TEST_LAUNCH_AUDIT") == "1":
         # External acceptance counts actual selected-interpreter processes.
@@ -41,7 +57,9 @@ def main() -> None:
             # before the fixture process exits unexpectedly.
             time.sleep(0.75)
             raise SystemExit("fixture intentional staged-worker activation failure")
-    token = os.environ["GITHUB_TOKEN"]
+    activate_scoped_fixture_token(
+        Path("/fixture/secrets/github-test-scoped"), os.environ["AUTO_CODER_REPOSITORY"]
+    )
     command = [
         sys.executable,
         "-m",
@@ -49,8 +67,6 @@ def main() -> None:
         "process-issues",
         "--repo",
         os.environ["AUTO_CODER_REPOSITORY"],
-        "--github-token",
-        token,
         "--skip-codex-auth-secret-sync",
         "--disable-webhook",
         "--log-file",

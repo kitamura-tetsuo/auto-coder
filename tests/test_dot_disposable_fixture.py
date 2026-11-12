@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 from scripts import dot_disposable_fixture as fixture
+from tests.fixtures import supervisor_offline_process_issues as offline_worker
 
 
 def source_tree(tmp_path: Path) -> Path:
@@ -42,9 +43,46 @@ def test_provision_is_dockerless_private_and_observe_only(tmp_path):
     assert any(volume.endswith(":/fixture/fixture.json:ro") for volume in compose["services"]["management"]["volumes"])
     assert all("GITHUB_TOKEN" not in service["environment"] for name, service in compose["services"].items() if name == "management")
     assert all(service["environment"]["GITHUB_TOKEN"].startswith("nonfunctional-") for name, service in compose["services"].items() if name in ("beta", "release"))
+    for name, service in compose["services"].items():
+        assert f"{root}/secrets:/fixture/secrets:ro" not in service["volumes"]
+        assert all("github-test-scoped" not in volume for volume in service["volumes"])
+        if name in ("beta", "release"):
+            assert f"{root}/secrets/{name}-bridge:/fixture/secrets/{name}-bridge:ro" in service["volumes"]
+    management_volumes = compose["services"]["management"]["volumes"]
+    assert f"{root}/secrets/beta-bridge:/fixture/secrets/beta-bridge:ro" in management_volumes
+    assert f"{root}/secrets/release-bridge:/fixture/secrets/release-bridge:ro" in management_volumes
+    assert f"{root}/secrets/source-public-read:/fixture/secrets/source-public-read:ro" in management_volumes
     assert len(marker["fixture_nonce"]) == 32
     assert marker["source_fixture_available"] is False and marker["source_fixture_sha"] == ""
     assert (root / "secrets/beta-bridge").stat().st_mode & 0o077 == 0
+
+
+def test_scoped_fixture_pat_is_private_and_test_repository_only(tmp_path, monkeypatch):
+    token_path = tmp_path / "scoped-pat"
+    monkeypatch.setenv("GITHUB_TOKEN", "nonfunctional-placeholder")
+    assert offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder-test") is False
+    assert offline_worker.os.environ["GITHUB_TOKEN"] == "nonfunctional-placeholder"
+
+    token_path.write_text("github_pat_synthetic-only", encoding="utf-8")
+    token_path.chmod(0o600)
+    with pytest.raises(ValueError, match="test repository"):
+        offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder")
+    assert offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder-test") is True
+    assert offline_worker.os.environ["GITHUB_TOKEN"] == "github_pat_synthetic-only"
+
+    token_path.chmod(0o644)
+    with pytest.raises(ValueError, match="private regular file"):
+        offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder-test")
+
+    token_path.unlink()
+    token_path.symlink_to(tmp_path / "target")
+    with pytest.raises(ValueError, match="private regular file"):
+        offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder-test")
+
+
+def test_scoped_fixture_pat_never_enters_child_process_argv():
+    script = Path(offline_worker.__file__).read_text(encoding="utf-8")
+    assert '"--github-token"' not in script
 
 
 @pytest.mark.parametrize("fixture_id", ["release-worker", "beta-worker", "../escape", "A-B", "sh", "bad space"])
