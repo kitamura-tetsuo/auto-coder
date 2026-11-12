@@ -149,6 +149,72 @@ print("Installed watcher source is a private, independently copied file.")
 PY
 }
 verify_installed_watcher
+.venv/bin/python - "$output/maintenance-profile.json" <<'PY'
+import json
+import os
+from dataclasses import asdict
+from pathlib import Path
+import subprocess
+import sys
+
+from auto_coder.logger_config import get_logger, setup_logger
+from auto_coder.management.containment_route_manifest import _systemd_unit
+
+MAINTENANCE_UNITS = ("systemd-tmpfiles-clean.timer", "systemd-tmpfiles-clean.service")
+MASK_ROOT = Path("/etc/systemd/system")
+logger = get_logger(__name__)
+
+
+def inhibit_maintenance(output):
+    """Settle only this fresh VM's measured maintenance pair before originals."""
+    evidence = {"schema": "auto-coder-recovery-vm-maintenance-profile-v1", "status": "preparing"}
+    try:
+        masks = tuple(MASK_ROOT / unit for unit in MAINTENANCE_UNITS)
+        if any(path.exists() or path.is_symlink() for path in masks):
+            raise ValueError("The fresh maintenance mask paths are not empty")
+        initial = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
+        evidence["initial"] = [asdict(fact) for fact in initial]
+        if any(not fact.unit_file_state or fact.active_state not in {"active", "inactive"} or fact.needs_daemon_reload for fact in initial):
+            raise ValueError("The original installed maintenance pair is unavailable")
+        # Stop the timer first, then wait for its service to stop. Never reset
+        # failed units or change an already approved recovery environment.
+        for unit in MAINTENANCE_UNITS:
+            subprocess.run(("systemctl", "stop", "--", unit), check=True, timeout=30)
+        stopped = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
+        evidence["stopped"] = [asdict(fact) for fact in stopped]
+        if any(fact.active_state != "inactive" or fact.main_pid != 0 or fact.needs_daemon_reload for fact in stopped):
+            raise ValueError("The actual maintenance pair did not stop")
+        subprocess.run(("systemctl", "mask", "--", *MAINTENANCE_UNITS), check=True, timeout=30)
+        subprocess.run(("systemctl", "daemon-reload"), check=True, timeout=30)
+        observed = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
+        evidence["observed"] = [asdict(fact) for fact in observed]
+        if any(not fact.inhibited or fact.unit_file_state != "masked" or fact.active_state != "inactive" or fact.main_pid != 0 or fact.needs_daemon_reload for fact in observed):
+            raise ValueError("The actual maintenance pair is not masked and inactive")
+        evidence["masks"] = []
+        for path in masks:
+            info = path.lstat()
+            if not path.is_symlink() or os.readlink(path) != "/dev/null":
+                raise ValueError("The maintenance pair lacks its actual /dev/null masks")
+            evidence["masks"].append({"unit": path.name, "path": str(path), "device": info.st_dev, "inode": info.st_ino, "ctime_ns": info.st_ctime_ns, "mode": info.st_mode, "uid": info.st_uid, "target": os.readlink(path)})
+        if tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS) != observed:
+            raise ValueError("The inhibited maintenance pair changed during verification")
+        evidence["status"] = "inhibited"
+        logger.info("Verified the fixed maintenance timer/service pair is masked and inactive before original fixture creation")
+    except Exception as error:
+        evidence.update(status="failed", failure_type=type(error).__name__)
+        logger.error("Fresh recovery VM maintenance preparation failed: {}", type(error).__name__)
+        raise
+    finally:
+        with output.open("x") as stream:
+            json.dump(evidence, stream, sort_keys=True)
+
+
+if __name__ == "__main__":
+    output = Path(sys.argv[1])
+    setup_logger(stream=sys.stdout, log_file=str(output.with_suffix(".log")))
+    inhibit_maintenance(output)
+    logger.complete()
+PY
 docker compose version
 install -m 600 "$input/source-token" /run/recovery-fixture-source-token
 mapfile -t selected < <(python3 - "$input" <<'PY'

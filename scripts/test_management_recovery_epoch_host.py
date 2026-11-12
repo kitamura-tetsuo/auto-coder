@@ -63,7 +63,7 @@ ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "change
 LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused", "cross-deployment-original-lineage-refused"})
 FACTORY_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES if case.startswith("factory-"))
 TASK_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES | REQUIRED_REPORT_CASES if "nonleader" in case)
-ACCEPTANCE_SCENARIOS = ("grant", "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS, *POST_RECEIPT_MUTATION_SCENARIOS)
+ACCEPTANCE_SCENARIOS = ("grant", *POST_RECEIPT_MUTATION_SCENARIOS, "lost-reply", "retarget-after-reservation", *BOUNDARY_SCENARIOS, *LATE_MUTATION_SCENARIOS)
 SCENARIOS = (*ACCEPTANCE_SCENARIOS, "kill-after-intent", "kill-after-consume")
 REQUIRED_CASES = frozenset(
     {

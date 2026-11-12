@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from scripts import recovery_epoch_native_negatives as negatives
 from scripts import test_management_recovery_epoch_host as fixture
 
@@ -541,8 +542,15 @@ def test_unknown_native_scenario_is_not_a_success_alias() -> None:
 
 
 def test_canonical_acceptance_contains_all_distinct_publication_and_late_faults() -> None:
-    assert len(set(fixture.ACCEPTANCE_SCENARIOS)) == len(fixture.ACCEPTANCE_SCENARIOS)
+    assert len(set(fixture.ACCEPTANCE_SCENARIOS)) == len(fixture.ACCEPTANCE_SCENARIOS) == 31
     assert set(fixture.ACCEPTANCE_SCENARIOS) == {"grant", "lost-reply", "retarget-after-reservation", *fixture.BOUNDARY_SCENARIOS, *fixture.LATE_MUTATION_SCENARIOS, *fixture.POST_RECEIPT_MUTATION_SCENARIOS}
+    assert fixture.ACCEPTANCE_SCENARIOS[: 1 + len(fixture.POST_RECEIPT_MUTATION_SCENARIOS)] == ("grant", *fixture.POST_RECEIPT_MUTATION_SCENARIOS)
+    assert fixture.CONTROL not in fixture.ACCEPTANCE_SCENARIOS
+    jobs = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/management-recovery-epoch.yml").read_text())["jobs"]
+    assert jobs["recovery-epoch"]["strategy"]["matrix"]["scenario"] == "${{ fromJSON(needs.acceptance-plan.outputs.scenarios) }}"
+    assert jobs["verifier-omission-control"]["env"]["RECOVERY_SCENARIO"] in fixture.POST_RECEIPT_MUTATION_SCENARIOS
+    assert jobs["recovery-epoch"]["env"]["RECOVERY_FIXTURE"] != jobs["verifier-omission-control"]["env"]["RECOVERY_FIXTURE"]
+    assert set(jobs["acceptance"]["needs"]) == {"acceptance-plan", "recovery-epoch", "verifier-omission-control"}
     assert set(fixture.SCENARIOS) - set(fixture.ACCEPTANCE_SCENARIOS) == {"kill-after-intent", "kill-after-consume"}
     assert fixture._selected_boundary("post-receipt-ready-mutation") == ("receipt-head.json", "after")
     assert all(fixture._selected_boundary(name) == ("intent-head.json", "after") for name in fixture.LATE_MUTATION_SCENARIOS)

@@ -231,6 +231,15 @@ succeed. A missing case, failed VM, unavailable native kernel operation or faile
 preservation check cannot become a passed result. The VM runner and reviewed
 reproduction procedure are documented in `scripts/recovery_vm/README.md`.
 
+The fresh recovery VM stops and masks only the measured
+`systemd-tmpfiles-clean.timer` / `systemd-tmpfiles-clean.service` maintenance pair
+before original producers and route approval. It records the actual stopped and
+inhibited systemd facts and protected mask identities in
+`maintenance-profile.json`; unavailable or changing state fails preparation.
+This keeps scheduled maintenance from changing its approved execution readback
+during the long native grant scenario. Production catalog/digest equality and
+all ordinary or quarantined containment profiles remain unchanged.
+
 Before recovery preparation, the fixture proves that all original A/B/C managers,
 proxies and cutover readers have stopped. It may then close only the empty WAL
 and derived SHM residue of their twelve known original stores, preserving every

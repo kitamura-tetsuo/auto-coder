@@ -51,6 +51,20 @@ recovery approval exists. It does not change an operational host, configure the
 production issuer, or establish acceptance for every stock Docker service profile
 or an incident with missing originals.
 
+Before original producers or recovery approval, the guest stops and masks the
+exact `systemd-tmpfiles-clean.timer` / `systemd-tmpfiles-clean.service` pair. Its
+ordinary scheduled execution changed the approved service's execution readback
+during the longer grant scenario. Preparation now stops the timer first, waits
+for the service to stop, and uses the production systemd reader to require real
+protected `/dev/null` masks, inactive state, zero service PID and no pending
+daemon reload. It reobserves the inhibited facts and retains the matching result,
+initial/stopped facts and mask identities in `maintenance-profile.json`, with
+stdout and file logging.
+An unavailable unit, failed stop, preexisting mask path or changed final state
+fails preparation. This finite fresh-VM setup leaves the production whole-route
+catalog and digest comparisons unchanged; it never refreshes an approval after
+maintenance or changes an operational recovery host.
+
 The guest installs the exact `uv==0.13.6` release and validates its reported release
 number. The complete observed `--version` banner, including its bounded build
 descriptor, is retained in `uv-version.txt` and supplied to staging and recovery
