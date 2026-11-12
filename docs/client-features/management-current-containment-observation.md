@@ -13,6 +13,10 @@ after return. The existing fresh-host replacement, admission and journal rules
 remain separate. Successful component tests do not constitute real-host acceptance
 of Issue #2827; the full ordinary and quarantined host tests remain a merge gate.
 
+The separate [recovery scope/custody component](management-recovery-scope-custody.md)
+reads finite multi-generation selections and shared owner flocks. Its component
+report cannot satisfy this observer's exclusive-fence profile or full acceptance.
+
 ## Scope and CLI
 
 A scope file selects exactly one proposed deployment and original container pair:
