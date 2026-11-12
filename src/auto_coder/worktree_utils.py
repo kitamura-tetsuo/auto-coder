@@ -494,7 +494,8 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
 def _capture_git_patch(root: Path, destination: Path, *args: str) -> Path:
     """Spool binary patches to disk instead of retaining their full stdout."""
     with destination.open("wb") as stream:
-        result = subprocess.run(["git", "diff", *args, "--binary", "--full-index"], cwd=root, stdout=stream, stderr=subprocess.PIPE)
+        # Diff's cached-stat refresh would otherwise rewrite the bound caller index.
+        result = subprocess.run(["git", "-c", "diff.autoRefreshIndex=false", "diff", *args, "--binary", "--full-index"], cwd=root, stdout=stream, stderr=subprocess.PIPE)
     if result.returncode != 0:
         raise WorkspacePreparationError(f"unable to capture Git patch: {os.fsdecode(result.stderr).strip()}")
     return destination
