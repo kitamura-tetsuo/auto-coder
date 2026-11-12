@@ -148,6 +148,25 @@ class _InstalledRelease:
     previous: dict[str, object]
 
 
+def _await_initial_stopped_supervisor(client: WorkerNetworkClient) -> WorkerNetworkResult:
+    """Wait for a signed stopped observation, never accepting UNKNOWN as STOPPED."""
+    latest: WorkerNetworkResult | None = None
+
+    def observe() -> WorkerNetworkResult | None:
+        nonlocal latest
+        latest = client.inspect_supervisor()
+        if latest.result_code != "OK" or not isinstance(latest.data, dict):
+            return None
+        if latest.data.get("alive") is not False or latest.data.get("worker") is not None:
+            return None
+        return latest
+
+    try:
+        return _wait_for(observe, timeout=45)
+    except AssertionError as error:
+        raise AssertionError(f"initial release Supervisor did not prove stopped: {latest}") from error
+
+
 def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | None:
     client.inspect_supervisor()
     result = client.observe_worker()
@@ -281,7 +300,7 @@ def _installed_release(
             facts = _wait_for(lambda: facts if (facts := _container_facts(name))["socket"] else None, timeout=30)
             assert facts["docker_socket"] is False and facts["docker_binary"] is None
             client = WorkerNetworkClient(WorkerEndpointConfig("release-worker", "release", "owner/repo", address, 8843, secret))
-            stopped = client.inspect_supervisor()
+            stopped = _await_initial_stopped_supervisor(client)
             assert stopped.result_code == "OK" and stopped.data["alive"] is False
             # External bootstrap selects a real prior installed runtime through
             # the production Supervisor UDS and observes its readiness.
