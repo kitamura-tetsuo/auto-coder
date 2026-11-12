@@ -129,12 +129,12 @@ def test_failure_sidecar_metadata_identifies_nonempty_shm_without_reading_stores
         bounded.setattr(Path, "read_bytes", lambda _: pytest.fail("sidecar diagnostics must not read file contents"))
         bounded.setattr(fixture.sqlite3, "connect", lambda *_args, **_kwargs: pytest.fail("sidecar diagnostics must not connect to SQLite"))
         rows = fixture._original_sidecar_diagnostics(tmp_path, (generation,))
-    assert len(rows) == 12
+    assert len(rows) == 15
     shm = next(row for row in rows if row["database"] == "management-operations.sqlite3" and row["suffix"] == "-shm")
     assert shm == {"generation": "A", "database": "management-operations.sqlite3", "suffix": "-shm", "status": "observed", "type": "regular", "size": before.st_size, "device": before.st_dev, "inode": before.st_ino}
     wal = next(row for row in rows if row["database"] == "management-operations.sqlite3" and row["suffix"] == "-wal")
     assert wal["status"] == "observed" and wal["size"] == 0
-    assert sum(row["status"] == "absent" for row in rows) == 10
+    assert sum(row["status"] == "absent" for row in rows) == 13
     assert selected.stat() == before
     assert "private" not in json.dumps(rows) and "oauth" not in json.dumps(rows) and str(tmp_path) not in json.dumps(rows)
 
@@ -148,7 +148,7 @@ def test_failure_sidecar_diagnostics_do_not_follow_links_or_export_other_scopes(
     (generation.path("journal") / "management-operations.sqlite3-journal").mkdir()
     unrelated = _diagnostic_generation(tmp_path, "recovery-target")
     rows = fixture._original_sidecar_diagnostics(tmp_path, (generation, unrelated))
-    assert len(rows) == 12 and {row["generation"] for row in rows} == {"A"}
+    assert len(rows) == 15 and {row["generation"] for row in rows} == {"A"}
     linked = next(row for row in rows if row.get("type") == "symlink")
     assert linked["inode"] == sidecar.lstat().st_ino and linked["inode"] != private.stat().st_ino
     assert any(row.get("type") == "directory" for row in rows)
@@ -157,12 +157,47 @@ def test_failure_sidecar_diagnostics_do_not_follow_links_or_export_other_scopes(
 
 def test_failure_sidecar_diagnostics_are_finite_and_reject_ambiguous_original_roots(tmp_path: Path) -> None:
     generations = tuple(_diagnostic_generation(tmp_path, name) for name in ("A", "B", "C", "D"))
-    assert len(fixture._original_sidecar_diagnostics(tmp_path, generations)) == 48
+    assert len(fixture._original_sidecar_diagnostics(tmp_path, generations)) == 54
     ambiguous = fixture._original_sidecar_diagnostics(tmp_path, generations + (generations[0],) * 20)
-    assert len(ambiguous) == 48
+    assert len(ambiguous) == 54
     assert all(row["status"] == "unavailable" and row["error_type"] == "ValueError" for row in ambiguous if row["generation"] == "A")
     foreign = Generation("A", tmp_path / "not-original-A", "component-container", [])
     assert all(row["status"] == "unavailable" for row in fixture._original_sidecar_diagnostics(tmp_path, (foreign,)))
+
+
+def test_failure_namespace_diagnostics_name_only_bounded_unexpected_sqlite_objects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generation = _diagnostic_generation(tmp_path)
+    state = generation.path("state")
+    (state / "management-readiness.sqlite3").write_bytes(b"observation must remain private")
+    (state / "unexpected.sqlite3").write_bytes(b"private unknown data")
+    (state / "directory.sqlite3").mkdir()
+    (state / "linked.sqlite3").symlink_to(tmp_path / "private-missing-target")
+    (state / "unrelated-config.json").write_bytes(b"private configuration")
+    with monkeypatch.context() as bounded:
+        bounded.setattr(Path, "read_bytes", lambda _: pytest.fail("namespace diagnostics must not read file contents"))
+        bounded.setattr(fixture.sqlite3, "connect", lambda *_args, **_kwargs: pytest.fail("namespace diagnostics must not connect to SQLite"))
+        rows = fixture._original_namespace_diagnostics(tmp_path, (generation,))
+    assert len(rows) == 2
+    row = next(row for row in rows if row["directory"] == "state")
+    assert row["status"] == "observed" and row["type"] == "directory"
+    assert {item["basename"]: item["type"] for item in row["unexpected"]} == {"unexpected.sqlite3": "regular", "directory.sqlite3": "directory", "linked.sqlite3": "symlink"}
+    assert "private" not in json.dumps(rows) and str(tmp_path) not in json.dumps(rows)
+    for index in range(40):
+        (state / f"extra-{index}.sqlite3").touch()
+    row = next(row for row in fixture._original_namespace_diagnostics(tmp_path, (generation,)) if row["directory"] == "state")
+    assert row["truncated"] is True and len(row["unexpected"]) == 16
+
+
+def test_failure_namespace_diagnostics_preserve_c_readiness_absence_and_exact_roots(tmp_path: Path) -> None:
+    generation = _diagnostic_generation(tmp_path, "C")
+    (generation.path("state") / "management-readiness.sqlite3").touch()
+    rows = fixture._original_namespace_diagnostics(tmp_path, (generation,))
+    assert rows[0]["unexpected"] == [{"basename": "management-readiness.sqlite3", "type": "regular"}]
+    assert all(row["status"] == "unavailable" for row in fixture._original_namespace_diagnostics(tmp_path, (generation, generation)))
+    generation.path("journal").rmdir()
+    generation.path("journal").symlink_to(generation.path("state"))
+    row = fixture._original_namespace_diagnostics(tmp_path, (generation,))[1]
+    assert row["status"] == "unavailable" and row["type"] == "symlink" and "unexpected" not in row
 
 
 def test_unavailable_sidecar_diagnostics_preserve_the_original_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -22,6 +22,7 @@ from scripts import test_management_recovery_epoch_host as fixture
 from auto_coder.management.bootstrap_store import BootstrapStore
 from auto_coder.management.operations import OperationPhase
 from auto_coder.management.quarantine_history import QuarantineHistory, QuarantineUnavailable
+from auto_coder.management.readiness_observation import _connect as _readiness_store
 from auto_coder.management.recovery_mailbox import RecoveryMailbox
 from auto_coder.management.retained_journal import RetainedJournal
 from auto_coder.management.self_update_handoff import HandoffStore
@@ -64,6 +65,12 @@ def originals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         assert {path.name for path in state.glob("*.sqlite3")} == {"management-child.sqlite3", "management-self-update.sqlite3", "management-recovery.sqlite3"}
         for path in state.glob("*.sqlite3"):
             Chain.checkpoint(path)
+        if name in {"A", "B"}:
+            # Exercise the production observation-store constructor. This
+            # component payload makes no authenticated-readiness assertion.
+            with closing(_readiness_store(SimpleNamespace(state_root=state))) as connection, connection:
+                assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+                connection.execute("INSERT INTO proof VALUES (?, ?)", (name, json.dumps({"component_observation": name})))
         generation = Generation(name, root, "manager-" + name, [], proxy="proxy-" + name)
         chain.generations.append(generation)
         original = SimpleNamespace(generation_id=name, instance_id=name, state="started", management_id=generation.container, proxy_id=generation.proxy)
@@ -94,8 +101,14 @@ def _retained_bytes(chain) -> dict[str, tuple[bytes, int, int, int]]:
     return result
 
 
-def test_final_checkpoint_follows_last_archived_read_and_preserves_original_authority(originals) -> None:
+def test_final_checkpoint_follows_last_archived_read_and_preserves_original_authority(originals, monkeypatch: pytest.MonkeyPatch) -> None:
     chain, captures, journals = originals
+    actual, checkpoints = Chain.checkpoint, []
+
+    def observed(database: Path) -> None:
+        checkpoints.append(database)
+        actual(database)
+
     collection = gc.isenabled()
     gc.disable()
     try:
@@ -103,10 +116,14 @@ def test_final_checkpoint_follows_last_archived_read_and_preserves_original_auth
         before = _retained_bytes(chain)
         with pytest.raises(QuarantineUnavailable, match="nonempty transaction sidecar"):
             QuarantineHistory((journals["A"],))
+        monkeypatch.setattr(Chain, "checkpoint", observed)
         fixture._finalize_original_stores(chain, captures)
         after = _retained_bytes(chain)
         assert {name: value for name, value in before.items() if not name.endswith(("-wal", "-shm", "-journal"))} == after
         assert (chain.root / "D" / "retained-never-created").read_bytes() == b"original failed branch"
+        assert len(checkpoints) == 12 and {path.name for path in checkpoints} == {"management-child.sqlite3", "management-self-update.sqlite3", "management-recovery.sqlite3", "management-operations.sqlite3"}
+        assert len([name for name in after if name.endswith(".sqlite3")]) == 14
+        assert not (chain.root / "C" / "state" / "management-readiness.sqlite3").exists()
         for name, journal in journals.items():
             with QuarantineHistory((journal,)) as history:
                 report = history.inspect()
@@ -128,6 +145,41 @@ def test_all_real_original_mailboxes_are_required_and_never_reconstructed(origin
     with pytest.raises(FileNotFoundError):
         fixture._finalize_original_stores(chain, captures)
     assert not missing.exists() and _retained_bytes(chain) == before
+
+
+@pytest.mark.parametrize("generation", ["A", "B"])
+def test_completed_readiness_observations_are_required_and_never_reconstructed(originals, generation: str) -> None:
+    chain, captures, journals = originals
+    _late_archived_read(journals["A"])
+    missing = chain.root / generation / "state" / "management-readiness.sqlite3"
+    missing.unlink()
+    before = _retained_bytes(chain)
+    with pytest.raises(FileNotFoundError):
+        fixture._finalize_original_stores(chain, captures)
+    assert not missing.exists() and _retained_bytes(chain) == before
+
+
+def test_unresolved_cannot_acquire_a_readiness_observation_during_finalization(originals) -> None:
+    chain, captures, journals = originals
+    _late_archived_read(journals["A"])
+    with closing(_readiness_store(SimpleNamespace(state_root=chain.root / "C" / "state"))):
+        pass
+    before = _retained_bytes(chain)
+    with pytest.raises(AssertionError, match="unknown store"):
+        fixture._finalize_original_stores(chain, captures)
+    assert _retained_bytes(chain) == before
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_observation_sidecars_refuse_without_settling_any_original_store(originals, suffix: str) -> None:
+    chain, captures, journals = originals
+    _late_archived_read(journals["A"])
+    sidecar = chain.root / "B" / "state" / ("management-readiness.sqlite3" + suffix)
+    sidecar.touch(mode=0o600)
+    before = _retained_bytes(chain)
+    with pytest.raises(AssertionError, match="readiness observation still has a transaction sidecar"):
+        fixture._finalize_original_stores(chain, captures)
+    assert _retained_bytes(chain) == before
 
 
 @pytest.mark.parametrize("fault", ["nonempty-wal", "hot-journal", "missing-store", "unknown-store", "linked-sidecar", "running-manager", "running-proxy", "live-cutover", "published-inventory", "installed-authorization", "target-prepared", "wrong-capture", "missing-capture"])

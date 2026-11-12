@@ -57,6 +57,7 @@ logger = get_logger(__name__)
 FIXTURE_ROOT = Path("/var/lib/auto-coder/recovery-epoch-fixtures")
 RESULT_SCHEMA = "auto-coder-native-recovery-epoch-result-v1"
 ORIGINAL_FIXTURE_DATABASES = (("state", "management-child.sqlite3"), ("state", "management-self-update.sqlite3"), ("state", "management-recovery.sqlite3"), ("journal", "management-operations.sqlite3"))
+READINESS_OBSERVATION_DATABASE = ("state", "management-readiness.sqlite3")
 ORIGINAL_NEGATIVE_CASES = frozenset({"original-journal-absence-refused", "changed-installed-ready-refused", "changed-target-management-config-refused"})
 LINEAGE_REPORT_CASES = frozenset({"forged-original-lineage-refused", "stale-original-lineage-refused", "cross-deployment-original-lineage-refused"})
 FACTORY_OBSERVATION_CASES = frozenset(case for case in REQUIRED_NEGATIVE_CASES if case.startswith("factory-"))
@@ -200,6 +201,16 @@ def _command_failure(error: BaseException) -> dict[str, object] | None:
     return {"type": type(error).__name__, "returncode": getattr(error, "returncode", None), "diagnostics": lines[-60:]}
 
 
+def _fixture_databases(label: str) -> tuple[tuple[str, str], ...]:
+    # A/B completed an authenticated readback; C deliberately did not. The
+    # separate readiness observation is never original lineage authority.
+    return ORIGINAL_FIXTURE_DATABASES + ((READINESS_OBSERVATION_DATABASE,) if label in {"A", "B"} else ())
+
+
+def _file_type(mode: int) -> str:
+    return "regular" if stat.S_ISREG(mode) else "symlink" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "socket" if stat.S_ISSOCK(mode) else "other"
+
+
 def _original_sidecar_diagnostics(root: Path, generations: tuple[Generation, ...]) -> list[dict[str, object]]:
     """Inspect only fixed original sidecar metadata, without opening a database."""
     observations: list[dict[str, object]] = []
@@ -207,7 +218,7 @@ def _original_sidecar_diagnostics(root: Path, generations: tuple[Generation, ...
         selected = [generation for generation in generations if generation.name == label]
         if not selected:
             continue
-        for directory, database in ORIGINAL_FIXTURE_DATABASES:
+        for directory, database in _fixture_databases(label):
             for suffix in ("-wal", "-shm", "-journal"):
                 row: dict[str, object] = {"generation": label, "database": database, "suffix": suffix}
                 try:
@@ -222,9 +233,43 @@ def _original_sidecar_diagnostics(root: Path, generations: tuple[Generation, ...
                 except (OSError, ValueError) as error:
                     row.update(status="unavailable", error_type=type(error).__name__)
                 else:
-                    kind = "regular" if stat.S_ISREG(info.st_mode) else "symlink" if stat.S_ISLNK(info.st_mode) else "directory" if stat.S_ISDIR(info.st_mode) else "socket" if stat.S_ISSOCK(info.st_mode) else "other"
-                    row.update(status="observed", type=kind, size=info.st_size, device=info.st_dev, inode=info.st_ino)
+                    row.update(status="observed", type=_file_type(info.st_mode), size=info.st_size, device=info.st_dev, inode=info.st_ino)
                 observations.append(row)
+    return observations
+
+
+def _original_namespace_diagnostics(root: Path, generations: tuple[Generation, ...]) -> list[dict[str, object]]:
+    """Name at most sixteen unexpected SQLite entries in each original root."""
+    observations: list[dict[str, object]] = []
+    for label in ("A", "B", "C", "D"):
+        selected = [generation for generation in generations if generation.name == label]
+        if not selected:
+            continue
+        for directory in ("state", "journal"):
+            row: dict[str, object] = {"generation": label, "directory": directory}
+            try:
+                if len(selected) != 1 or selected[0].root != root / label or selected[0].root.resolve(strict=True) != root / label:
+                    raise ValueError("the selected diagnostic generation has no exact original root")
+                parent = selected[0].path(directory)
+                info = parent.lstat()
+                row.update(type=_file_type(info.st_mode))
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError("the selected diagnostic directory is not an original directory")
+                known = {database + suffix for selected_directory, database in _fixture_databases(label) if selected_directory == directory for suffix in ("", "-wal", "-shm", "-journal")}
+                unexpected: list[dict[str, str]] = []
+                for path in parent.glob("*.sqlite3*"):
+                    if path.name in known:
+                        continue
+                    if len(unexpected) == 16:
+                        row["truncated"] = True
+                        break
+                    unexpected.append({"basename": path.name, "type": _file_type(path.lstat().st_mode)})
+                row.update(status="observed", unexpected=unexpected)
+            except FileNotFoundError:
+                row["status"] = "absent"
+            except (OSError, ValueError) as error:
+                row.update(status="unavailable", error_type=type(error).__name__)
+            observations.append(row)
     return observations
 
 
@@ -232,13 +277,14 @@ def _record_failure_sidecars(result: dict[str, object], chain: Chain | None) -> 
     """Keep diagnostic failures from replacing the original native failure."""
     if chain is None:
         return
-    try:
-        rows = _original_sidecar_diagnostics(chain.root, tuple(chain.generations))
-        result["original_database_sidecars"] = rows
-        for row in rows:
-            logger.error("Native original database sidecar metadata: {}", canonical(row).decode())
-    except Exception as error:
-        result["original_database_sidecars"] = [{"status": "unavailable", "error_type": type(error).__name__}]
+    for key, inspect in (("original_database_sidecars", _original_sidecar_diagnostics), ("original_database_namespaces", _original_namespace_diagnostics)):
+        try:
+            rows = inspect(chain.root, tuple(chain.generations))
+            result[key] = rows
+            for row in rows:
+                logger.error("Native {} metadata: {}", key, canonical(row).decode())
+        except Exception as error:
+            result[key] = [{"status": "unavailable", "error_type": type(error).__name__}]
 
 
 def _checkpoint_stopped(generation: Generation) -> None:
@@ -256,7 +302,7 @@ def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, 
         raise AssertionError("only the three explicitly captured original generations may be finalized")
     if any(process.poll() != 0 for process in chain.processes):
         raise AssertionError("an original cutover reader has not completed before finalization")
-    originals: list[tuple[Path, bytes, os.stat_result]] = []
+    originals: list[tuple[Path, bytes, os.stat_result, bool]] = []
     for captured in captures:
         original = captured.original
         selected = [generation for generation in chain.generations if generation.name == original.generation_id]
@@ -269,30 +315,39 @@ def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, 
             state = json.loads(chain.docker("inspect", "--format", "{{json .State}}", identifier))
             if state.get("Status") != "exited" or state.get("Running") is not False or state.get("Pid") != 0 or state.get("Restarting") is not False:
                 raise AssertionError("an original manager or proxy is not concretely stopped before finalization")
-        for directory, name in ORIGINAL_FIXTURE_DATABASES:
+        databases = _fixture_databases(generation.name)
+        for directory in ("state", "journal"):
             parent = generation.path(directory)
-            known = {database + suffix for selected_directory, database in ORIGINAL_FIXTURE_DATABASES if selected_directory == directory for suffix in ("", "-wal", "-shm", "-journal")}
+            known = {database + suffix for selected_directory, database in databases if selected_directory == directory for suffix in ("", "-wal", "-shm", "-journal")}
             if not stat.S_ISDIR(parent.lstat().st_mode) or {path.name for path in parent.glob("*.sqlite3*")} - known:
                 raise AssertionError("original fixture finalization found an unknown store or directory")
-            database = parent / name
+        for directory, name in databases:
+            database = generation.path(directory) / name
             encoded, _ = read_original(database)
             before = database.lstat()
+            checkpoint = (directory, name) in ORIGINAL_FIXTURE_DATABASES
             for suffix in ("-wal", "-shm", "-journal"):
                 sidecar = database.with_name(name + suffix)
                 try:
                     info = sidecar.lstat()
                 except FileNotFoundError:
                     continue
+                if not checkpoint:
+                    raise AssertionError("an original readiness observation still has a transaction sidecar")
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
                     raise AssertionError("an original fixture sidecar is not its private regular object")
                 if suffix != "-shm" and info.st_size:
                     raise AssertionError("an original fixture still has nonempty transaction state")
-            originals.append((database, encoded, before))
+            originals.append((database, encoded, before, checkpoint))
     # A later archived read may have recreated SQLite's derived SHM index
     # after an earlier producer checkpoint. Every actual reader is now gone;
     # the existing checkpoint may close that index, never apply new records.
-    for database, encoded, before in originals:
-        Chain.checkpoint(database)
+    for database, _, _, checkpoint in originals:
+        if checkpoint:
+            Chain.checkpoint(database)
+    # The A/B readiness stores use DELETE mode and need no settlement. Keep
+    # their observation bytes and original identities just like every store.
+    for database, encoded, before, _ in originals:
         current, _ = read_original(database)
         after = database.lstat()
         fields = ("st_dev", "st_ino", "st_ctime_ns", "st_mtime_ns", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size")
@@ -300,7 +355,7 @@ def _finalize_original_stores(chain: Chain, captures: tuple[CapturedGeneration, 
             raise AssertionError("finalizing a stopped fixture changed original database bytes or identity")
         if any(database.with_name(database.name + suffix).exists() or database.with_name(database.name + suffix).is_symlink() for suffix in ("-wal", "-shm", "-journal")):
             raise AssertionError("original fixture sidecars remain after all tracked readers completed")
-    logger.info("Finalized twelve unchanged original A/B/C stores after all cutover readers stopped, before recovery preparation")
+    logger.info("Finalized twelve unchanged original A/B/C stores and preserved both A/B readiness observations after all cutover readers stopped, before recovery preparation")
 
 
 def _no_target_child(target: Generation, *, running: bool) -> None:

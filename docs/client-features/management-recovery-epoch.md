@@ -217,6 +217,15 @@ succeed. A missing case, failed VM, unavailable native kernel operation or faile
 preservation check cannot become a passed result. The VM runner and reviewed
 reproduction procedure are documented in `scripts/recovery_vm/README.md`.
 
+Before recovery preparation, the fixture proves that all original A/B/C managers,
+proxies and cutover readers have stopped. It may then close only the empty WAL
+and derived SHM residue of their twelve known original stores, preserving every
+database's bytes and identity. The separate A/B readiness observation stores are
+required and preserved without checkpointing; unresolved C has none. Unknown
+stores, nonempty WAL/rollback journals, or readiness sidecars refuse. This fixture
+setup does not repair an operational recovery source or change the production
+quarantine policy.
+
 | Contract | Actual fixture action and independent outcome |
 | --- | --- |
 | AS-B01 | Run genuine genesis, successful successor, never-created failed branch and unresolved successor producers. Verify full original lineage, reject forged/cross-deployment/stale reports, remove an original journal, and mutate the retained failed branch's exact terminal evidence after intent. Refusal must preserve the original uncertainty and stores. |
