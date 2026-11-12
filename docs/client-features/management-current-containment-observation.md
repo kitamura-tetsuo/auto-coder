@@ -410,6 +410,25 @@ enrollment lifetimes instead of pretending that Docker configuration changed
 inside one immutable container. The mutable support-directory permission case
 retains its direct same-case positive baseline.
 
+Every production CLI invocation also retains actual preservation receipts outside
+its protected paths. The driver writes an exclusive, synchronized before receipt
+before launching the process and a final receipt from its completion/error path.
+The receipts bind measured file identities and content or symlink-target hashes,
+explicit missing paths, the unrelated worker PID/start token, sampling times,
+actual CLI lifetime and exit/signal outcome. They contain no protected file bytes.
+A failed measurement or unequal comparison fails the fixture; a receipt cannot
+replace the separate complete CLI report or turn a refused observation into a
+positive result. Each artifact is registered when written so failure output
+includes the measurements that were actually completed.
+
+The in-flight producer-death case retains both the paused and final samples.
+The deliberate configuration-race case additionally records the real write's
+before/after identities and hashes, then compares the unchanged paths across the
+whole invocation and all paths across each read-only interval. The intentionally
+changed configuration is explicitly not claimed preserved. The producer's final
+receipt is written before an independent consumer starts or the fixture restores
+its configuration. No earlier run's preservation values are reconstructed.
+
 The concrete VM package is under `scripts/containment_vm/`. Preparation exports
 only immutable preexisting images and the committed source; it does not launch
 a VM. Its Ubuntu cloud disk is SHA-256 pinned. The runner uses Docker Compose,

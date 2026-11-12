@@ -194,6 +194,171 @@ def _footprint(paths: tuple[Path, ...], worker: subprocess.Popen[str]) -> tuple[
     return tuple(values)
 
 
+def _receipt_fingerprint(values: tuple[object, ...]) -> dict[str, object]:
+    """Serialize measured identities and hashes without protected source bytes."""
+    worker = values[0]
+    if not isinstance(worker, tuple) or len(worker) != 2:
+        raise AssertionError("preservation worker identity is malformed")
+    entries = []
+    for row in values[1:]:
+        if not isinstance(row, tuple):
+            raise AssertionError("preservation file identity is malformed")
+        if len(row) == 2 and row[1] == "missing":
+            entries.append({"path": row[0], "kind": "missing"})
+            continue
+        if len(row) != 9 or not isinstance(row[3], int) or not isinstance(row[8], str):
+            raise AssertionError("preservation file fingerprint is malformed")
+        mode, content = row[3], row[8]
+        kind = "symlink" if stat.S_ISLNK(mode) else "file" if stat.S_ISREG(mode) else "directory" if stat.S_ISDIR(mode) else "socket"
+        entries.append({"path": row[0], "kind": kind, "device": row[1], "inode": row[2], "mode": mode, "uid": row[4], "size": row[5], "mtime_ns": row[6], "ctime_ns": row[7], "sha256": hashlib.sha256(content.encode()).hexdigest() if kind == "symlink" else content or None})
+    return {"worker": {"pid": worker[0], "start_token": worker[1]}, "entries": entries}
+
+
+@dataclass
+class PreservationReceipt:
+    """Persist actual invocation samples even when execution or assertions fail."""
+
+    case: Case
+    label: str
+    mode: str
+    intentional_config: Path | None = None
+    samples: dict[str, dict[str, object]] = field(default_factory=dict)
+    raw: dict[str, tuple[object, ...]] = field(default_factory=dict)
+    comparisons: list[dict[str, object]] = field(default_factory=list)
+    mutation_applied: bool = False
+    spawn_returned_monotonic_ns: int | None = None
+    process_start_token: str | None = None
+
+    def _publish(self, phase: str, value: dict[str, object]) -> None:
+        directory = self.case.root / "evidence"
+        if not _IDENTIFIER.fullmatch(self.label) or self.mode not in ("observe", "verify") or directory != directory.resolve(strict=True):
+            raise AssertionError("preservation receipt destination or invocation is unsupported")
+        if any(root.resolve(strict=False) == directory or root.resolve(strict=False) in directory.parents for root in self.case.protected):
+            raise AssertionError("preservation receipts must remain outside protected paths")
+        path = directory / (self.label + ".preservation-" + phase + ".json")
+        _write_private(path, _json(value))
+        self.case.artifacts.append(path)
+
+    def capture(self, phase: str, *, publish: bool = True) -> None:
+        started = time.monotonic_ns()
+        error: BaseException | None = None
+        fingerprint = None
+        try:
+            measured = _footprint(self.case.protected, self.case.worker)
+            fingerprint = _receipt_fingerprint(measured)
+            self.raw[phase] = measured
+        except BaseException as exc:
+            error = exc
+        sample: dict[str, object] = {
+            "schema": "disposable-containment-preservation-receipt-v1",
+            "profile": self.case.profile,
+            "label": self.label,
+            "cli_mode": self.mode,
+            "phase": phase,
+            "started_monotonic_ns": started,
+            "finished_monotonic_ns": time.monotonic_ns(),
+            "recorded_unix_ns": time.time_ns(),
+            "protected_roots": [str(path) for path in self.case.protected],
+            "fingerprint": fingerprint,
+            "capture_error": type(error).__name__ if error is not None else None,
+        }
+        self.samples[phase] = sample
+        if publish:
+            self._publish(phase, sample)
+        if error is not None:
+            raise error
+
+    def spawned(self, process: subprocess.Popen[str]) -> None:
+        self.spawn_returned_monotonic_ns = time.monotonic_ns()
+        try:
+            self.process_start_token = _start_token(process.pid)
+        except (OSError, ValueError, IndexError):
+            # A very short-lived command may exit before this optional read.
+            # Its actual return code remains independently available from Popen.
+            self.process_start_token = None
+
+    def compare(self, first: str, second: str, *, excluded: tuple[Path, ...] = ()) -> bool:
+        omitted = {str(path) for path in excluded}
+
+        def selected(phase: str) -> tuple[object, ...] | None:
+            rows = self.raw.get(phase)
+            if rows is None:
+                return None
+            return tuple(row for index, row in enumerate(rows) if index == 0 or not isinstance(row, tuple) or row[0] not in omitted)
+
+        before, after = selected(first), selected(second)
+        same = None if before is None or after is None else before == after
+        self.comparisons.append({"from": first, "to": second, "excluded_paths": sorted(omitted), "equal": same})
+        return same is True
+
+    def _mutation_entries(self, phase: str) -> list[object] | None:
+        sample = self.samples.get(phase, {})
+        fingerprint = sample.get("fingerprint")
+        if not isinstance(fingerprint, dict) or not isinstance(fingerprint.get("entries"), list):
+            return None
+        return [entry for entry in fingerprint["entries"] if entry.get("path") == str(self.intentional_config)]
+
+    def finish(self, process: subprocess.Popen[str] | None, error: BaseException | None) -> None:
+        cleanup_error: BaseException | None = None
+        cleanup_signal = None
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+                cleanup_signal = int(signal.SIGKILL)
+                process.communicate(timeout=15)
+            except BaseException as exc:
+                cleanup_error = exc
+        capture_error: BaseException | None = None
+        try:
+            self.capture("after", publish=False)
+        except BaseException as exc:
+            capture_error = exc
+        excluded = (self.intentional_config,) if self.mutation_applied and self.intentional_config is not None else ()
+        self.compare("before", "after", excluded=excluded)
+        if self.mutation_applied:
+            self.compare("post-fixture-mutation", "after")
+        outcome = dict(self.samples["after"])
+        outcome.update(
+            process={
+                "pid": process.pid if process is not None else None,
+                "start_token": self.process_start_token,
+                "spawn_returned_monotonic_ns": self.spawn_returned_monotonic_ns,
+                "returncode": process.returncode if process is not None else None,
+                "termination_signal": -process.returncode if process is not None and process.returncode is not None and process.returncode < 0 else None,
+                "cleanup_signal_requested": cleanup_signal,
+            },
+            invocation_error=type(error).__name__ if error is not None else None,
+            cleanup_error=type(cleanup_error).__name__ if cleanup_error is not None else None,
+            comparisons=self.comparisons,
+            unqualified_before_after_equal=self.raw["before"] == self.raw["after"] if "before" in self.raw and "after" in self.raw else None,
+            intentional_mutation=(
+                {
+                    "path": str(self.intentional_config),
+                    "write_completed": self.mutation_applied,
+                    "preservation_claimed": False,
+                    "reason": "This configuration is intentionally changed by the race fixture and is not claimed preserved. A completed write excludes only this path from the full-invocation equality check.",
+                    "before_phase": "paused",
+                    "after_phase": "post-fixture-mutation",
+                    "before": self._mutation_entries("paused"),
+                    "after": self._mutation_entries("post-fixture-mutation"),
+                }
+                if self.intentional_config is not None
+                else None
+            ),
+            snapshot_artifacts=[str(self.case.root / "evidence" / (self.label + ".preservation-" + phase + ".json")) for phase in self.samples if phase != "after"],
+        )
+        preserved = all(item["equal"] is True for item in self.comparisons)
+        outcome["status"] = "passed" if error is None and cleanup_error is None and capture_error is None and preserved else "failed"
+        self._publish("after", outcome)
+        if error is None:
+            if cleanup_error is not None:
+                raise cleanup_error
+            if capture_error is not None:
+                raise capture_error
+            if not preserved:
+                raise AssertionError("read-only CLI changed preserved state, OAuth, configuration or worker lifetime")
+
+
 def _stock_mask_identity(path: Path) -> tuple[int, ...]:
     info = path.lstat()
     if not stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or os.readlink(path) != "/dev/null":
@@ -382,21 +547,30 @@ class Case:
         arguments = [sys.executable, "-I", "-B", "-m", "auto_coder.management.containment_observation", "verify" if verify else "observe", "--scope", str(self.scope)]
         if verify:
             arguments.extend(("--previous", str(self.previous)))
-        before = _footprint(self.protected, self.worker)
-        logger.info("Running {} {} through the actual production CLI", self.profile, label)
-        result = subprocess.run(arguments, capture_output=True, text=True, check=False, timeout=240)
-        if _footprint(self.protected, self.worker) != before:
-            raise AssertionError("read-only CLI changed preserved state, OAuth, configuration or worker lifetime")
-        output = self.root / "evidence" / (label + ".json")
-        _write_private(output, result.stdout.encode())
-        self.artifacts.append(output)
-        report = assert_report(json.loads(result.stdout), result.returncode, accepted=accepted, authority=authority)
-        expected = _REVIEWED_ORDINARY_SOURCE_SHA256 if self.profile == "ordinary-v1" else _REVIEWED_QUARANTINED_SOURCE_SHA256
-        if accepted:
-            source, profile = report["installed_bootstrap_source"], report["installed_mount_profile"]
-            if not isinstance(source, dict) or not isinstance(profile, dict) or source.get("source_sha256") != expected or profile.get("profile") != self.profile:
-                raise AssertionError("positive report substituted the original reviewed source profile")
-        return report
+        receipt = PreservationReceipt(self, label, "verify" if verify else "observe")
+        process: subprocess.Popen[str] | None = None
+        error: BaseException | None = None
+        try:
+            receipt.capture("before")
+            logger.info("Running {} {} through the actual production CLI", self.profile, label)
+            process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            receipt.spawned(process)
+            stdout, _ = process.communicate(timeout=240)
+            output = self.root / "evidence" / (label + ".json")
+            _write_private(output, stdout.encode())
+            self.artifacts.append(output)
+            report = assert_report(json.loads(stdout), process.returncode, accepted=accepted, authority=authority)
+            expected = _REVIEWED_ORDINARY_SOURCE_SHA256 if self.profile == "ordinary-v1" else _REVIEWED_QUARANTINED_SOURCE_SHA256
+            if accepted:
+                source, profile = report["installed_bootstrap_source"], report["installed_mount_profile"]
+                if not isinstance(source, dict) or not isinstance(profile, dict) or source.get("source_sha256") != expected or profile.get("profile") != self.profile:
+                    raise AssertionError("positive report substituted the original reviewed source profile")
+            return report
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            receipt.finish(process, error)
 
     def positive_pair(self) -> tuple[dict[str, object], dict[str, object]]:
         first = self.command("observe", accepted=True, verify=False)
@@ -993,51 +1167,62 @@ def _race_and_producer_death(case: Case, *, kill: bool) -> None:
     if descriptor < 0:
         raise OSError(ctypes.get_errno(), "inotify_init1")
     original = case.config.read_bytes()
-    preserved = _footprint(case.protected, case.worker)
+    label = "producer-death" if kill else "configuration-race"
+    receipt = PreservationReceipt(case, label, "observe", intentional_config=None if kill else case.config)
     process: subprocess.Popen[str] | None = None
+    error: BaseException | None = None
+    report: dict[str, object] | None = None
     try:
-        if library.inotify_add_watch(descriptor, os.fsencode(case.config), 0x20) < 0:
-            raise OSError(ctypes.get_errno(), "inotify_add_watch")
-        process = subprocess.Popen((sys.executable, "-I", "-B", "-m", "auto_coder.management.containment_observation", "observe", "--scope", str(case.scope)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if not select.select([descriptor], [], [], 60)[0]:
-            raise AssertionError("actual producer never opened its protected original configuration")
-        os.read(descriptor, 4096)
-        process.send_signal(signal.SIGSTOP)
-        deadline = time.monotonic() + 5
-        while Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T":
-            if process.poll() is not None or time.monotonic() >= deadline:
-                raise AssertionError("actual producer did not pause within its observation")
-            time.sleep(0.01)
-        if _footprint(case.protected, case.worker) != preserved:
-            raise AssertionError("in-flight production observation changed preserved fixture state")
+        try:
+            receipt.capture("before")
+            if library.inotify_add_watch(descriptor, os.fsencode(case.config), 0x20) < 0:
+                raise OSError(ctypes.get_errno(), "inotify_add_watch")
+            process = subprocess.Popen((sys.executable, "-I", "-B", "-m", "auto_coder.management.containment_observation", "observe", "--scope", str(case.scope)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            receipt.spawned(process)
+            if not select.select([descriptor], [], [], 60)[0]:
+                raise AssertionError("actual producer never opened its protected original configuration")
+            os.read(descriptor, 4096)
+            process.send_signal(signal.SIGSTOP)
+            deadline = time.monotonic() + 5
+            while Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T":
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("actual producer did not pause within its observation")
+                time.sleep(0.01)
+            receipt.capture("paused")
+            if not receipt.compare("before", "paused"):
+                raise AssertionError("in-flight production observation changed preserved fixture state")
+            if kill:
+                process.kill()
+                output, _ = process.communicate(timeout=15)
+                if process.returncode != -signal.SIGKILL or output.strip():
+                    raise AssertionError("killed in-flight producer published a completed containment report")
+            else:
+                case.config.write_bytes(original + b"\n")
+                receipt.mutation_applied = True
+                receipt.capture("post-fixture-mutation")
+                process.send_signal(signal.SIGCONT)
+                output, _ = process.communicate(timeout=240)
+                path = case.root / "evidence" / "configuration-race.json"
+                _write_private(path, output.encode())
+                case.artifacts.append(path)
+                report = assert_report(json.loads(output), process.returncode, accepted=False)
+                reasons = report["unavailable"]
+                if not isinstance(reasons, list) or not {item["authority"] for item in reasons}.intersection({"approved-enrollment-component", "installed-bootstrap-mount-profile", "complete-observation-race"}):
+                    raise AssertionError("contested configuration did not cause a source/read-window refusal")
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            # Finalize this producer's actual interval before starting the
+            # independent consumer or restoring the intentional fixture write.
+            receipt.finish(process, error)
         if kill:
-            process.kill()
-            output, _ = process.communicate(timeout=15)
-            if process.returncode != -signal.SIGKILL or output.strip():
-                raise AssertionError("killed in-flight producer published a completed containment report")
-            if _footprint(case.protected, case.worker) != preserved:
-                raise AssertionError("producer death changed preserved fixture state")
             case.command("independent-after-producer-death", accepted=True, verify=False)
         else:
-            case.config.write_bytes(original + b"\n")
-            before = _footprint(case.protected, case.worker)
-            process.send_signal(signal.SIGCONT)
-            output, _ = process.communicate(timeout=240)
-            if _footprint(case.protected, case.worker) != before:
-                raise AssertionError("contested observation changed fixture state")
-            report = assert_report(json.loads(output), process.returncode, accepted=False)
-            reasons = report["unavailable"]
-            if not isinstance(reasons, list) or not {item["authority"] for item in reasons}.intersection({"approved-enrollment-component", "installed-bootstrap-mount-profile", "complete-observation-race"}):
-                raise AssertionError("contested configuration did not cause a source/read-window refusal")
-            path = case.root / "evidence" / "configuration-race.json"
-            _write_private(path, output.encode())
-            case.artifacts.append(path)
+            assert report is not None
             verified = case.command("configuration-race-verify", accepted=False, authority="approved-enrollment-component")
             _assert_independent(report, verified)
     finally:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.communicate(timeout=15)
         os.close(descriptor)
         if case.config.read_bytes() != original:
             case.config.write_bytes(original)
