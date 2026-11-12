@@ -245,10 +245,10 @@ def _stock_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, inhibited:
 
     def unit(name: str) -> fixture.SystemdRouteFact:
         if not calls:
-            return fixture.SystemdRouteFact(name, "b" * 64, "static" if name.endswith(".service") else "enabled", "inactive", 0, False)
-        assert calls[:2] == [("daemon-reload",), ("stop", *fixture.STOCK_UNITS)]
+            return fixture.SystemdRouteFact(name, "b" * 64, "static" if name.endswith(".service") else "enabled", "inactive" if name.endswith(".service") else "active", 0, False)
+        assert calls[:2] == [("stop", *fixture.STOCK_UNITS), ("daemon-reload",)]
         assert (tmp_path / name).is_symlink()
-        return fixture.SystemdRouteFact(name, "a" * 64, "masked", "inactive", 0, inhibited)
+        return fixture.SystemdRouteFact(name, "a" * 64, "masked", "inactive" if inhibited else "failed", 0, inhibited, needs_daemon_reload=not inhibited)
 
     monkeypatch.setattr(fixture, "_systemd_unit", unit)
     return calls
@@ -281,7 +281,58 @@ def test_stock_masks_are_observed_recorded_and_removed_by_exact_identity(tmp_pat
     stock.cleanup()
     stock.cleanup()
     assert not list(tmp_path.iterdir())
-    assert calls == [("daemon-reload",), ("stop", *fixture.STOCK_UNITS), ("daemon-reload",)]
+    assert calls == [("stop", *fixture.STOCK_UNITS), ("daemon-reload",), ("daemon-reload",)]
+
+
+def test_stock_active_timer_is_stopped_before_any_mask_is_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+    original = fixture._systemctl
+
+    def systemctl(*arguments: str) -> None:
+        if arguments[0] == "stop":
+            assert arguments == ("stop", *fixture.STOCK_UNITS)
+            assert calls == []
+            assert not list(tmp_path.iterdir())
+        original(*arguments)
+
+    monkeypatch.setattr(fixture, "_systemctl", systemctl)
+    stock = fixture.InhibitedStockRoutes.install()
+    try:
+        assert next(fact for fact in stock.initial_facts if fact.unit.endswith(".timer")).active_state == "active"
+        assert all(fact.inhibited for fact in stock.assert_inhibited())
+    finally:
+        stock.cleanup()
+
+
+def test_stock_stop_failure_creates_no_masks_or_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+
+    def failed_stop(*arguments: str) -> None:
+        calls.append(arguments)
+        raise AssertionError("stock stop failed")
+
+    monkeypatch.setattr(fixture, "_systemctl", failed_stop)
+    with pytest.raises(AssertionError, match="stock stop failed"):
+        fixture.InhibitedStockRoutes.install()
+    assert calls == [("stop", *fixture.STOCK_UNITS)]
+    assert not list(tmp_path.iterdir())
+
+
+def test_stock_initial_failure_is_not_reset_to_claim_inhibition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stock_routes(tmp_path, monkeypatch)
+
+    def failed_unit(name: str) -> fixture.SystemdRouteFact:
+        state = "masked" if calls else "enabled" if name.endswith(".timer") else "static"
+        return fixture.SystemdRouteFact(name, "a" * 64, state, "failed", 0, False)
+
+    monkeypatch.setattr(fixture, "_systemd_unit", failed_unit)
+    with pytest.raises(AssertionError, match="not masked and inactive") as raised:
+        fixture.InhibitedStockRoutes.install()
+    details = json.loads(str(raised.value).split(": ", 1)[1])
+    assert details["active_state"] == "failed"
+    assert details["needs_daemon_reload"] is False
+    assert calls == [("stop", *fixture.STOCK_UNITS), ("daemon-reload",), ("daemon-reload",)]
+    assert not list(tmp_path.iterdir())
 
 
 def test_preexisting_stock_mask_is_preserved_with_its_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,8 +383,9 @@ def test_stock_source_collision_is_preserved_before_any_mutation(tmp_path: Path,
 
 def test_stock_active_or_incomplete_state_rolls_back_owned_masks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stock_routes(tmp_path, monkeypatch, inhibited=False)
-    with pytest.raises(AssertionError, match="not masked and inactive"):
+    with pytest.raises(AssertionError, match="not masked and inactive") as raised:
         fixture.InhibitedStockRoutes.install()
+    assert json.loads(str(raised.value).split(": ", 1)[1]) == {"unit": fixture.STOCK_UNITS[0], "unit_file_state": "masked", "active_state": "failed", "main_pid": 0, "inhibited": False, "needs_daemon_reload": True}
     assert not list(tmp_path.iterdir())
     assert calls[-1] == ("daemon-reload",)
 

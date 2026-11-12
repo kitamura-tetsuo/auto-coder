@@ -204,6 +204,9 @@ class InhibitedStockRoutes:
             if path.exists() or path.is_symlink():
                 state.identities[path] = _stock_mask_identity(path)
         try:
+            # Reloading an active timer's mask can leave it failed instead of
+            # inactive. Stop both original units before changing their files.
+            _systemctl("stop", *STOCK_UNITS)
             for name in STOCK_UNITS:
                 path = STOCK_MASK_ROOT / name
                 if path not in state.identities:
@@ -213,7 +216,6 @@ class InhibitedStockRoutes:
                     state.identities[path] = _stock_mask_identity(path)
                     state.created.add(path)
             _systemctl("daemon-reload")
-            _systemctl("stop", *STOCK_UNITS)
             state.assert_inhibited()
             logger.info("Inhibited the installed stock fixture routes: {}", ", ".join(STOCK_UNITS))
             return state
@@ -232,7 +234,8 @@ class InhibitedStockRoutes:
                 raise AssertionError("stock fixture mask identity changed: " + str(path))
             fact = _systemd_unit(path.name)
             if not fact.inhibited:
-                raise AssertionError("stock fixture route is not masked and inactive: " + path.name)
+                details = {name: getattr(fact, name) for name in ("unit", "unit_file_state", "active_state", "main_pid", "inhibited", "needs_daemon_reload")}
+                raise AssertionError("stock fixture route is not masked and inactive: " + _json(details).decode())
             facts.append(fact)
         return tuple(facts)
 
