@@ -27,7 +27,7 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import _approved_directory, _file_identity, _protected, _trusted_ancestors
 from .containment_kernel_subobservation import _holder_start_token, _require_capture_host
 from .containment_observation import _docker_ids, _docker_read
-from .docker_inspection import canonical_inspection
+from .docker_inspection import canonical_inspection, canonical_mounts, management_candidate_roles, unrelated_inspection, validate_container_facts
 from .fresh_host_observation import _assert_pid_flock
 
 RECOVERY_ENROLLMENT_ROOT = Path("/var/lib/auto-coder/approved-recovery-scopes")
@@ -194,6 +194,7 @@ class RecoveryCustodyObservation:
     enrollment_sha256: str
     enrollment_identity: tuple[int, int, int, int, int]
     engine_inventory: tuple[str, ...]
+    unrelated_inspections: tuple[tuple[str, str], ...]
     custody: tuple[CustodyFact, ...]
     bindings: BindingFacts
     boot_id: str
@@ -223,9 +224,7 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
     pairs = tuple(item.pair for item in enrollment.originals) + (enrollment.target,)
     expected = {identity: digest for pair in pairs for identity, digest in ((pair.manager_id, pair.manager_inspection_sha256), (pair.proxy_id, pair.proxy_inspection_sha256))}
     ids = _docker_ids()
-    # Conservatively refuse every unselected object, including workers. No
-    # caller classification can hide an omitted stopped management object.
-    if len(ids) != len(expected) or set(ids) != set(expected):
+    if len(ids) > 512 or len(set(ids)) != len(ids) or any(not re.fullmatch(r"[0-9a-f]{64}", identity) for identity in ids) or not set(expected) <= set(ids):
         raise RecoveryScopeUnavailable("complete engine membership differs")
     result = {}
     for identity in ids:
@@ -233,9 +232,47 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict) or raw[0].get("Id") != identity:
             raise RecoveryScopeUnavailable("Docker object identity differs")
         current = canonical_inspection(raw[0])
-        if _digest(current) != expected[identity]:
+        if identity in expected and _digest(current) != expected[identity]:
             raise RecoveryScopeUnavailable("enrolled full Docker inspection differs")
         result[identity] = current
+    # Check every unselected object against every original and the target.
+    # No operator-provided worker classification substitutes for these reads.
+    sources = []
+    for selected in expected:
+        image = result[selected].get("Image")
+        if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+            raise RecoveryScopeUnavailable("selected Docker image identity unavailable")
+        for mount in canonical_mounts(result[selected]["Mounts"]):
+            if mount.get("Type") != "bind":
+                raise RecoveryScopeUnavailable("component supports only explicit bind roots")
+            source = Path(_path(mount.get("Source")))
+            if source != source.resolve(strict=True):
+                raise RecoveryScopeUnavailable("selected bind root is not canonical")
+            sources.append(str(source))
+    for identity in set(ids) - set(expected):
+        obj = result[identity]
+        validate_container_facts(obj)
+        config, host = obj.get("Config"), obj.get("HostConfig")
+        if not isinstance(config, dict) or not {"Cmd", "Entrypoint"} <= config.keys() or not isinstance(host, dict) or not isinstance(host.get("NetworkMode"), str) or not host["NetworkMode"]:
+            raise RecoveryScopeUnavailable("unselected Docker command or network facts unavailable")
+        if host["NetworkMode"].startswith("container:") and not re.fullmatch(r"container:[0-9a-f]{64}", host["NetworkMode"]):
+            raise RecoveryScopeUnavailable("unselected Docker namespace identity is inconclusive")
+        for pair in pairs:
+            roles = management_candidate_roles(obj, identity, pair.manager_id, pair.proxy_id, result[pair.manager_id]["Image"], result[pair.proxy_id]["Image"], tuple(sources))
+            if roles or host["NetworkMode"] == "container:" + pair.proxy_id:
+                raise RecoveryScopeUnavailable("unexpected unselected management/proxy candidate")
+        # Resolve bind roots independently before declaring no overlap. The
+        # shared classifier also checks lexical parent/child overlap.
+        for mount in canonical_mounts(obj["Mounts"]):
+            if mount.get("Type") != "bind":
+                raise RecoveryScopeUnavailable("unselected mount source is inconclusive")
+            source = Path(_path(mount.get("Source")))
+            if source != source.resolve(strict=True):
+                raise RecoveryScopeUnavailable("unselected bind root is not canonical")
+            info = source.stat()
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)) or any((info.st_dev, info.st_ino) == (other.st_dev, other.st_ino) for other in (Path(root).stat() for root in sources)):
+                raise RecoveryScopeUnavailable("unselected bind root identity overlaps or is unsupported")
+        result[identity] = unrelated_inspection(obj)
     if _docker_ids() != ids or _docker_read(("info", "--format", "{{json .ID}}")) != enrollment.engine_id:
         raise RecoveryScopeUnavailable("engine changed during membership observation")
     return result
@@ -359,13 +396,15 @@ def observe_recovery_custody(deployment_id: str) -> RecoveryCustodyObservation:
             facts += tuple(stack.enter_context(_custody(item.lock, "WRITE", boot)) for item in enrollment.watchers)
             if _snapshot(enrollment) != first or _bindings(enrollment, first) != configs or _read_enrollment(deployment_id) != (enrollment, digest, identity):
                 raise RecoveryScopeUnavailable("recovery scope or bindings changed during observation")
+        selected_ids = {member for pair in tuple(item.pair for item in enrollment.originals) + (enrollment.target,) for member in (pair.manager_id, pair.proxy_id)}
         report = RecoveryCustodyObservation(
-            "recovery-scope-custody-observation-v1",
+            "recovery-scope-custody-observation-v2",
             "observed-component-only",
             enrollment,
             digest,
             identity,
             tuple(sorted(first)),
+            tuple((identity, _digest(first[identity])) for identity in sorted(first) if identity not in selected_ids),
             facts,
             configs,
             boot,

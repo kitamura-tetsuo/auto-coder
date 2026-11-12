@@ -2,12 +2,13 @@
 
 `auto_coder.management.recovery_scope_observation` implements a bounded,
 non-authorizing slice of Issue #2840. Its frozen `RecoveryCustodyObservation`
-has schema `recovery-scope-custody-observation-v1`, status
+has schema `recovery-scope-custody-observation-v2`, status
 `observed-component-only`, and an always nonempty `incomplete` tuple. It is
 deliberately a different type and schema from the existing complete
 [single-pair observer](management-current-containment-observation.md).
-It cannot establish recovery containment, readiness, historical exclusion,
-original genesis, or permission to launch. No admission path consumes it.
+The v2 schema adds stable unrelated-object inspection digests; reports lacking
+that evidence refuse verification. It cannot establish recovery containment,
+readiness, historical exclusion, original genesis, or permission to launch. No admission path consumes it.
 REQ-601 through REQ-607 and AS-T01 through AS-T05 remain unchanged and are
 not fully satisfied by this slice.
 
@@ -83,16 +84,35 @@ The target is never classified as an original or used to hide an original.
 The reader enumerates **all** Docker objects, including stopped objects, without
 label, image, or request filters. Duplicate identities in an inventory response
 also refuse rather than silently collapsing repeated objects into a set.
-This conservative component requires that the entire engine contain exactly the
-enrolled original and target pairs. It refuses
-every other object, including an unrelated worker; it does not alter that worker
-or accept an operator classification as proof that it is unrelated. Supporting
-unrelated engine objects safely requires a later independent candidate/source
-classification mechanism. Engine identity and inventory are reread, along with
-every selected object's complete canonical Docker inspection. Digests preserve
-all fields and normalize only effective mount ordering through the existing
-Docker canonicalizer. Enrollment snapshots select expected current objects;
-they do not prove package source or a supported execution profile.
+The complete inventory is bounded to 512 distinct full container IDs and must
+include every enrolled original and target. An unselected worker is admitted
+only after independent inspection finds no selected image, management module or
+management-serve command, selected manager/proxy network namespace, or bind-source
+overlap with **any** original or target. Candidate discovery is shared with the
+existing single-pair observer; its existing refusal behavior is preserved.
+Unselected inspections require unambiguous image, effective command, network,
+lifetime and restart facts. Bind roots must resolve canonically and must not
+lexically overlap or alias a selected root's device/inode. Unsupported mount
+sources and ambiguous namespace aliases refuse rather than being classified as
+unrelated. An operator's label or classification supplies no proof.
+
+Engine identity and the complete inventory are reread, and the entire inspection
+and classification pass is repeated while custody descriptors remain open. All
+container IDs, including admitted workers, remain in `engine_inventory`.
+`unrelated_inspections` stores each worker's stable full-inspection SHA-256; every
+separate consumer repeats and compares it. A disappearing or swapped worker, or
+a changed stable inspection, refuses. Only validated volatile `ExecIDs` on
+independently classified unrelated objects are normalized, as in the existing
+consumer. Selected full SHA-256 enrollment checks preserve that field. Workers
+are never treated as management closure or enrolled controller members.
+Digests otherwise preserve all fields and normalize only effective mount ordering
+through the existing Docker canonicalizer. Enrollment snapshots select expected
+current objects; they do not prove package source or a supported execution profile.
+
+These two current samples cannot prove uninterrupted worker state between reads,
+full REQ-601 through REQ-607 closure, original genesis, or authorization. This is a
+bounded improvement toward REQ-601 and AS-T04 with deterministic component fixtures;
+it is not native acceptance and does not complete either contract.
 
 Bind sources must currently resolve canonically, and bind roots across original
 generations and the target must not overlap or alias the same device/inode under
@@ -149,13 +169,17 @@ The new tests call the production Python entrypoints, use **real local Linux**
 flocks, independent holder processes, pidfds, fdinfo and separate producer and
 consumer PIDs, and prove material contention: shared acquisition overlaps an
 existing shared holder while an exclusive contender fails, and both contenders
-fail at an existing exclusive watcher lock. They reproduce unknown stopped
+fail at an existing exclusive watcher lock. They reproduce malformed unknown stopped
 members, omitted target/controllers, resource aliases, overlapping target roots,
 shadowed state, environment redirects, changed configuration/enrollment/inodes,
 unlock during sampling, inherited descriptors, stale/foreign reports and
 producer/holder death. Positive reads preserve fixture file bytes and locks;
 a missing lock remains absent after refusal. Host-root protection and Docker
 inspection inputs are explicitly substituted in these component fixtures.
+Additional deterministic Docker fixtures admit an actual unrelated worker object,
+refuse shadow images, management module commands, selected namespaces and overlapping
+original/target bind roots, and detect disappearing/swapped workers and malformed
+unselected facts. These fixtures never contact a Docker daemon.
 Bounded protected enrollment JSON and serialized previous observations with
 excessive nesting now produce typed non-authorizing refusal, rather than an
 uncaught recursive decoder/encoder exception. These are component-boundary
@@ -188,7 +212,7 @@ component's status:
 
 | Contract | Still missing |
 | --- | --- |
-| REQ-601 | Complete source/configuration/controller identities and safe candidate classification on an engine with unrelated objects. |
+| REQ-601 | Complete source/configuration/controller identities and native validation of candidate/source classification with unrelated objects. |
 | REQ-602 | Actual image/package source closure, ordinary history-capable bootstrap recognition, effective configuration and command/mount profile validation. |
 | REQ-603 | Union-wide system/user systemd, timer/socket/path, cron/at, local/remote-script and Docker restart discovery and actual inhibition; all installed watcher sources/configurations. |
 | REQ-604 | Exact original boot/process/cgroup and remaining-task evidence, retained actual namespace descriptors, endpoint absence, target namespace disjointness, distinct never-started handling. Missing owner files currently refuse; no historical lifetime or owner file is invented. |
@@ -211,7 +235,8 @@ remain separate work. No original record or genesis source is changed here.
 
 This slice is observability-neutral: it is an independent read-only Python
 component with no caller in operation admission, dispatch, durable recovery,
-readiness, or dashboard event production. No production trace schema or dashboard
+readiness, or dashboard event production. The candidate/source classification and v2 diagnostic report remain inside this
+uncalled component; they introduce no production trace schema or dashboard
 projection changes. `test_component_has_no_execution_or_recovery_events` compares
 the real collector snapshot under an active execution scope before and after
 successful independent verification and a real unlocked-controller refusal;

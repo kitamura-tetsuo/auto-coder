@@ -24,7 +24,7 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .containment_kernel_subobservation import KernelSubObservation, observe_kernel_subcomponent
 from .containment_route_manifest import RouteManifestObservation, RouteManifestUnavailable, observe_approved_route_manifest
-from .docker_inspection import canonical_inspection
+from .docker_inspection import canonical_inspection, management_candidate_roles, unrelated_inspection, validate_container_facts
 from .fresh_host_observation import _validate_host_proc_profile
 from .installed_bootstrap_mount_profile import InstalledBootstrapMountProfile, inspect_installed_bootstrap_mount_profile
 from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
@@ -196,22 +196,7 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             raise ValueError("Docker container identity differs")
         raw = [canonical_inspection(raw[0])]
         inspected[container] = raw[0]
-        image = raw[0].get("Image")
-        if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
-            raise ValueError("Docker image identity unavailable")
-        state, host, mounts = raw[0].get("State"), raw[0].get("HostConfig"), raw[0].get("Mounts")
-        if not isinstance(state, dict) or not isinstance(host, dict) or not isinstance(mounts, list):
-            raise ValueError("Docker state, host configuration or mounts unavailable")
-        policy = host.get("RestartPolicy")
-        if not isinstance(policy, dict) or policy.get("Name") not in ("no", "always", "unless-stopped", "on-failure") or type(policy.get("MaximumRetryCount")) is not int or policy["MaximumRetryCount"] < 0:
-            raise ValueError("Docker restart policy unavailable or unsupported")
-        if type(state.get("Running")) is not bool or type(state.get("Pid")) is not int or state["Pid"] < 0 or state.get("Status") not in ("created", "running", "paused", "restarting", "removing", "exited", "dead"):
-            raise ValueError("Docker lifetime state unavailable or unsupported")
-        if (state["Pid"] > 0) != state["Running"]:
-            raise ValueError("Docker running/PID relationship is contradictory")
-        restart_count = raw[0].get("RestartCount")
-        if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(restart_count) is not int or restart_count < 0:
-            raise ValueError("Docker lifetime identity unavailable")
+        image, state, host, mounts, policy, restart_count = validate_container_facts(raw[0])
         # Bind the complete inspection, including command, security, mounts,
         # restart policy, and lifetime, without exposing environment secrets.
         observations.append(DockerObservation(engine, container, image, _digest(raw), policy["Name"], policy["MaximumRetryCount"], state["Running"], state["Status"], state["Pid"], state["StartedAt"], state["FinishedAt"], restart_count, _digest(mounts)))
@@ -226,53 +211,10 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
         raise ValueError("Selected management mount inventory is unavailable")
     management_sources = tuple(source for mount in management_mounts if isinstance(mount, dict) and mount.get("Type") == "bind" and mount.get("Destination") in _MANAGEMENT_MOUNT_DESTINATIONS and isinstance(source := mount.get("Source"), str) and os.path.isabs(source))
 
-    def overlapping_management_source(candidate_mounts: object) -> bool:
-        if not isinstance(candidate_mounts, list):
-            raise ValueError("Docker candidate mount inventory is unavailable")
-        for mount in candidate_mounts:
-            if not isinstance(mount, dict) or not isinstance(mount.get("Type"), str):
-                raise ValueError("Docker candidate mount inventory is ambiguous")
-            if mount["Type"] != "bind":
-                continue
-            source = mount.get("Source")
-            if not isinstance(source, str) or not os.path.isabs(source):
-                raise ValueError("Docker candidate bind source is ambiguous")
-            source_path = os.path.normpath(source)
-            if any(os.path.commonpath((source_path, os.path.normpath(original))) in (source_path, os.path.normpath(original)) for original in management_sources):
-                return True
-        return False
-
     classified = []
     for item in observations:
         obj = inspected[item.container_id]
-        config, host = obj.get("Config"), obj["HostConfig"]
-        if not isinstance(config, dict) or not isinstance(host, dict):
-            raise ValueError("Docker effective command or network configuration unavailable")
-        command = config.get("Cmd")
-        entrypoint = config.get("Entrypoint")
-        if command is not None and (not isinstance(command, list) or len(command) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in command)):
-            raise ValueError("Docker effective command is ambiguous")
-        if entrypoint is not None and (not isinstance(entrypoint, list) or len(entrypoint) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in entrypoint)):
-            raise ValueError("Docker entrypoint is ambiguous")
-        network_mode = host.get("NetworkMode")
-        if network_mode is not None and (not isinstance(network_mode, str) or len(network_mode) > 256):
-            raise ValueError("Docker network mode is ambiguous")
-        arguments = tuple((entrypoint or []) + (command or []))
-        roles = []
-        if item.container_id == scope.management_id:
-            roles.append("selected-management")
-        elif item.image_id == management_image:
-            roles.append("same-management-image")
-        if item.container_id == scope.proxy_id:
-            roles.append("selected-proxy")
-        elif item.image_id == proxy_image:
-            roles.append("same-proxy-image")
-        if "auto_coder.management.bootstrap_supervisor" in arguments or ("auto_coder.cli" in arguments and "management" in arguments and "serve" in arguments):
-            roles.append("management-command")
-        if network_mode == "container:" + scope.management_id:
-            roles.append("selected-management-network")
-        if item.container_id not in (scope.management_id, scope.proxy_id) and overlapping_management_source(obj["Mounts"]):
-            roles.append("selected-management-mount-source")
+        roles = management_candidate_roles(obj, item.container_id, scope.management_id, scope.proxy_id, management_image, proxy_image, management_sources)
         if roles or "ExecIDs" not in obj:
             classified.append(replace(item, management_route_roles=tuple(roles)))
         else:
@@ -280,11 +222,7 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             # are not installed controller configuration or a management route.
             # Keep the complete Docker inspection pinned for any selected or
             # candidate controller; normalize only this unrelated volatile key.
-            exec_ids = obj["ExecIDs"]
-            if exec_ids is not None and (not isinstance(exec_ids, list) or any(not isinstance(entry, str) or not re.fullmatch(r"[0-9a-f]{64}", entry) for entry in exec_ids)):
-                raise ValueError("unrelated Docker exec inventory is malformed")
-            normalized = dict(obj)
-            normalized["ExecIDs"] = None
+            normalized = unrelated_inspection(obj)
             classified.append(replace(item, inspection_sha256=_digest([normalized]), management_route_roles=()))
     if _docker_ids() != containers:
         raise ValueError("Docker engine inventory changed during observation")

@@ -223,7 +223,14 @@ def test_engine_membership_is_unfiltered_and_repeated(scope: ScopeFixture, monke
     else:
         docker = recovery._docker_read
         monkeypatch.setattr(recovery, "_docker_read", lambda args: "foreign-engine" if args[0] == "info" else docker(args))
-    with pytest.raises(recovery.RecoveryScopeUnavailable, match="engine|inspection|membership"):
+    reason = {
+        "unknown-stopped": "Docker object identity differs",
+        "missing-target": "complete engine membership differs",
+        "foreign-engine": "local system engine differs",
+        "changed-inspection": "enrolled full Docker inspection differs",
+        "changing-inventory": "complete engine membership differs",
+    }[mutation]
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="^" + reason + "$"):
         recovery.observe_recovery_custody("fixture")
 
 
@@ -580,3 +587,177 @@ def test_saved_producer_exiting_during_evidence_comparison_refuses(scope: ScopeF
     with pytest.raises(recovery.RecoveryScopeUnavailable, match="producer lifetime"):
         recovery.verify_recovery_custody("fixture", previous)
     assert exited
+
+
+def _unrelated_worker(scope: ScopeFixture) -> dict:
+    """A complete independent Docker object, not an operator classification."""
+    root = scope.root / "worker"
+    root.mkdir()
+    obj = {
+        "Id": "f" * 64,
+        "Image": "sha256:" + "c" * 64,
+        "Config": {"Cmd": ["python", "worker.py"], "Entrypoint": None},
+        "HostConfig": {"NetworkMode": "bridge", "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
+        "State": {"Running": True, "Pid": 12345, "Status": "running", "StartedAt": "2026-11-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"},
+        "RestartCount": 0,
+        "Mounts": [{"Type": "bind", "Source": str(root), "Destination": "/work", "RW": True}],
+        "ExecIDs": ["d" * 64],
+    }
+    scope.inspections[obj["Id"]] = obj
+    return obj
+
+
+def test_independent_worker_preserved_and_exec_ids_are_volatile(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
+    worker = _unrelated_worker(scope)
+    before = copy.deepcopy(scope.inspections)
+    previous = _produce_from_separate_process(scope)
+    worker["ExecIDs"] = ["e" * 64]
+    reads = []
+    inventories = []
+    docker, ids = recovery._docker_read, recovery._docker_ids
+
+    def read(arguments):
+        reads.append(arguments)
+        return docker(arguments)
+
+    def inventory():
+        result = ids()
+        inventories.append(result)
+        return result
+
+    monkeypatch.setattr(recovery, "_docker_read", read)
+    monkeypatch.setattr(recovery, "_docker_ids", inventory)
+    current = recovery.verify_recovery_custody("fixture", previous)
+    assert inventories == [tuple(sorted(scope.inspections))] * 4
+    assert all(reads.count(("inspect", "--type", "container", identity)) == 2 for identity in scope.inspections)
+    assert current.engine_inventory == tuple(sorted(scope.inspections))
+    assert current.unrelated_inspections == ((worker["Id"], recovery._digest(recovery.unrelated_inspection(worker))),)
+    assert current.status == "observed-component-only"
+    assert current.incomplete == recovery._MISSING
+    assert previous["unrelated_inspections"] == [list(current.unrelated_inspections[0])]
+    before[worker["Id"]]["ExecIDs"] = ["e" * 64]
+    assert scope.inspections == before
+
+
+@pytest.mark.parametrize("pair_index", [0, 1, 2])
+@pytest.mark.parametrize("mutation", ["image", "proxy-image", "stopped-image", "supervisor", "module", "serve", "manager-network", "proxy-network", "bind-parent", "bind-child"])
+def test_unselected_candidates_cannot_hide_as_workers(scope: ScopeFixture, pair_index: int, mutation: str):
+    worker = _unrelated_worker(scope)
+    pair = scope.raw["originals"][pair_index]["pair"] if pair_index < 2 else scope.raw["target"]
+    manager = scope.inspections[pair["manager_id"]]
+    if mutation in ("image", "proxy-image", "stopped-image"):
+        role = "proxy" if mutation == "proxy-image" else "manager"
+        scope.inspections[pair[role + "_id"]]["Image"] = "sha256:" + "b" * 64
+        scope.pair_digest(pair_index, role)
+        worker["Image"] = "sha256:" + "b" * 64
+        if mutation == "stopped-image":
+            worker["State"].update(Running=False, Pid=0, Status="exited")
+    elif mutation in ("supervisor", "module", "serve"):
+        worker["Config"]["Cmd"] = {
+            "supervisor": ["python", "-m", "auto_coder.management.bootstrap_supervisor"],
+            "module": ["python", "-m", "auto_coder.management.proxy_watch_cli", "tick"],
+            "serve": ["python", "-m", "auto_coder.cli", "management", "serve"],
+        }[mutation]
+    elif mutation.endswith("network"):
+        worker["HostConfig"]["NetworkMode"] = "container:" + pair["manager_id" if mutation == "manager-network" else "proxy_id"]
+    else:
+        root = Path(manager["Mounts"][0]["Source"])
+        if mutation == "bind-child":
+            root = root / "nested-worker"
+            root.mkdir()
+        else:
+            root = root.parent
+        worker["Mounts"][0]["Source"] = str(root)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management/proxy candidate"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize("mutation", ["disappear", "swap", "state", "command", "mount"])
+def test_worker_changes_between_producer_and_consumer_refuse(scope: ScopeFixture, mutation: str):
+    worker = _unrelated_worker(scope)
+    previous = _produce_from_separate_process(scope)
+    if mutation in ("disappear", "swap"):
+        scope.inspections.pop(worker["Id"])
+        if mutation == "swap":
+            worker["Id"] = "e" * 64
+            scope.inspections[worker["Id"]] = worker
+    elif mutation == "state":
+        worker["RestartCount"] += 1
+    elif mutation == "command":
+        worker["Config"]["Cmd"].append("--changed")
+    else:
+        worker["Mounts"][0]["RW"] = False
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="independently repeated recovery component differs"):
+        recovery.verify_recovery_custody("fixture", previous)
+
+
+@pytest.mark.parametrize("mutation", ["disappear", "swap", "state"])
+def test_worker_changes_during_sampling_refuse(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch, mutation: str):
+    worker = _unrelated_worker(scope)
+    snapshot = recovery._snapshot
+    calls = 0
+
+    def changing(enrollment):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if mutation in ("disappear", "swap"):
+                scope.inspections.pop(worker["Id"])
+                if mutation == "swap":
+                    worker["Id"] = "e" * 64
+                    scope.inspections[worker["Id"]] = worker
+            else:
+                worker["RestartCount"] += 1
+        return snapshot(enrollment)
+
+    monkeypatch.setattr(recovery, "_snapshot", changing)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="scope or bindings changed"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
+def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
+    worker = _unrelated_worker(scope)
+    if mutation == "image":
+        worker["Image"] = "worker:latest"
+    elif mutation == "state":
+        worker["State"]["Pid"] = False
+    elif mutation == "policy":
+        worker["HostConfig"]["RestartPolicy"] = None
+    elif mutation == "config":
+        worker.pop("Config")
+    elif mutation == "missing-command":
+        worker["Config"].pop("Cmd")
+    elif mutation == "command":
+        worker["Config"]["Cmd"] = "worker"
+    elif mutation == "entrypoint":
+        worker["Config"]["Entrypoint"] = [False]
+    elif mutation == "network":
+        worker["HostConfig"].pop("NetworkMode")
+    elif mutation == "namespace-alias":
+        worker["HostConfig"]["NetworkMode"] = "container:ambiguous-name"
+    elif mutation == "mounts":
+        worker["Mounts"] = [None]
+    elif mutation == "bind":
+        worker["Mounts"][0]["Source"] = "relative"
+    elif mutation == "volume":
+        worker["Mounts"][0]["Type"] = "volume"
+    elif mutation == "symlink":
+        alias = scope.root / "worker-alias"
+        alias.symlink_to(scope.root / "worker", target_is_directory=True)
+        worker["Mounts"][0]["Source"] = str(alias)
+    else:
+        worker["ExecIDs"] = ["short-id"]
+    with pytest.raises(recovery.RecoveryScopeUnavailable):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_selected_exec_ids_remain_full_inspection_evidence(scope: ScopeFixture):
+    selected = scope.raw["target"]["manager_id"]
+    scope.inspections[selected]["ExecIDs"] = ["d" * 64]
+    scope.pair_digest(2, "manager")
+    _unrelated_worker(scope)
+    recovery.observe_recovery_custody("fixture")
+    scope.inspections[selected]["ExecIDs"] = ["e" * 64]
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="^enrolled full Docker inspection differs$"):
+        recovery.observe_recovery_custody("fixture")

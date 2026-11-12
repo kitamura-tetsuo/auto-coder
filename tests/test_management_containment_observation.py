@@ -614,3 +614,18 @@ def test_adapter_reobserves_real_docker_selected_process_without_claiming_closur
         if child.poll() is None:
             child.kill()
         child.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("module", ["auto_coder.management.bootstrap_supervisor", "auto_coder.management.proxy_watch_cli"])
+def test_unselected_management_module_is_a_candidate_with_pinned_exec_ids(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    worker = objects["c" * 64]
+    worker["Image"] = "sha256:" + "e" * 64
+    worker["Config"]["Cmd"] = ["python", "-m", module, "tick"]
+    worker["ExecIDs"] = ["d" * 64]
+    first = observation._docker(_scope())[2]
+    assert first.management_route_roles == ("management-command",)
+    worker["ExecIDs"] = ["e" * 64]
+    second = observation._docker(_scope())[2]
+    assert second.management_route_roles == ("management-command",)
+    assert second.inspection_sha256 != first.inspection_sha256
