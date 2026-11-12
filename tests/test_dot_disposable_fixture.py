@@ -89,6 +89,7 @@ def test_scoped_fixture_pat_is_private_and_test_repository_only(tmp_path, monkey
         ("github_pat_synthetic-secret-never-on-argv", False),
         ("nonfunctional-ci-placeholder", True),
         ("nonfunctional-disposable-no-github-write", True),
+        ("nonfunctional-disposable-worker-token", True),
     ],
 )
 def test_scoped_fixture_pat_never_enters_child_process_argv(monkeypatch, configured_token, expected_flag):
