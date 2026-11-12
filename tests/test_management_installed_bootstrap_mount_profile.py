@@ -182,6 +182,8 @@ def test_ordinary_reader_refuses_a_quarantined_original_without_switching_profil
 def _quarantined_fixture() -> tuple[EnrollmentObservation, dict[str, object], dict[str, object], PriorContainer, PriorContainer, bytes, bytes]:
     record, manager, proxy, prior_manager, prior_proxy, _ = _fixture()
     manager["Config"]["Cmd"] = ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"]
+    manager["Config"]["WorkingDir"] = "/workspace"
+    manager["Config"]["User"] = ""
     manager["HostConfig"]["SecurityOpt"] = ["no-new-privileges"]
     manager["HostConfig"]["ReadonlyRootfs"] = True
     manager["HostConfig"]["NetworkMode"] = prior_manager.network_mode
@@ -293,6 +295,19 @@ def test_quarantined_original_refuses_support_source_execution_env_and_healthche
     manager["Config"]["WorkingDir"] = "/workspace"
     manager["Config"]["Healthcheck"] = {"Test": ["CMD", "/bin/sh", "-c", "true"]}
     with pytest.raises(ValueError, match="support mount execution configuration"):
+        profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
+    manager["Config"]["Healthcheck"] = None
+    manager["Config"]["User"] = "nobody"
+    with pytest.raises(ValueError, match="support mount execution configuration"):
+        profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
+
+
+def test_quarantined_original_refuses_an_alternative_bootstrap_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    record, manager, proxy, prior_manager, prior_proxy, config, support = _quarantined_fixture()
+    _quarantined_reviewed_files(monkeypatch, record, config, support)
+    manager["Config"]["Entrypoint"] = ["python", "-m", "auto_coder.management.bootstrap_supervisor"]
+    manager["Config"]["Cmd"] = ["--config", "/bootstrap/config.json", "--fresh-initialization"]
+    with pytest.raises(ValueError, match="reviewed fresh entrypoint"):
         profile._validated_quarantined_profile(record, manager, proxy, prior_manager, prior_proxy)
 
 

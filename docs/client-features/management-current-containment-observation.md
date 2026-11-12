@@ -267,7 +267,9 @@ management runtime's `--config` path are independently compared with the
 protected original `management-config` under the same bootstrap mount.
 
 For `quarantined-original-v1`, the optional reader separately checks the exact
-original *current* bootstrap command with `--fresh-initialization`, the selected
+original *current* `python -m auto_coder.management.bootstrap_supervisor
+--config /bootstrap/config.json --fresh-initialization` bootstrap command, the
+original `/workspace` working directory and empty container user, the selected
 manager's `no-new-privileges` and read-only root filesystem, captured whole-mount
 digests for both manager and proxy, proxy network binding, and read-only
 individual file mounts at `/bootstrap/config.json` and

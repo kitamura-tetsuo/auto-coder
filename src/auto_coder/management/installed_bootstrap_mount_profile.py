@@ -194,9 +194,9 @@ def _validated_quarantined_profile(
     if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(proxy_host, dict):
         raise ValueError("quarantined original effective Docker configuration is unavailable")
     entrypoint, command = config.get("Entrypoint"), config.get("Cmd")
-    if not _supported_prior_command(entrypoint, command, initialized_fresh=True) or not isinstance(command, list) or command[-1:] != ["--fresh-initialization"]:
+    if entrypoint != ["python"] or command != ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"]:
         raise ValueError("quarantined original bootstrap command differs from reviewed fresh entrypoint")
-    if config.get("Healthcheck") not in (None, {}) or "/management-source" in json.dumps(config, sort_keys=True):
+    if config.get("WorkingDir") != "/workspace" or config.get("User") != "" or config.get("Healthcheck") is not None or "/management-source" in json.dumps(config, sort_keys=True):
         raise ValueError("quarantined original support mount execution configuration is unsupported")
     if host.get("SecurityOpt") != ["no-new-privileges"] or host.get("ReadonlyRootfs") is not True or host.get("Privileged") is not False or host.get("PidMode") not in ("", None) or host.get("CapAdd") not in ([], None) or host.get("Devices") not in ([], None):
         raise ValueError("quarantined original no-new-privileges or rootfs security profile differs")
