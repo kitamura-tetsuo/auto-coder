@@ -50,6 +50,15 @@ hold under separate reviewed operational authorization. Unknown controller route
 or unsupported profiles refuse. NEW/#2672 and the existing ordinary/quarantined
 observation profiles retain their admission contracts.
 
+Recovery route approval binds the exact cron sources, masks, controller
+configuration, boot, cgroup mount, and every inhibited scope's required roots,
+absence, empty-task facts and directory identities, including their ancestors.
+An unrelated cgroup directory, such as the selected target's ordinary Docker
+scope, may appear or be recreated after approval. Every current observation still
+enumerates the complete cgroup tree and all tasks, retains those unrelated
+directory identities, and requires the full repeated observations to match.
+The ordinary route profiles retain their exact persisted-snapshot comparison.
+
 ## Deployment-fixed authority
 
 The host CLI is `python -m auto_coder.management.recovery_epoch`. It takes no

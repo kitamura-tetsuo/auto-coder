@@ -12,6 +12,7 @@ import os
 import pwd
 import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,35 @@ def _scope(tree, units: tuple[str, ...] = ("cron.service",)) -> cron.CronCgroupS
     return cron._cgroup_snapshot(root=root, proc=proc, mountinfo=mountinfo, inhibited_units=units)
 
 
+def _stock_entry(proof: cron.CronInhibitedSource) -> routes.CronEntry:
+    path = "/etc/cron.daily/apport"
+    return routes.CronEntry(path, "regular", 1, 2, 3, 0o755, 0, cron.STOCK_INPUTS[path][1], True, inhibited_source=proof)
+
+
+def _recovery_binding(entry: routes.CronEntry) -> tuple[routes.CronEntry, ...]:
+    return routes._cron_approval_binding((entry,), recovery=True)
+
+
+@contextmanager
+def _approved_cron_routes(monkeypatch: pytest.MonkeyPatch, entry: routes.CronEntry, profile: str = "recovery"):
+    from tests.test_management_containment_route_manifest import _closed_routes, _closed_v2_routes
+
+    fixture_type = _closed_routes if profile == "v1" else _closed_v2_routes
+    with fixture_type(monkeypatch) as fixture:
+        fixture.facts["cron.service"] = routes.SystemdRouteFact("cron.service", "a" * 64, "masked", "inactive", 0, True)
+        fixture.catalog = tuple(sorted(fixture.facts))
+        if profile == "recovery":
+            fixture.ids += ("f" * 64,)
+            fixture.docker = tuple(SimpleNamespace(container_id=item) for item in fixture.ids)
+            selected = fixture.approval.enrollment
+            scope = routes.RecoveryRouteScope(selected.deployment_id, selected.enrollment_id, selected.authorization_id, "ordinary-recovery-v1", fixture.ids, selected.original_files)
+            fixture.approval = routes.RecoveryRouteSelection(scope, fixture.approval.enrollment_sha256)
+            fixture.manifest = replace(fixture.manifest, schema="approved-management-recovery-routes-v1", profile=scope.profile, docker_container_ids=fixture.ids)
+        fixture.manifest = replace(fixture.manifest, cron_entries=(entry,), cron_restarter_paths=(entry.path,), systemd_routes=tuple(sorted((*fixture.manifest.systemd_routes, routes.SystemdRoute("cron.service", "a" * 64, "restarter")), key=lambda item: item.unit)))
+        fixture.save()
+        yield fixture
+
+
 @pytest.fixture
 def closed_proof(scope_tree) -> cron.CronInhibitedSource:
     properties = {name: "" for name in cron._PROPERTIES}
@@ -87,6 +117,116 @@ def test_missing_cron_and_user_scopes_are_explicitly_bound(scope_tree) -> None:
     assert first.empty_groups == ()
     assert cron.CronCgroupScope.parse(json.loads(json.dumps(asdict(first)))) == first
     assert _scope(scope_tree) == first
+
+
+@pytest.mark.parametrize("change", ("added", "removed", "recreated"))
+def test_recovery_approval_allows_only_unrelated_directory_lifecycle(scope_tree, closed_proof, change: str) -> None:
+    root, _, _ = scope_tree
+    target = root / "system.slice" / ("docker-" + "a" * 64 + ".scope")
+    if change != "added":
+        _write_group(target, processes="1234\n", threads="1234\n", populated="1")
+    approved = _stock_entry(replace(closed_proof, cgroups=_scope(scope_tree)))
+    if change != "added":
+        target.rename(root.parent / "retained-old-target-scope")
+    if change != "removed":
+        _write_group(target, processes="1234\n", threads="1234\n", populated="1")
+    current_scope = _scope(scope_tree)
+    assert _scope(scope_tree) == current_scope
+    current = _stock_entry(replace(closed_proof, cgroups=current_scope))
+    assert current != approved
+    assert _recovery_binding(current) == _recovery_binding(approved)
+    assert routes._cron_approval_binding((current,), recovery=False) != routes._cron_approval_binding((approved,), recovery=False)
+    assert current.inhibited_source.cgroups == current_scope
+
+
+@pytest.mark.parametrize("relative", ("", "system.slice", "system.slice/cron.service", "system.slice/cron.service/child", "other.slice", "other.slice/cron.service", "user.slice"))
+def test_recovery_approval_retains_every_inhibited_directory_and_ancestor(scope_tree, closed_proof, relative: str) -> None:
+    root, _, _ = scope_tree
+    for path in ("system.slice/cron.service/child", "other.slice/cron.service", "user.slice"):
+        _write_group(root / path)
+    for path in ("system.slice/cron.service", "other.slice"):
+        _write_group(root / path)
+    approved = _stock_entry(replace(closed_proof, cgroups=_scope(scope_tree)))
+    target = root / relative
+    target.chmod(stat.S_IMODE(target.stat().st_mode) ^ stat.S_IXGRP)
+    current = _stock_entry(replace(closed_proof, cgroups=_scope(scope_tree)))
+    assert _recovery_binding(current) != _recovery_binding(approved)
+
+
+@pytest.mark.parametrize("change", ("mount-id", "mount-device", "required-roots", "missing-roots", "empty-groups", "boot", "scheduler", "controller", "vendor", "mask", "inhibited-services", "cron-bytes", "cron-inode", "missing-proof"))
+def test_recovery_approval_retains_other_scope_and_source_bindings(closed_proof, change: str) -> None:
+    approved = _stock_entry(closed_proof)
+    scope = closed_proof.cgroups
+    if change == "mount-id":
+        current = _stock_entry(replace(closed_proof, cgroups=replace(scope, mount_id=scope.mount_id + 1)))
+    elif change == "mount-device":
+        current = _stock_entry(replace(closed_proof, cgroups=replace(scope, mount_device="0:999")))
+    elif change == "required-roots":
+        current = _stock_entry(replace(closed_proof, cgroups=replace(scope, required_empty_roots=("/other.slice/cron.service", *scope.required_empty_roots))))
+    elif change == "missing-roots":
+        current = _stock_entry(replace(closed_proof, cgroups=replace(scope, missing_roots=())))
+    elif change == "empty-groups":
+        current = _stock_entry(replace(closed_proof, cgroups=replace(scope, empty_groups=(cron.EmptyCgroupFact("/user.slice", (), (), 0, 0),))))
+    elif change == "boot":
+        current = _stock_entry(replace(closed_proof, boot_id="00000000-0000-4000-8000-000000000001"))
+    elif change == "scheduler":
+        current = _stock_entry(replace(closed_proof, scheduler_sha256="b" * 64))
+    elif change == "controller":
+        current = _stock_entry(replace(closed_proof, controller_properties=tuple((key, "system.slice" if key == "Slice" else value) for key, value in closed_proof.controller_properties)))
+    elif change == "vendor":
+        current = _stock_entry(replace(closed_proof, sources=(replace(closed_proof.sources[0], inode=99), *closed_proof.sources[1:])))
+    elif change == "mask":
+        current = _stock_entry(replace(closed_proof, mask_identity=(1, 99, *closed_proof.mask_identity[2:])))
+    elif change == "inhibited-services":
+        current = _stock_entry(replace(closed_proof, inhibited_services=(("cron.service", "b" * 64),)))
+    elif change == "cron-bytes":
+        current = replace(approved, sha256="f" * 64)
+    elif change == "cron-inode":
+        current = replace(approved, inode=99)
+    else:
+        current = replace(approved, inhibited_source=None)
+    assert _recovery_binding(current) != _recovery_binding(approved)
+
+
+@pytest.mark.parametrize("profile", ("recovery", "v1", "v2"))
+def test_only_recovery_route_reader_allows_unrelated_scope_and_keeps_full_facts(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch, profile: str) -> None:
+    approved = _stock_entry(closed_proof)
+    with _approved_cron_routes(monkeypatch, approved, profile) as fixture:
+        original = fixture.path.read_bytes()
+        target = scope_tree[0] / "system.slice" / ("docker-" + "a" * 64 + ".scope")
+        _write_group(target, processes="1234\n", threads="1234\n", populated="1")
+
+        def read_catalog(**kwargs):
+            return (_stock_entry(replace(closed_proof, cgroups=_scope(scope_tree))),)
+
+        monkeypatch.setattr(routes, "_cron_catalog", read_catalog)
+        if profile != "recovery":
+            with pytest.raises(routes.RouteManifestUnavailable, match="changed cron/at route"):
+                fixture.observe()
+        else:
+            observation = fixture.observe()
+            assert observation.cron_entries == read_catalog()
+            assert observation.cron_entries != observation.manifest.cron_entries
+            assert "/system.slice/" + target.name in {item.path for item in observation.cron_entries[0].inhibited_source.cgroups.directories}
+        assert fixture.path.read_bytes() == original
+
+
+def test_recovery_fresh_route_repeat_still_refuses_unrelated_scope_change(scope_tree, closed_proof, monkeypatch: pytest.MonkeyPatch) -> None:
+    approved = _stock_entry(closed_proof)
+    with _approved_cron_routes(monkeypatch, approved) as fixture:
+        calls = 0
+
+        def read_catalog(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                _write_group(scope_tree[0] / "system.slice/docker-new.scope")
+            return (_stock_entry(replace(closed_proof, cgroups=_scope(scope_tree))),)
+
+        monkeypatch.setattr(routes, "_cron_catalog", read_catalog)
+        with pytest.raises(routes.RouteManifestUnavailable, match="installed ordinary routes changed during observation"):
+            fixture.observe()
+        assert calls == 2
 
 
 @pytest.mark.parametrize("state", ("leader", "thread", "nested", "event-only", "user-session", "alternative-slice"))

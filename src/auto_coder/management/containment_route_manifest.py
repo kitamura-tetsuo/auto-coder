@@ -17,7 +17,7 @@ import os
 import re
 import stat
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .archived_exclusions import unique_pairs
@@ -893,6 +893,28 @@ def _validate_user_scope(manifest: ApprovedRouteManifest, inventory: UserControl
                 raise RouteManifestUnavailable("installed user management source lacks an independently inhibited unit")
 
 
+def _cron_approval_binding(entries: tuple[CronEntry, ...], *, recovery: bool) -> tuple[CronEntry, ...]:
+    """Bind recovery approval to every inhibited scope, not unrelated groups.
+
+    A target's ordinary Docker scope can be created after route approval. Only
+    unrelated cgroup directory identities are excluded from this historical
+    comparison. Complete fresh snapshots and returned observations retain them.
+    Ordinary profiles keep their existing exact approval comparison.
+    """
+    if not recovery:
+        return entries
+    bindings = []
+    for entry in entries:
+        source = entry.inhibited_source
+        if source is None:
+            bindings.append(entry)
+            continue
+        scope = source.cgroups
+        directories = tuple(item for item in scope.directories if item.path in ("/", "/system.slice") or any(item.path == root or item.path.startswith(root + "/") or root.startswith(item.path.rstrip("/") + "/") for root in scope.required_empty_roots))
+        bindings.append(replace(entry, inhibited_source=replace(source, cgroups=replace(scope, directories=directories))))
+    return tuple(bindings)
+
+
 def _observe_approved_route_manifest(
     approval: EnrollmentObservation | RecoveryRouteSelection,
     docker: tuple[object, ...],
@@ -921,7 +943,8 @@ def _observe_approved_route_manifest(
     if ids != manifest.docker_container_ids:
         raise RouteManifestUnavailable("whole-engine Docker inventory differs from approved routes")
     is_closed_version = manifest.schema in ("approved-management-ordinary-routes-v2", "approved-management-recovery-routes-v1")
-    if isinstance(approval, RecoveryRouteSelection) != (manifest.schema == "approved-management-recovery-routes-v1"):
+    recovery_routes = manifest.schema == "approved-management-recovery-routes-v1"
+    if isinstance(approval, RecoveryRouteSelection) != recovery_routes:
         raise RouteManifestUnavailable("route manifest and selection profile differ")
     bindings = _deployment_root_bindings(approval, trusted_uid=expected_uid) if is_closed_version else ()
     if bindings != manifest.deployment_roots:
@@ -943,7 +966,7 @@ def _observe_approved_route_manifest(
     if manifest.cron_restarter_paths and not _CRON_SCHEDULERS.intersection(restarters):
         raise RouteManifestUnavailable("ordinary cron restarter lacks scheduler inhibition")
     cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid, extra_cues=cues, inspect_local_inputs=is_closed_version, module_sources=modules, source_formats=cron_source_formats, systemd_facts=observed_systemd)
-    if cron != manifest.cron_entries:
+    if _cron_approval_binding(cron, recovery=recovery_routes) != _cron_approval_binding(manifest.cron_entries, recovery=recovery_routes):
         raise RouteManifestUnavailable("unknown, omitted or changed cron/at route")
     if any(entry.management_candidate and entry.path not in manifest.cron_restarter_paths for entry in cron):
         raise RouteManifestUnavailable("detected management cron/at route is excluded")
