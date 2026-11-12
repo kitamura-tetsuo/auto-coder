@@ -533,3 +533,11 @@ def test_target_root_inode_change_after_producer_refuses(scope: ScopeFixture):
     root.mkdir()
     with pytest.raises(recovery.RecoveryScopeUnavailable, match="component differs"):
         recovery.verify_recovery_custody("fixture", previous)
+
+
+def test_duplicate_engine_inventory_is_not_exact_membership(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
+    # Repeating an enrolled ID must not turn an ambiguous inventory into closure.
+    selected = tuple(sorted(scope.inspections))
+    monkeypatch.setattr(recovery, "_docker_ids", lambda: selected + (selected[0],))
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="membership"):
+        recovery.observe_recovery_custody("fixture")

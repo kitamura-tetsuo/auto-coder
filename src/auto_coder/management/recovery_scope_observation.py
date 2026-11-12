@@ -225,7 +225,7 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
     ids = _docker_ids()
     # Conservatively refuse every unselected object, including workers. No
     # caller classification can hide an omitted stopped management object.
-    if set(ids) != set(expected):
+    if len(ids) != len(expected) or set(ids) != set(expected):
         raise RecoveryScopeUnavailable("complete engine membership differs")
     result = {}
     for identity in ids:

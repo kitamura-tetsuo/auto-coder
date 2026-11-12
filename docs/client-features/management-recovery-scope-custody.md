@@ -79,8 +79,10 @@ The target is never classified as an original or used to hide an original.
 ## Actual evidence origins and refusal cases
 
 The reader enumerates **all** Docker objects, including stopped objects, without
-label, image, or request filters. This conservative component requires that the
-entire engine contain exactly the enrolled original and target pairs. It refuses
+label, image, or request filters. Duplicate identities in an inventory response
+also refuse rather than silently collapsing repeated objects into a set.
+This conservative component requires that the entire engine contain exactly the
+enrolled original and target pairs. It refuses
 every other object, including an unrelated worker; it does not alter that worker
 or accept an operator classification as proof that it is unrelated. Supporting
 unrelated engine objects safely requires a later independent candidate/source
