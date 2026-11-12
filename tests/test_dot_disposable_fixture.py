@@ -23,6 +23,7 @@ from tests.fixtures import supervisor_offline_process_issues as offline_worker
 def source_tree(tmp_path: Path) -> Path:
     root = tmp_path / "source"
     (root / "tests" / "fixtures").mkdir(parents=True)
+    (root / "src").mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
     (root / "tests" / "fixtures" / "supervisor_offline_pid1.py").write_text("# Fixture sentinel\n", encoding="utf-8")
     return root
@@ -41,6 +42,105 @@ def _git_source_tree(tmp_path: Path) -> Path:
     ):
         subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True, text=True)
     return root
+
+
+def _mount_case(tmp_path: Path, source_available: bool) -> tuple[Path, Path, dict]:
+    source = source_tree(tmp_path)
+    root = fixture.provision(
+        source=source,
+        fixture_id="pr2835-test-mounts",
+        firebase_project="fixture-test-123",
+        owner_uid=1000,
+        owner_gid=1000,
+        test_source=_git_source_tree(tmp_path / "candidate") if source_available else None,
+        source_release_workflow_id=12345 if source_available else None,
+        accepted_profile_revision=SmokeProfile().content_revision if source_available else None,
+    )
+    return source, root, yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
+
+
+def _private_mount_exposures(root: Path, compose: dict) -> list[str]:
+    """Find private host subtrees exposed by any worker bind, including aliases."""
+    exposures = []
+    for role in ("beta", "release"):
+        peer = "release" if role == "beta" else "beta"
+        other_read_token = "source-public-read" if role == "beta" else "beta-work-read"
+        protected = (
+            root / "management",
+            root / "secrets/source-acceptance-publish",
+            root / "secrets/source-release-dispatch",
+            root / "secrets" / (peer + "-bridge"),
+            root / "secrets" / other_read_token,
+            *(root / peer / name for name in ("runtime", "routing", "workspace")),
+        )
+        for volume in compose["services"][role]["volumes"]:
+            host, destination, *_ = volume.split(":", 2)
+            origin = Path(host).resolve()
+            for private in protected:
+                private = private.resolve()
+                if private.is_relative_to(origin) or origin.is_relative_to(private):
+                    exposures.append(f"{role}: {origin} -> {destination} exposes {private.relative_to(root)}")
+    return exposures
+
+
+@pytest.mark.parametrize("source_available", [False, True], ids=["no-source", "real-source"])
+def test_worker_bind_mounts_do_not_expose_private_fixture_ancestors(tmp_path, _use_real_commands, source_available):
+    _, root, compose = _mount_case(tmp_path, source_available)
+    # Read-only mounts and 0600 files still permit reads by this same worker UID.
+    # Inspect host ancestry, not just secret names in individual volume strings.
+    exposures = _private_mount_exposures(root, compose)
+    assert not exposures, "Worker bind mounts expose private fixture state: " + "; ".join(exposures)
+
+
+@pytest.mark.parametrize("source_available", [False, True], ids=["no-source", "real-source"])
+def test_worker_code_mounts_are_src_only(tmp_path, _use_real_commands, source_available):
+    source, _, compose = _mount_case(tmp_path, source_available)
+    destination = "/code/src" if source_available else "/source/src"
+    for role in ("beta", "release"):
+        worker = compose["services"][role]
+        assert f"{source}/src:{destination}:ro" in worker["volumes"]
+        assert f"{source}/tests/fixtures:/fixtures:ro" in worker["volumes"]
+        assert all(Path(volume.split(":", 1)[0]).resolve() != source for volume in worker["volumes"])
+        if source_available:
+            assert f"{tmp_path}/candidate/source:/source:ro" in worker["volumes"]
+            assert "PYTHONPATH" not in worker["environment"]
+        else:
+            assert worker["environment"]["PYTHONPATH"] == "/source/src"
+
+
+def test_missing_worker_code_src_is_rejected_before_fixture_writes(tmp_path):
+    source = source_tree(tmp_path)
+    (source / "src").rmdir()
+    with pytest.raises(ValueError, match="src directory"):
+        fixture.provision(source=source, fixture_id="pr2835-test-nosrc", firebase_project="fixture-test-123", owner_uid=1000, owner_gid=1000)
+    assert not (source / ".agent-tmp").exists()
+
+
+@pytest.mark.parametrize("relationship", ["same", "ancestor"])
+def test_source_containing_fixture_is_rejected_before_writes(tmp_path, _use_real_commands, relationship):
+    test_source = _git_source_tree(tmp_path / "candidate")
+    if relationship == "same":
+        source = test_source
+    else:
+        source = source_tree(test_source / "nested")
+        subprocess.run(["git", "-C", str(test_source), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(test_source), "commit", "-qm", "nested fixture code"], check=True, capture_output=True)
+    # Both candidates have genuine clean, independent main and the exact TEST
+    # remote. Only their future fixture-containing mount makes them unsuitable.
+    status = subprocess.run(["git", "-C", str(test_source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True)
+    assert status.stdout == ""
+    assert fixture._source_fixture_revision(test_source)
+    assert (source / ".agent-tmp").is_relative_to(test_source)
+    with pytest.raises(ValueError, match="fixture"):
+        fixture.provision(
+            source=source,
+            fixture_id="pr2835-test-containing",
+            firebase_project="fixture-test-123",
+            owner_uid=1000,
+            owner_gid=1000,
+            test_source=test_source,
+        )
+    assert not (source / ".agent-tmp").exists()
 
 
 def test_provision_is_dockerless_private_and_observe_only(tmp_path):

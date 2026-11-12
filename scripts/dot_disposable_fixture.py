@@ -100,6 +100,8 @@ def provision(
     source = source.resolve(strict=True)
     if not (source / "pyproject.toml").is_file() or not (source / "tests/fixtures/supervisor_offline_pid1.py").is_file():
         raise ValueError("source root must be the checked-out Auto-Coder test fixture source")
+    if not (source / "src").is_dir():
+        raise ValueError("source root must contain its Python src directory")
     if SAFE_FIXTURE.fullmatch(fixture_id) is None:
         raise ValueError("fixture ID must be an exact lowercase disposable identifier")
     if not isinstance(firebase_project, str) or not re.fullmatch(r"fixture-[a-z0-9-]{6,50}", firebase_project):
@@ -107,6 +109,10 @@ def provision(
     if owner_uid < 1 or owner_gid < 1:
         raise ValueError("fixture worker cannot run as root")
     test_source = test_source.resolve(strict=True) if test_source is not None else None
+    scratch = source / ".agent-tmp"
+    root = scratch / fixture_id
+    if test_source is not None and root.is_relative_to(test_source):
+        raise ValueError("disposable tested source must not contain the fixture state directory")
     test_sha = _source_fixture_revision(test_source)
     release_configuration = source_release_workflow_id is not None or accepted_profile_revision is not None
     if release_configuration:
@@ -116,11 +122,9 @@ def provision(
             raise ValueError("source release requires the exact accepted runtime profile revision")
         if not test_sha:
             raise ValueError("source release requires a clean test-repository source checkout")
-    scratch = source / ".agent-tmp"
     if scratch.exists() and (scratch.is_symlink() or not scratch.is_dir()):
         raise ValueError("fixture scratch root must be an ordinary directory")
     scratch.mkdir(mode=0o700, exist_ok=True)
-    root = scratch / fixture_id
     root.mkdir(mode=0o700)
     for directory in (
         "secrets",
@@ -244,12 +248,13 @@ def provision(
     for role in ("beta", "release"):
         role_id = beta_id if role == "beta" else release_id
         read_token = "beta-work-read" if role == "beta" else "source-public-read"
+        # The checkout's sibling fixture state contains management credentials.
         fixture_mounts = [
-            f"{source}:/source:ro",
+            f"{source}/src:/source/src:ro",
             f"{source}/tests/fixtures:/fixtures:ro",
         ]
         if test_source is not None:
-            fixture_mounts = [f"{source}:/code:ro", f"{source}/tests/fixtures:/fixtures:ro", f"{test_source}:/source:ro"]
+            fixture_mounts = [f"{source}/src:/code/src:ro", f"{source}/tests/fixtures:/fixtures:ro", f"{test_source}:/source:ro"]
         services[role] = {
             "image": WORKER_IMAGE,
             "entrypoint": ["python", "/fixtures/supervisor_offline_pid1.py"],

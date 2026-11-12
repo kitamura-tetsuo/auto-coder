@@ -232,6 +232,14 @@ that the single mounted checkout is usable. The fixture starts with an empty
 UID allowlist and intentionally held worker bootstrap; both require separate
 operator authorization and real test-only setup to proceed.
 
+Worker bootstrap code is mounted from only the generator checkout's `src`
+directory at `/code/src:ro` (`/source/src:ro` without a test-source checkout),
+alongside the explicit `/fixtures:ro` scripts. Its checkout root contains the
+fixture's management credentials and peer state and is not mounted into workers.
+A test-source checkout that would contain the fixture state directory is
+rejected before any fixture files are written. Management publication and
+dispatch credentials remain available only through management's selected mounts.
+
 Both workers install source from `kitamura-tetsuo/auto-coder-test`. Workload
 ownership stays distinct: beta processes only the fixed
 `kitamura-tetsuo/auto-coder-test-beta` canary repository, while release processes
