@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .fresh_initialization import FreshInitializationIntent, parse_fresh_intent, read_fresh_status
-from .original_attempts import PROFILE, HistoryBinding, HistoryEvent, OriginalEvidenceUnavailable, canonical, history_lock, identity, read_frontier, read_original, source_identity
+from .original_attempts import PROFILE, HistoryBinding, HistoryEvent, OriginalEvidenceUnavailable, canonical, history_lock, identity, read_frontier, read_original, source_identity, validate_original_lifetime
 
 
 @dataclass(frozen=True)
@@ -49,21 +49,6 @@ class OriginalAttemptEvidence:
     originals: tuple[OriginalFile, ...] = ()
     unavailable: tuple[str, ...] = ()
     # There is deliberately no completeness boolean or authorization field.
-
-
-def _validate_original_lifetime(value: object) -> None:
-    """Require the exact original Linux lifetime encoding, not a claimed verdict."""
-    if not isinstance(value, dict) or set(value) != {"pid", "start", "boot", "nonce"}:
-        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
-    if type(value["pid"]) is not int or value["pid"] <= 0:
-        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
-    start = value["start"]
-    if not isinstance(start, str) or not start.isascii() or not start.isdecimal() or str(int(start)) != start or int(start) <= 0:
-        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
-    for field in ("boot", "nonce"):
-        token = value[field]
-        if not isinstance(token, str) or str(uuid.UUID(token)) != token:
-            raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
 
 
 def _snapshot(path: Path) -> OriginalFile:
@@ -179,7 +164,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
             protected_roots = [Path(value) for value in (intent.host_state_root, intent.host_journal_root, intent.host_oauth_root, intent.host_prior_journal_root) if value]
             if any(root == path or root in path.parents or path in root.parents for path in protected_roots):
                 raise OriginalEvidenceUnavailable("original history overlaps protected management stores")
-            _validate_original_lifetime(anchor["lifetime"])
+            validate_original_lifetime(anchor["lifetime"])
             if baseline is None:
                 baseline = (intent.old_instance, intent.old_container_id)
             parent = targets.get(intent.old_instance)
@@ -209,7 +194,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                 if not isinstance(grant, dict) or set(grant) != {"lifetime"}:
                     raise OriginalEvidenceUnavailable("original grant lifetime incomplete")
                 try:
-                    _validate_original_lifetime(grant["lifetime"])
+                    validate_original_lifetime(grant["lifetime"])
                 except (ValueError, TypeError) as error:
                     raise OriginalEvidenceUnavailable("original grant lifetime incomplete") from error
             elif kinds[-1] == "unresolved" and json.loads(branch[-1].value_json) != {}:
@@ -259,7 +244,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                     continue
                 receipt = json.loads(retain(state / "fresh-original-stores.json"))
                 try:
-                    _validate_original_lifetime(receipt["lifetime"])
+                    validate_original_lifetime(receipt["lifetime"])
                 except (KeyError, TypeError, ValueError) as error:
                     raise OriginalEvidenceUnavailable("original bootstrap receipt lifetime incomplete") from error
                 if (

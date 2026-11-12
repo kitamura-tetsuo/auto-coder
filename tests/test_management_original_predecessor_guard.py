@@ -146,7 +146,7 @@ def test_independent_consumer_rejects_failed_descendant_in_valid_hash_chain(tmp_
     before = _fingerprint(tmp_path)
     with observe(binding) as fence:
         evidence = derive(binding, fence)
-        assert any("refused or unproven original predecessor" in reason for reason in evidence.unavailable)
-        with pytest.raises(OriginalEvidenceUnavailable, match="refused or unproven original predecessor"):
+        assert any("original lineage has uncovered or refused predecessor" in reason for reason in evidence.unavailable)
+        with pytest.raises(OriginalEvidenceUnavailable, match="original lineage has uncovered or refused predecessor"):
             verify(evidence, binding, fence)
     assert _fingerprint(tmp_path) == before

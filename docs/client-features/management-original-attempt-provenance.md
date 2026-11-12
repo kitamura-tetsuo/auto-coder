@@ -65,8 +65,12 @@ the producer also checks its complete canonical intent schema and requires
 its request ID to match the anchor event. A rehashed chain with a missing,
 partial or cross-attempt original anchor refuses as unavailable instead of
 throwing an unhandled field lookup; it never creates another intent or grant.
-This schema check does not authenticate rewritten original bytes or fill a
-pre-enrollment historical gap.
+Every historical anchor must also bind the exact enrolled original history
+root and history UUID before the producer admits another original claim or
+opens its host grant. A terminal failed branch with a rehashed foreign-history
+intent is unavailable even when its hash chain and terminal store payload
+remain internally consistent. This schema check does not authenticate
+rewritten original bytes or fill a pre-enrollment historical gap.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
 Protected original regular files, including the history lock, authority,
 frontier, events, intent and native stores, must have exactly one hard link.
@@ -78,6 +82,44 @@ The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
+Before admitting another attempt or entering a host grant, the shared frontier
+reader additionally validates the complete forward graph of covered anchors,
+including failed siblings: each historical predecessor must be the initial
+baseline or a previously claimed target with the matching container ID. Reused
+target names, container identities, state/journal paths or root identities,
+and cycles refuse even if the corrupted anchor's individual intent schema and
+the rehashed frontier are otherwise valid. The reader also re-stats every
+historically anchored state/journal directory against its exact protected
+device/inode identity; changing both the anchor and intent cannot disguise a
+different original inode. A missing or replaced directory is unavailable, and
+no historical byte is repaired.
+This changes refusal eligibility only: it introduces no new trace schema,
+dashboard success state, management process transition or grant event.
+The existing boundary logger records only events actually durably appended,
+while an unavailable graph refuses before another boundary is recorded.
+Before admitting another attempt or entering a host grant, the producer also
+rejects unknown event kinds, impossible per-attempt boundary sequences, and
+terminal facts that contradict the matching original anchor. Every historical
+`claimed` event must retain the exact producer payload shape, a real device/inode
+identity and canonical SHA-256 digest. The admission/grant frontier reader
+reopens each protected claimed intent and matches its original canonical bytes,
+inode and digest to its anchor and event before permitting a later attempt or
+grant. A plausible but incorrect rehashed claim remains unavailable even if
+the frontier checksums are internally consistent; missing or unprotected
+original claim files do not become assumed-successful ancestors.
+It checks every earlier original anchor against its exact producer lifetime,
+fixed expected store paths, original state/journal device-inode identities and
+pristine boolean before advancing the frontier or issuing another grant. A
+claimed original attempt cannot have a non-pristine anchor; an internally
+rehashed chain does not excuse that contradiction. Grant-possible event
+producer lifetimes use the same strict schema in both admission and independent
+derivation. These checks do not authenticate rewritten originals or establish
+coverage before the prospective enrollment. A never-created
+boundary must retain the anchor's exact original producer lifetime and
+expected stores, and it may only terminate an originally pristine target.
+An unresolved boundary must have the original empty payload. Rehashing the
+event chain cannot make such inconsistent history eligible for another
+admission or grant; the original corrupt bytes remain untouched.
 An original target whose own admission ended `never-created`, `unresolved`, or
 only anchored without a durable claim is not a valid predecessor for a new
 covered attempt. Both the original producer and independent evidence consumer
@@ -93,7 +135,11 @@ grants for that attempt refuse. Interruption before that terminal commit,
 non-pristine roots or a partial intent remains unresolved. No reader creates a
 terminal fact from an absent claim, database, process or row.
 
-A completed claim records the original intent's identity and digest. The host
+A completed claim records the original intent's identity and digest. The original
+admission producer and the host grant boundary independently parse and match
+the exact canonical claimed intent bytes to the anchored intent; a valid
+claim-file digest alone never permits granting a different target. A mismatch
+leaves an unresolved original attempt without issuing an additional grant. The host
 adapter durably records `grant-possible` before entering its existing checks or
 launch callback, and holds the history lock for the entire adapter invocation.
 That conservative boundary does not mean a grant was delivered. A failed or
