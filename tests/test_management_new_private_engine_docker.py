@@ -159,6 +159,10 @@ def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused() -
                 time.sleep(0.05)
             assert original_socket.with_suffix(".accepted").is_file(), "guardian connection was not accepted"
             pending.connect(str(original_socket))
+            os.chmod(original_socket, 0o000, follow_symlinks=False)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as late:
+                with pytest.raises(PermissionError):
+                    late.connect(str(original_socket))
 
             daemon_pid = int(subprocess.check_output([*outer, "inspect", "--format", "{{.State.Pid}}", container_id], text=True, timeout=15))
             daemon_namespace = os.readlink(f"/proc/{daemon_pid}/ns/net")
