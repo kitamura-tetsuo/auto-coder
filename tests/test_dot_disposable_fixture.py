@@ -81,9 +81,43 @@ def test_scoped_fixture_pat_is_private_and_test_repository_only(tmp_path, monkey
         offline_worker.activate_scoped_fixture_token(token_path, "kitamura-tetsuo/auto-coder-test")
 
 
-def test_scoped_fixture_pat_never_enters_child_process_argv():
-    script = Path(offline_worker.__file__).read_text(encoding="utf-8")
-    assert '"--github-token"' not in script
+@pytest.mark.parametrize(
+    ("configured_token", "expected_flag"),
+    [
+        ("github_pat_synthetic-secret-never-on-argv", False),
+        ("nonfunctional-ci-placeholder", True),
+        ("nonfunctional-disposable-no-github-write", True),
+    ],
+)
+def test_scoped_fixture_pat_never_enters_child_process_argv(monkeypatch, configured_token, expected_flag):
+    # Capture the actual child exec argv, including the optional offline bypass.
+    monkeypatch.setenv("AUTO_CODER_REPOSITORY", "kitamura-tetsuo/auto-coder-test")
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", "/unused-disposable-test")
+    monkeypatch.setenv("GITHUB_TOKEN", configured_token)
+    for name in (
+        "AUTO_CODER_TEST_LAUNCH_AUDIT",
+        "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP",
+        "AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE",
+        "AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME",
+        "AUTO_CODER_TEST_ABANDON_STARTUP_ONCE",
+        "AUTO_CODER_TEST_HOLD_INSTALLED_TERMINAL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(offline_worker, "activate_scoped_fixture_token", lambda *args: False)
+    captured = []
+    monkeypatch.setattr(offline_worker.os, "execv", lambda executable, argv: captured.append((executable, argv)))
+
+    offline_worker.main()
+
+    assert len(captured) == 1
+    executable, argv = captured[0]
+    assert executable == offline_worker.sys.executable
+    assert argv[:3] == [executable, "-m", "auto_coder.cli"]
+    assert not any(value.startswith("github_pat_") for value in argv)
+    if expected_flag:
+        assert argv[-2:] == ["--github-token", "nonfunctional-ci-placeholder"]
+    else:
+        assert "--github-token" not in argv
 
 
 @pytest.mark.parametrize("fixture_id", ["release-worker", "beta-worker", "../escape", "A-B", "sh", "bad space"])
