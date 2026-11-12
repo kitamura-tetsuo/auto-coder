@@ -243,7 +243,14 @@ reevaluation or beta-source selection and requires current selected stage,
 revision, original Git/Actions proof and an immutable fsynced pre-send ticket.
 Unknown, interrupted or conflicting sends remain `BLOCKED`; the original
 idempotency key is never reissued. Live producer observations are hashed for
-origin tracking. No successful synthetic fixture test certifies live acceptance.
+origin tracking. A real reevaluation journal projects terminal acceptance as
+`status=accepted_for_reevaluation`, `phase=succeeded` and
+`effect_state=confirmed` with a JSON-encoded
+`worker-uds-invalidation-receipt`. The consumer verifies that receipt's
+original process-run identity before reporting queue acceptance; this never
+asserts Issue/PR implementation completion. A generic `SUCCEEDED` status or
+an uncorrelated receipt cannot satisfy this scenario. No successful synthetic
+fixture test certifies live acceptance.
 
 These scripts provide reusable acceptance components, not a completed #2608
 contract: obtaining real fixture grants, actual controller/worker/source and

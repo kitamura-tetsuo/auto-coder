@@ -217,3 +217,60 @@ def test_authenticated_identity_is_bound_to_fixture_resource_client_and_current_
     ):
         with pytest.raises(accept.Blocked, match="OAuth"):
             accept.verify_current_operator({**identity, **change}, fixture(), "reevaluate", mutation=True)
+
+
+def _confirmed_reevaluation_projection():
+    """Match the real ManagementRuntime._project_operation response shape."""
+    return {
+        "status": "accepted_for_reevaluation",
+        "operation_id": "original-req-001",
+        "target_id": fixture().target_ids["beta"],
+        "action": "reevaluate_target",
+        "phase": "succeeded",
+        "effect_state": "confirmed",
+        "receipt": {
+            "source": "worker-uds-invalidation-receipt",
+            "result": json.dumps(
+                {
+                    "outcome": "accepted_for_reevaluation",
+                    "generation": 3,
+                    "disposition": "queued",
+                    "accepting_process_run_id": "original-process-123",
+                },
+                sort_keys=True,
+            ),
+            "observed_at": 1794445200.0,
+        },
+    }
+
+
+def test_real_reevaluation_journal_projection_is_recognized_without_issue_completion():
+    assert accept.verified_reevaluation_receipt(
+        _confirmed_reevaluation_projection(),
+        operation_id="original-req-001",
+        target_id=fixture().target_ids["beta"],
+        process_run_id="original-process-123",
+    )
+
+
+def test_reevaluation_journal_only_accepts_original_confirmed_receipt():
+    original = _confirmed_reevaluation_projection()
+    for change in (
+        {"operation_id": "other-operation"},
+        {"target_id": fixture().target_ids["release"]},
+        {"action": "deploy_beta_source"},
+        {"status": "SUCCEEDED"},
+        {"phase": "running"},
+        {"effect_state": "sent_unknown"},
+        {"receipt": None},
+        {"receipt": {"source": "operator", "result": original["receipt"]["result"]}},
+        {"receipt": {"source": original["receipt"]["source"], "result": "accepted_for_reevaluation"}},
+        {"receipt": {"source": original["receipt"]["source"], "result": json.dumps({"outcome": "accepted_for_reevaluation", "generation": 1, "disposition": "queued", "accepting_process_run_id": "other-process"})}},
+    ):
+        with pytest.raises((accept.Blocked, accept.Failed)):
+            accept.verified_reevaluation_receipt({**original, **change}, operation_id="original-req-001", target_id=fixture().target_ids["beta"], process_run_id="original-process-123")
+
+
+def test_unsettled_reevaluation_does_not_fabricate_acceptance():
+    pending = {**_confirmed_reevaluation_projection(), "status": "NEEDS_ATTENTION", "phase": "needs_attention", "effect_state": "sent_unknown", "receipt": None}
+    assert not accept.verified_reevaluation_receipt(pending, operation_id="original-req-001", target_id=fixture().target_ids["beta"], process_run_id="original-process-123")

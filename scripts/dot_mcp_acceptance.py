@@ -290,6 +290,50 @@ def positive_heartbeat(snapshot: dict[str, Any], *, source_sha: str = "") -> int
     return sequence
 
 
+def verified_reevaluation_receipt(value: dict[str, Any], *, operation_id: str, target_id: str, process_run_id: str) -> bool:
+    """Recognize the actual journal's accepted-for-reevaluation projection.
+
+    The worker receipt proves queue admission, not Issue work completion.
+    An unresolved original remains pending; it cannot trigger a new send.
+    """
+    if value.get("operation_id") != operation_id or value.get("target_id") != target_id or value.get("action") != "reevaluate_target":
+        raise Failed("Original reevaluation operation, action or physical target differs")
+    if value.get("status") != "accepted_for_reevaluation":
+        if value.get("status") == "SUCCEEDED":
+            raise Blocked("A generic completed status is not a worker reevaluation receipt")
+        return False
+    if value.get("phase") != "succeeded" or value.get("effect_state") != "confirmed":
+        raise Blocked("Reevaluation acceptance lacks a confirmed original journal phase")
+    receipt = value.get("receipt")
+    if not isinstance(receipt, dict) or receipt.get("source") != "worker-uds-invalidation-receipt" or not isinstance(receipt.get("result"), str):
+        raise Blocked("The original signed worker invalidation receipt is unavailable")
+
+    def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate original receipt field")
+            result[key] = item
+        return result
+
+    try:
+        detail = json.loads(receipt["result"], object_pairs_hook=unique_pairs)
+    except ValueError as error:
+        raise Blocked("Original worker receipt content cannot be verified") from error
+    if (
+        not isinstance(detail, dict)
+        or set(detail) != {"outcome", "generation", "disposition", "accepting_process_run_id"}
+        or detail["outcome"] != "accepted_for_reevaluation"
+        or type(detail["generation"]) is not int
+        or detail["generation"] <= 0
+        or not isinstance(detail["disposition"], str)
+        or not detail["disposition"]
+        or detail["accepting_process_run_id"] != process_run_id
+    ):
+        raise Failed("Original worker receipt does not bind the accepted reevaluation")
+    return True
+
+
 def verify_real_source(checkpoint: smoke.DotCheckpoint, fixture: Fixture) -> None:
     """Read the original public Git ref, annotated object and source Actions attempt."""
     if not fixture.source_fixture_available or checkpoint.source_sha != fixture.source_fixture_sha:
@@ -456,13 +500,19 @@ async def run_authenticated(fixture: Fixture, checkpoint: smoke.DotCheckpoint, s
                     raise Blocked("Original operation readback is unbound or unavailable")
                 if original.get("status") in {"NEEDS_ATTENTION", "FAILED", "UNKNOWN", "UNAVAILABLE"}:
                     raise Blocked("Original worker operation is held or failed; never allocate a new key")
-                if original.get("status") == "SUCCEEDED":
-                    update_original_ticket(original_ticket, fixture, original_id, "SUCCEEDED")
-                    if scenario == "reevaluate":
-                        receipt = original.get("receipt")
-                        if not isinstance(receipt, dict) or receipt.get("result") != "accepted_for_reevaluation":
-                            raise Blocked("A completed management operation is not durable worker reevaluation acceptance")
+                if scenario == "reevaluate":
+                    if verified_reevaluation_receipt(
+                        original,
+                        operation_id=original_id,
+                        target_id=fixture.target_ids["beta"],
+                        process_run_id=str(worker["process_run_id"]),
+                    ):
+                        update_original_ticket(original_ticket, fixture, original_id, "SUCCEEDED")
                         return Result("PASS", scenario, "The genuine worker durably accepted reevaluation; Issue work was not certified complete", tuple(live.observations), original_id, effect_dispatched=True)
+                elif original.get("status") == "SUCCEEDED":
+                    if original.get("action") != "deploy_beta_source" or original.get("target_id") != fixture.target_ids["beta"] or original.get("phase") != "succeeded" or original.get("source_sha") != checkpoint.source_sha:
+                        raise Blocked("Terminal beta deployment is not bound to the original tested source and target")
+                    update_original_ticket(original_ticket, fixture, original_id, "SUCCEEDED")
                     installed = await observed_target(live, fixture.target_ids["beta"], "beta", TEST_REPOSITORY)
                     first = positive_heartbeat(installed, source_sha=checkpoint.source_sha)
                     await asyncio.sleep(2)

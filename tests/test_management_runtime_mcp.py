@@ -214,6 +214,10 @@ def test_real_oauth_http_tool_scopes_policy_and_idempotent_journal(runtime_bound
         read_calls = beta.read_calls
         inspected = _call(client, operate_token, "auto_coder_operation_inspect", {"target_id": "beta-worker", "operation_id": first["operation_id"]})
         assert inspected == first
+        # Real authenticated MCP journal projection must satisfy the fixture consumer's receipt contract.
+        from scripts.dot_mcp_acceptance import verified_reevaluation_receipt
+
+        assert verified_reevaluation_receipt(inspected, operation_id=first["operation_id"], target_id="beta-worker", process_run_id=beta.run)
         assert app.state.management_runtime.journal.get(first["operation_id"]).record == original_record
         assert beta.read_calls == read_calls and beta.send_calls == 1
         assert _call(client, read_token, "auto_coder_operation_inspect", {"target_id": "beta-worker", "operation_id": first["operation_id"]})["status"] == "NOT_FOUND"
