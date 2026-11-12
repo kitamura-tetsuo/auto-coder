@@ -99,7 +99,7 @@ _REQUIRED_UNIT_PROPERTIES = (
     "NeedDaemonReload",
     "FragmentPath",
 )
-_REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecReload", "ExecStop", "ExecStopPost"))
+_REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"))
 # systemd serializes dependency sets in nondeterministic order. Source and
 # command precedence remain ordered and must never be normalized as sets.
 _UNORDERED_UNIT_PROPERTIES = frozenset(("Triggers", "TriggeredBy", "Wants", "Requires"))
@@ -484,7 +484,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
                     raise RouteManifestUnavailable("effective systemd command list exceeds bound")
                 continue
             if key in shown:
-                raise RouteManifestUnavailable("duplicate singleton systemd unit property")
+                raise RouteManifestUnavailable("duplicate singleton systemd unit property: unit=" + unit[:256] + " property=" + key)
             shown[key] = value
         required = set(_REQUIRED_UNIT_PROPERTIES)
         if not unit.endswith(".service"):
@@ -535,7 +535,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0, user: str | None = None, e
     local_sources: tuple[CommandSourceFact, ...] = ()
     if inspect_local_inputs:
         commands = "\n".join(value for values in repeatable.values() for value in values)
-        commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "EnvironmentFiles", "WorkingDirectory", "RootDirectory", "RootImage"))
+        commands += "\n" + "\n".join(shown.get(key, "") for key in ("Environment", "WorkingDirectory", "RootDirectory", "RootImage"))
         local_sources, local_candidate = observe_command_sources(commands, uid=trusted_uid, cues=_MANAGEMENT_CUES + extra_cues, known_modules=module_sources)
         candidate = candidate or local_candidate
     fingerprint = (normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)

@@ -189,6 +189,12 @@ The reader independently enumerates and compares:
   controller commands. Their current bytes/identities are bound rather than
   assuming an unchanged unit file implies an unchanged wrapper.
 
+Repeated `EnvironmentFiles` rows retain their emitted order, duplicate
+occurrences and `ignore_errors` flags in the route fingerprint. Every referenced
+local environment file is independently bound, including explicit absence; an
+optional file appearing later changes the observed route. Duplicate singleton
+identity or lifecycle properties still refuse.
+
 The trusted operator reviews the entire catalog and every `restarter`/`unrelated`
 classification. Known management sources, names and overlapping deployment roots
 cannot be classified as unrelated. Each restarter must be masked, inactive, PID 0

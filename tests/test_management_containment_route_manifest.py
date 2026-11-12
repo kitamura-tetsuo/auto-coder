@@ -125,6 +125,79 @@ def test_systemd_multi_exec_start_post_preserves_all_command_sources(monkeypatch
     assert routes._systemd_unit("dmesg.service").sha256 != first.sha256
 
 
+def _environment_file_properties(entries: list[str]) -> str:
+    return "Id=snapd.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\nSubState=dead\nFragmentPath=/usr/lib/systemd/system/snapd.service\nNeedDaemonReload=no\nMainPID=0\n" + "".join("EnvironmentFiles=" + entry + "\n" for entry in entries)
+
+
+@pytest.mark.parametrize("mutation", ("order", "ignore-flag", "duplicate", "first-path", "second-path"))
+def test_systemd_environment_file_rows_keep_order_flags_and_occurrences(monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    rows = ["/etc/environment (ignore_errors=yes)", "/var/lib/snapd/environment/snapd.conf (ignore_errors=yes)"]
+    current = [_environment_file_properties(rows)]
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: current[0] if args[1] == "show" else "[Service]\nExecStart=/usr/lib/snapd/snapd\n")
+    first = routes._systemd_unit("snapd.service")
+    if mutation == "order":
+        rows.reverse()
+    elif mutation == "ignore-flag":
+        rows[0] = rows[0].replace("ignore_errors=yes", "ignore_errors=no")
+    elif mutation == "duplicate":
+        rows.append(rows[-1])
+    elif mutation == "first-path":
+        rows[0] = rows[0].replace("/etc/environment", "/etc/other-environment")
+    else:
+        rows[1] = rows[1].replace("snapd.conf", "other.conf")
+    current[0] = _environment_file_properties(rows)
+    assert routes._systemd_unit("snapd.service").sha256 != first.sha256
+
+
+def test_systemd_every_environment_file_is_bound_including_optional_absence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.management.containment_route_sources import CommandSourceUnavailable
+
+    first_file, optional = tmp_path / "environment", tmp_path / "snapd.conf"
+    first_file.write_text("MODE=initial\n")
+    shown = _environment_file_properties([str(path) + " (ignore_errors=yes)" for path in (first_file, optional)])
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else "[Service]\nExecStart=/usr/lib/snapd/snapd\n")
+
+    def observe() -> routes.SystemdRouteFact:
+        return routes._systemd_unit("snapd.service", trusted_uid=os.geteuid(), extra_cues=("/srv/original-state",), inspect_local_inputs=True)
+
+    missing = observe()
+    assert {item.path: item.kind for item in missing.command_sources} == {str(first_file): "file", str(optional): "missing"}
+    assert not missing.management_candidate
+    first_file.write_text("SCOPE=/srv/original-state\n")
+    changed_first = observe()
+    assert changed_first.sha256 != missing.sha256
+    assert changed_first.management_candidate
+    optional.write_text("MODE=present\n")
+    present = observe()
+    assert {item.path: item.kind for item in present.command_sources} == {str(first_file): "file", str(optional): "file"}
+    assert present.sha256 != changed_first.sha256
+    optional.write_text("MODE=changed\n")
+    assert observe().sha256 != present.sha256
+    optional.chmod(0o666)
+    with pytest.raises(CommandSourceUnavailable, match="mutable outside its approved owner"):
+        observe()
+
+
+def test_systemd_environment_file_repetitions_keep_the_existing_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = ["/etc/environment (ignore_errors=yes)"] * 128
+    current = [_environment_file_properties(rows)]
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: current[0] if args[1] == "show" else "[Service]\n")
+    assert routes._systemd_unit("snapd.service").unit == "snapd.service"
+    current[0] = _environment_file_properties([*rows, rows[-1]])
+    with pytest.raises(routes.RouteManifestUnavailable, match="list exceeds bound"):
+        routes._systemd_unit("snapd.service")
+
+
+@pytest.mark.parametrize("key", routes._REQUIRED_UNIT_PROPERTIES)
+def test_systemd_singleton_identity_duplicates_refuse_with_bounded_key_diagnostic(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    shown = "Id=fixture.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\nSubState=dead\nFragmentPath=/usr/lib/systemd/system/fixture.service\nNeedDaemonReload=no\nMainPID=0\n"
+    shown += key + "=value-that-must-not-appear-in-diagnostics\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown)
+    with pytest.raises(routes.RouteManifestUnavailable, match="duplicate singleton systemd unit property") as raised:
+        routes._systemd_unit("fixture.service")
+    assert str(raised.value) == "duplicate singleton systemd unit property: unit=fixture.service property=" + key
+
+
 def test_unordered_systemd_dependency_sets_are_canonical_without_losing_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     shown = (
         "Id=bolt.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\n"
