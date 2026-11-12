@@ -233,8 +233,13 @@ docker compose -f .agent-tmp/pr2835-sandbox-20261112/compose.yaml exec -T manage
 
 Without an **exact fixture-specific** `AUTO_CODER_MCP_ACCESS_TOKEN`, the client
 returns `BLOCKED` before opening an MCP connection. Even with OAuth,
-`observe` needs two independently advancing verified worker heartbeats. Mere
-container liveness, accepted MCP receipts or a copied Git SHA are insufficient.
+`observe` needs two independently advancing verified worker heartbeats. Both
+samples for each worker must retain the exact original Supervisor generation,
+process-run ID, runtime ID, deployment generation, and installed source binding.
+A worker restart with a larger counter is not continuous heartbeat progress;
+the client refuses it rather than claiming installed-source acceptance. The
+same two-sample rule gates `beta-source` completion. Mere container liveness,
+accepted MCP receipts or a copied Git SHA are insufficient.
 
 `scripts/dot_mcp_acceptance.py` is opt-in and returns `NOT_RUN` without a fixture.
 Its default path only reads current authenticated MCP observations. The explicit

@@ -193,6 +193,55 @@ def test_container_running_and_heartbeat_not_available_never_pass():
         accept.positive_heartbeat(snapshot, source_sha="a" * 40)
 
 
+def _real_worker_sample(sequence, *, process_run_id="process-1", generation="deployment-1", supervisor="supervisor-1", source_sha="b" * 40):
+    return {
+        "status": "OK",
+        "alive": True,
+        "process_state": "RUNNING",
+        "supervisor_generation": supervisor,
+        "selected_runtime_id": "runtime-1",
+        "worker": {
+            "process_run_id": process_run_id,
+            "deployment_generation": generation,
+            "runtime_id": "runtime-1",
+        },
+        "installed_binding_status": "VERIFIED",
+        "installed_runtime": {"source_sha": source_sha},
+        "worker_observation": {
+            "lifecycle": {"startup_reconciled": True},
+            "heartbeat": {"available": True, "sequence": sequence},
+        },
+    }
+
+
+def test_heartbeats_advance_for_one_unchanged_original_worker():
+    accept.require_advancing_worker_heartbeat(_real_worker_sample(12), _real_worker_sample(13), source_sha="b" * 40)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"process_run_id": "process-2"},
+        {"generation": "deployment-2"},
+        {"supervisor": "supervisor-2"},
+        {"source_sha": "a" * 40},
+    ],
+)
+def test_restart_or_binding_switch_cannot_masquerade_as_worker_heartbeat_progress(changed):
+    first = _real_worker_sample(12)
+    second = _real_worker_sample(13, **changed)
+    with pytest.raises((accept.Blocked, accept.Failed)):
+        accept.require_advancing_worker_heartbeat(first, second, source_sha="b" * 40)
+
+
+def test_repeated_or_unbound_heartbeat_cannot_prove_progress():
+    with pytest.raises(accept.Blocked, match="advance"):
+        accept.require_advancing_worker_heartbeat(_real_worker_sample(12), _real_worker_sample(12))
+    unbound = _real_worker_sample(13, process_run_id="")
+    with pytest.raises(accept.Blocked, match="identity"):
+        accept.require_advancing_worker_heartbeat(_real_worker_sample(12), unbound)
+
+
 def test_disposable_git_source_not_present_cannot_trigger_proof_network():
     with pytest.raises(accept.Blocked, match="fixture"):
         accept.verify_real_source(checkpoint(), replace(fixture(), source_fixture_available=False, source_fixture_sha=""))
