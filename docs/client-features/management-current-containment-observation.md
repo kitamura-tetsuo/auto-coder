@@ -206,8 +206,11 @@ an unchanged wrapper or PATH directory is not evidence that a bare helper's
 bytes are unchanged. Unprofiled local Python, Node, Perl and Ruby scripts or
 inline evaluation refuse because the wrapper alone does not bind imported
 helpers. Direct absolute packaged executables retain the existing trusted-program
-boundary, and an explicitly reviewed isolated `-I -B -m` module retains its
-separate source binding.
+boundary, but an absolute alias resolving to a shell, interpreter, or launcher
+cannot inherit a non-dispatching classification from the alias's spelling.
+Resolve and classify the actual target even when the alias and its protected
+source bytes remain unchanged. An explicitly reviewed isolated `-I -B -m`
+module retains its separate source binding.
 
 A direct system-manager executable name has a separate measured systemd 255
 profile. The installed `systemd-path` utility and running manager versions must

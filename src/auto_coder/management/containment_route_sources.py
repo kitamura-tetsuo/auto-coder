@@ -21,6 +21,7 @@ _TRUSTED_EXECUTABLE_ROOTS = tuple(Path(path) for path in ("/bin", "/sbin", "/lib
 _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_:/])(/[^\s\"';|&<>]+)")
 _LITERAL_PATH = re.compile(r"/[A-Za-z0-9_.+@=:/-]+")
 _MODULE = re.compile(r"(?:^|\s)-m\s+([A-Za-z_][A-Za-z0-9_.]*)")
+_DISPATCHER_BASENAME = re.compile(r"(?:sh|dash|bash|nice|nohup|setsid|timeout|flock|stdbuf|ionice|chrt|taskset|env|python[0-9.]*|node|nodejs|perl|ruby)")
 _MAX_REFERENCES = 128
 _MAX_SOURCE_BYTES = 8 * 1024 * 1024
 _FSCK_EXECUTABLE = Path("/usr/lib/systemd/systemd-fsck")
@@ -191,8 +192,7 @@ def _execution_command_views(text: str) -> tuple[tuple[str, str], ...]:
         arguments, last, metadata = remaining.rpartition(" ; ignore_errors=")
         if not first or not last or not _LITERAL_PATH.fullmatch(executable) or not re.match(r"(?:yes|no) ;", metadata) or not metadata.endswith(" }"):
             raise CommandSourceUnavailable("effective command structure or executable is unsupported")
-        dispatchers = r"(?:sh|dash|bash|nice|nohup|setsid|timeout|flock|stdbuf|ionice|chrt|taskset|env|python[0-9.]*|node|nodejs|perl|ruby)"
-        if re.fullmatch(dispatchers, executable.rsplit("/", 1)[-1]) and (not arguments.split() or arguments.split()[0] != executable):
+        if _DISPATCHER_BASENAME.fullmatch(executable.rsplit("/", 1)[-1]) and (not arguments.split() or arguments.split()[0] != executable):
             raise CommandSourceUnavailable("overridden dispatcher argv[0] is unsupported")
         result.append((executable, arguments))
     return tuple(result)
@@ -449,6 +449,10 @@ def observe_command_sources(
             if not _trusted_program(path) or name in environment_inputs:
                 facts[name] = CommandSourceFact(name, name, "missing", 0, 0, 0, 0, 0, "")
             continue
+        # Reclassify the actual executable after symlink and directory resolution.
+        # An alias to a dispatcher cannot inherit a non-dispatching source profile.
+        if path != resolved and _DISPATCHER_BASENAME.fullmatch(resolved.name) and not _DISPATCHER_BASENAME.fullmatch(path.name):
+            raise CommandSourceUnavailable("resolved executable alias hides unsupported dispatcher dispatch")
         candidate = candidate or any(cue in str(resolved) for cue in cues)
         if _trusted_program(path) and _trusted_program(resolved) and name not in environment_inputs:
             # Trusted distro programs are not recursively interpreted. Root's

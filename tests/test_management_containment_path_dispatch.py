@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict
@@ -375,3 +376,57 @@ def test_trusted_distro_script_operand_stays_within_its_deliberate_boundary(tmp_
     trusted = sources._trusted_program
     monkeypatch.setattr(sources, "_trusted_program", lambda path: path == packaged or trusted(path))
     assert sources.observe_command_sources("/usr/bin/python3 -B " + str(packaged), uid=os.geteuid(), cues=()) == ((), False)
+
+
+@pytest.mark.parametrize("packaged_target", (False, True))
+def test_absolute_executable_alias_to_shell_refuses_before_and_after_helper_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    closed_components: observation.ProposedScope,
+    packaged_target: bool,
+) -> None:
+    """A renamed, resolved shell must not hide unbound PATH dispatch."""
+    tools = tmp_path / "tools"
+    tools.mkdir(mode=0o700)
+    helper = tools / "maintenance"
+    _write_helper(helper, "benign")
+    if packaged_target:
+        actual_shell = Path("/bin/sh").resolve(strict=True)
+    else:
+        actual_shell = tmp_path / "sh"
+        shutil.copyfile("/bin/sh", actual_shell)
+        actual_shell.chmod(0o700)
+    launcher = tmp_path / "launcher"
+    launcher.symlink_to(actual_shell)
+    command = (str(launcher), "-c", "maintenance")
+    shown = _unit_properties(tools).replace("path=/bin/sh", "path=" + str(launcher)).replace("argv[]=/bin/sh", "argv[]=" + str(launcher))
+    unit_source = "[Service]\nExecStart=" + " ".join(command) + "\nEnvironment=PATH=" + str(tools) + "\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if "show" in args else unit_source)
+    saved = json.loads(json.dumps(asdict(observation.observe(closed_components))))
+    assert saved["status"] == observation.OBSERVED
+    inspect_route = observation.observe_approved_route_manifest
+
+    def current_route(*args: object) -> routes.RouteManifestObservation:
+        routes._systemd_unit("maintenance.service", trusted_uid=tools.stat().st_uid, inspect_local_inputs=True)
+        return inspect_route(*args)
+
+    monkeypatch.setattr(observation, "observe_approved_route_manifest", current_route)
+    directory = _directory_identity(tools)
+    for expected in ("benign", "/srv/original-state"):
+        assert subprocess.run(command, env={"PATH": str(tools)}, capture_output=True, text=True, check=True, timeout=5).stdout.strip() == expected
+        with pytest.raises(sources.CommandSourceUnavailable, match="resolved executable alias.*dispatch"):
+            sources.observe_command_sources(
+                _exec_row(str(launcher), " ".join(command)),
+                uid=tools.stat().st_uid,
+                cues=("/srv/original-state",),
+            )
+        with pytest.raises(sources.CommandSourceUnavailable, match="resolved executable alias.*dispatch"):
+            routes._systemd_unit("maintenance.service", trusted_uid=tools.stat().st_uid, inspect_local_inputs=True)
+        for report in (observation.observe(closed_components), observation.verify(closed_components, saved)):
+            assert report.status == "unavailable"
+            assert report.route_manifest is None
+            assert "approved-route-manifest" in {item.authority for item in report.unavailable}
+        if expected == "benign":
+            _write_helper(helper, "/srv/original-state")
+            assert _directory_identity(tools) == directory
+    assert sources.observe_command_sources(_exec_row("/usr/bin/true", "/usr/bin/true"), uid=tools.stat().st_uid, cues=()) == ((), False)
