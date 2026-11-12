@@ -241,6 +241,17 @@ def persist_original_ticket(path: Path, fixture: Fixture, checkpoint: smoke.DotC
         raise Blocked("Original admission ticket already exists; never allocate a new key") from error
 
 
+def _single_nested_acceptance_error(error: BaseException) -> Blocked | Failed | None:
+    """Preserve one trusted refusal across MCP transport task-group wrappers.
+
+    Multiple failures or unrelated transport exceptions remain unknown effects.
+    """
+    nested = error
+    while isinstance(nested, ExceptionGroup) and len(nested.exceptions) == 1:
+        nested = nested.exceptions[0]
+    return nested if isinstance(nested, (Blocked, Failed)) else None
+
+
 def exception_result(
     scenario: str,
     reason: str,
@@ -635,6 +646,15 @@ def main() -> int:
             report = exception_result(args.scenario, str(error), mutation=args.enable_fixture_mutation, fixture=fixture)
         except Failed as error:
             report = exception_result(args.scenario, str(error), mutation=args.enable_fixture_mutation, verdict="FAIL", fixture=fixture)
+        except ExceptionGroup as error:
+            nested = _single_nested_acceptance_error(error)
+            if isinstance(nested, Blocked):
+                report = exception_result(args.scenario, str(nested), mutation=args.enable_fixture_mutation, fixture=fixture)
+            elif isinstance(nested, Failed):
+                report = exception_result(args.scenario, str(nested), mutation=args.enable_fixture_mutation, verdict="FAIL", fixture=fixture)
+            else:
+                logger.warning("Untrusted task-group failure classified as {}", type(error).__name__)
+                report = exception_result(args.scenario, "Authenticated fixture transport unavailable; retain any original send ticket", mutation=args.enable_fixture_mutation, fixture=fixture)
         except (OSError, ValueError, TypeError, RuntimeError) as error:
             logger.warning("Fixture acceptance unavailable due to {}", type(error).__name__)
             report = exception_result(args.scenario, "Original fixture, authority or producer evidence unavailable", mutation=args.enable_fixture_mutation, fixture=fixture)
