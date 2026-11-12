@@ -238,7 +238,11 @@ samples for each worker must retain the exact original Supervisor generation,
 process-run ID, runtime ID, deployment generation, and installed source binding.
 A worker restart with a larger counter is not continuous heartbeat progress;
 the client refuses it rather than claiming installed-source acceptance. The
-same two-sample rule gates `beta-source` completion. Mere container liveness,
+read-only heartbeat sampler polls every 5 seconds for up to 150 seconds because
+the idle producer's maintenance heartbeat may advance only once per 60 seconds.
+Every sampled worker is rechecked until all have advanced, so an earlier worker
+cannot disappear during a later worker's wait. The same two-sample rule gates
+`beta-source` completion. Mere container liveness,
 accepted MCP receipts or a copied Git SHA are insufficient.
 
 `scripts/dot_mcp_acceptance.py` is opt-in and returns `NOT_RUN` without a fixture.

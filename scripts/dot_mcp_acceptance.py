@@ -46,6 +46,10 @@ class Blocked(RuntimeError):
     """Missing current authority or trustworthy external evidence."""
 
 
+class HeartbeatNotAdvanced(Blocked):
+    """The same live worker has not emitted a newer heartbeat yet."""
+
+
 class Failed(RuntimeError):
     """A real producer contradicted the immutable expected identity."""
 
@@ -378,7 +382,7 @@ def require_advancing_worker_heartbeat(before: dict[str, Any], after: dict[str, 
     if identity(before) != identity(after):
         raise Blocked("Worker identity or installed source changed between heartbeat observations")
     if current_sequence <= prior_sequence:
-        raise Blocked("Original worker heartbeat did not advance")
+        raise HeartbeatNotAdvanced("Original worker heartbeat did not advance")
 
 
 def verified_reevaluation_receipt(value: dict[str, Any], *, operation_id: str, target_id: str, process_run_id: str) -> bool:
@@ -493,6 +497,39 @@ async def observed_target(live: Live, target: str, channel: str, repository: str
     return readback
 
 
+async def await_advancing_worker_heartbeats(
+    live: Live,
+    samples: list[tuple[str, str, str, dict[str, Any], str]],
+    *,
+    timeout_seconds: float = 150.0,
+    poll_seconds: float = 5.0,
+) -> None:
+    """Wait for real producer progress across slow maintenance cycles.
+
+    A missing heartbeat may be retried within the bound, but any change of
+    original worker identity or installed source immediately fails closed.
+    """
+    if not samples or len({target for target, *_ in samples}) != len(samples):
+        raise Blocked("Heartbeat targets must be distinct and nonempty")
+    deadline = time.monotonic() + timeout_seconds
+    advanced: set[str] = set()
+    while True:
+        for target, channel, repository, before, source_sha in samples:
+            after = await observed_target(live, target, channel, repository)
+            try:
+                require_advancing_worker_heartbeat(before, after, source_sha=source_sha)
+            except HeartbeatNotAdvanced:
+                advanced.discard(target)
+            else:
+                advanced.add(target)
+        if len(advanced) == len(samples):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Blocked("Original worker heartbeat did not advance within the bounded observation window")
+        await asyncio.sleep(min(poll_seconds, remaining))
+
+
 async def inspect_original(live: Live, checkpoint: smoke.DotCheckpoint, fixture: Fixture) -> Result:
     original = checkpoint.pending_operation_id
     if not original:
@@ -535,11 +572,13 @@ async def run_authenticated(fixture: Fixture, checkpoint: smoke.DotCheckpoint, s
                 return await inspect_original(live, checkpoint, fixture)
             if not mutate:
                 release = await observed_target(live, fixture.target_ids["release"], "release", expected[fixture.target_ids["release"]][1])
-                await asyncio.sleep(2)
-                after_beta = await observed_target(live, fixture.target_ids["beta"], "beta", TEST_REPOSITORY)
-                after_release = await observed_target(live, fixture.target_ids["release"], "release", expected[fixture.target_ids["release"]][1])
-                require_advancing_worker_heartbeat(beta, after_beta, source_sha=checkpoint.source_sha)
-                require_advancing_worker_heartbeat(release, after_release)
+                await await_advancing_worker_heartbeats(
+                    live,
+                    [
+                        (fixture.target_ids["beta"], "beta", TEST_REPOSITORY, beta, checkpoint.source_sha),
+                        (fixture.target_ids["release"], "release", expected[fixture.target_ids["release"]][1], release, ""),
+                    ],
+                )
                 return Result("PASS", "observe", "Two independent installed workers advanced real heartbeat sequences; no effect sent", tuple(live.observations))
             if scenario == "beta-source":
                 await asyncio.to_thread(verify_real_source, checkpoint, fixture)
@@ -603,9 +642,10 @@ async def run_authenticated(fixture: Fixture, checkpoint: smoke.DotCheckpoint, s
                         raise Blocked("Terminal beta deployment is not bound to the original tested source and target")
                     update_original_ticket(original_ticket, fixture, original_id, "SUCCEEDED")
                     installed = await observed_target(live, fixture.target_ids["beta"], "beta", TEST_REPOSITORY)
-                    await asyncio.sleep(2)
-                    after_install = await observed_target(live, fixture.target_ids["beta"], "beta", TEST_REPOSITORY)
-                    require_advancing_worker_heartbeat(installed, after_install, source_sha=checkpoint.source_sha)
+                    await await_advancing_worker_heartbeats(
+                        live,
+                        [(fixture.target_ids["beta"], "beta", TEST_REPOSITORY, installed, checkpoint.source_sha)],
+                    )
                     return Result("PASS", scenario, "Real worker installed the original tested source and advanced producer heartbeats", tuple(live.observations), original_id, positive_deployment_proven=True, effect_dispatched=True)
                 await asyncio.sleep(2)
             raise Blocked("Original management operation has not reached a verified terminal receipt")

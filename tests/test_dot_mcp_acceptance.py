@@ -1,5 +1,6 @@
 """Strict offline safety contracts, not fabricated end-to-end producer PASS."""
 
+import asyncio
 import json
 import os
 import subprocess
@@ -240,6 +241,94 @@ def test_repeated_or_unbound_heartbeat_cannot_prove_progress():
     unbound = _real_worker_sample(13, process_run_id="")
     with pytest.raises(accept.Blocked, match="identity"):
         accept.require_advancing_worker_heartbeat(_real_worker_sample(12), unbound)
+
+
+def test_heartbeat_waits_for_slow_independent_producer_progress(monkeypatch):
+    # Real idle workers commonly advance on a 60-second maintenance cycle.
+    remaining = {"beta": [12, 12, 12, 13], "release": [21, 21, 22]}
+    calls = []
+    sentinel = object()
+
+    async def read_target(live, target, channel, repository):
+        assert live is sentinel
+        assert target == fixture().target_ids[channel]
+        assert repository == (fixture().repository if channel == "beta" else "fixture/" + fixture().fixture_id + "-release")
+        values = remaining[channel]
+        sequence = values.pop(0) if len(values) > 1 else values[0]
+        calls.append((channel, sequence))
+        return _real_worker_sample(sequence)
+
+    monkeypatch.setattr(accept, "observed_target", read_target)
+    asyncio.run(
+        accept.await_advancing_worker_heartbeats(
+            sentinel,
+            [
+                (fixture().target_ids["beta"], "beta", fixture().repository, _real_worker_sample(12), "b" * 40),
+                (fixture().target_ids["release"], "release", "fixture/" + fixture().fixture_id + "-release", _real_worker_sample(21), ""),
+            ],
+            timeout_seconds=10,
+            poll_seconds=0,
+        )
+    )
+    assert ("beta", 13) in calls
+    assert ("release", 22) in calls
+
+
+def test_heartbeat_wait_is_bounded_and_stale_evidence_remains_blocked(monkeypatch):
+    async def stale_target(live, target, channel, repository):
+        return _real_worker_sample(12)
+
+    monkeypatch.setattr(accept, "observed_target", stale_target)
+    with pytest.raises(accept.Blocked, match="bounded observation window"):
+        asyncio.run(
+            accept.await_advancing_worker_heartbeats(
+                object(),
+                [(fixture().target_ids["beta"], "beta", fixture().repository, _real_worker_sample(12), "b" * 40)],
+                timeout_seconds=0,
+                poll_seconds=0,
+            )
+        )
+
+
+def test_heartbeat_wait_rejects_restart_without_waiting(monkeypatch):
+    async def restarted_target(live, target, channel, repository):
+        return _real_worker_sample(13, process_run_id="process-restarted")
+
+    monkeypatch.setattr(accept, "observed_target", restarted_target)
+    with pytest.raises(accept.Blocked, match="identity"):
+        asyncio.run(
+            accept.await_advancing_worker_heartbeats(
+                object(),
+                [(fixture().target_ids["beta"], "beta", fixture().repository, _real_worker_sample(12), "b" * 40)],
+                timeout_seconds=10,
+                poll_seconds=0,
+            )
+        )
+
+
+def test_heartbeat_wait_rechecks_earlier_worker_until_both_advance(monkeypatch):
+    reads = {"beta": 0, "release": 0}
+
+    async def read_target(live, target, channel, repository):
+        reads[channel] += 1
+        if channel == "beta":
+            return _real_worker_sample(13, process_run_id="process-1" if reads[channel] == 1 else "process-restarted")
+        return _real_worker_sample(21 if reads[channel] == 1 else 22)
+
+    monkeypatch.setattr(accept, "observed_target", read_target)
+    with pytest.raises(accept.Blocked, match="identity"):
+        asyncio.run(
+            accept.await_advancing_worker_heartbeats(
+                object(),
+                [
+                    (fixture().target_ids["beta"], "beta", fixture().repository, _real_worker_sample(12), "b" * 40),
+                    (fixture().target_ids["release"], "release", "fixture/" + fixture().fixture_id + "-release", _real_worker_sample(21), ""),
+                ],
+                timeout_seconds=10,
+                poll_seconds=0,
+            )
+        )
+    assert reads["beta"] == 2
 
 
 def test_disposable_git_source_not_present_cannot_trigger_proof_network():
