@@ -24,7 +24,7 @@ def fixture():
         schema=1,
         fixture_nonce="a" * 32,
         firebase_project_id="fixture-test-123",
-        repository="kitamura-tetsuo/auto-coder-test",
+        repository="kitamura-tetsuo/auto-coder-test-pr2835-v10",
         fixture_id="pr2835-test-abc",
         compose_project="dot-pr2835-test-abc",
         subnet="10.249.99.0/24",
@@ -1052,3 +1052,13 @@ def test_distinct_target_original_intents_remain_independently_admissible(tmp_pa
             {"target_id": selected.target_ids[role], "idempotency_key": f"original-key-{role}"},
         )
         assert path.is_file()
+
+
+def test_retired_source_manifest_is_rejected_even_with_valid_fixture_identity(tmp_path):
+    """A fresh nonce or target alias cannot retarget this client to the old lane."""
+    manifest = asdict(fixture())
+    manifest["repository"] = "kitamura-tetsuo/auto-coder-test"
+    path = tmp_path / "fixture.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(accept.Blocked, match="not the approved disposable fixture"):
+        accept.Fixture.load(path)

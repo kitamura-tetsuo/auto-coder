@@ -37,8 +37,14 @@ release activation or scheduler evidence.
 
 ## Refusal probe protocol
 
+The current fixed source repository is independent of the earlier
+`kitamura-tetsuo/auto-coder-test` publication lane. Its unresolved original
+remains held and cannot be cleared by this companion or by moving its ticket
+to a new fixture. New-source evidence must name the new physical repository;
+old tested-source, acceptance and release records are never interchangeable.
+
 The immutable Python source and release workload use
-`kitamura-tetsuo/auto-coder-test`; the beta workload uses the distinct
+`kitamura-tetsuo/auto-coder-test-pr2835-v10`; the beta workload uses the distinct
 `kitamura-tetsuo/auto-coder-test-beta`. Both physical targets retain exclusive
 repository ownership. The source proof is not a grant to process that source
 repository concurrently in both channels.

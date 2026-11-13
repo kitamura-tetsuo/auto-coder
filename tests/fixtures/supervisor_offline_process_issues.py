@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-FIXTURE_WORK_REPOSITORIES = frozenset({"kitamura-tetsuo/auto-coder-test", "kitamura-tetsuo/auto-coder-test-beta"})
+FIXTURE_WORK_REPOSITORIES = frozenset({"kitamura-tetsuo/auto-coder-test-pr2835-v10", "kitamura-tetsuo/auto-coder-test-beta"})
 
 
 def activate_scoped_fixture_token(token_path: Path, repository: str) -> bool:

@@ -211,8 +211,25 @@ threads have passed.
 
 ### Disposable-only acceptance harness
 
+The current source/publication fixture is the explicitly selected private
+`kitamura-tetsuo/auto-coder-test-pr2835-v10` repository. Its physical repository
+identity is separate from `kitamura-tetsuo/auto-coder-test`, whose unresolved
+original promotion remains held with its original journal, tickets and Git refs.
+A different repository does not resolve that original. The same release-ref
+name belongs to a different canonical lane only because the source repository
+is different. Never retarget an unresolved operation by changing its fixture,
+key, target alias, grant or state directory. The current fixture client rejects
+the old source repository. Earlier fixtures retain their original pinned code.
+
+Creating the new repository, provisioning its narrowly scoped credentials and
+starting its own bounded owner-consent window require explicit operator scope.
+Configuration generation itself grants none of those capabilities. A new
+repository must produce its own real tested-source CI/proof, beta selection,
+acceptance publication and release catalog; records from another repository
+must not be copied or relabelled as its evidence.
+
 `scripts/dot_disposable_fixture.py` creates an owner-private, per-fixture Docker
-Compose configuration using the fixed `kitamura-tetsuo/auto-coder-test`
+Compose configuration using the fixed `kitamura-tetsuo/auto-coder-test-pr2835-v10`
 repository, non-root workers, no host ports or runtime Docker socket, and an
 observe-only management policy. It neither executes Compose nor creates grants.
 The operator must separately provision and explicitly authorize a disposable
@@ -240,10 +257,10 @@ A test-source checkout that would contain the fixture state directory is
 rejected before any fixture files are written. Management publication and
 dispatch credentials remain available only through management's selected mounts.
 
-Both workers install source from `kitamura-tetsuo/auto-coder-test`. Workload
+Both workers install source from `kitamura-tetsuo/auto-coder-test-pr2835-v10`. Workload
 ownership stays distinct: beta processes only the fixed
 `kitamura-tetsuo/auto-coder-test-beta` canary repository, while release processes
-`kitamura-tetsuo/auto-coder-test`. Their instance IDs, runtime/workspace
+`kitamura-tetsuo/auto-coder-test-pr2835-v10`. Their instance IDs, runtime/workspace
 directories and ownership records remain independent. Creating the canary
 repository and providing its scoped read credential are explicit operator
 bootstrap prerequisites. Published acceptance records bind the common source
@@ -273,7 +290,7 @@ are required before these operations can run. Never copy production credentials.
 python scripts/dot_disposable_fixture.py \
   --fixture-id pr2835-sandbox-20261112 \
   --firebase-project-id fixture-actual-sandbox \
-  --test-source /path/to/clean/auto-coder-test
+  --test-source /path/to/clean/auto-coder-test-pr2835-v10
 # Exit 3/NOT_RUN: this generates configuration only, not Docker or OAuth.
 docker compose -f .agent-tmp/pr2835-sandbox-20261112/compose.yaml up -d
 # Run only inside the generated management container after inspecting isolation:

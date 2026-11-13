@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
-TEST_REPOSITORY = "kitamura-tetsuo/auto-coder-test"
+TEST_REPOSITORY = "kitamura-tetsuo/auto-coder-test-pr2835-v10"
 BETA_WORK_REPOSITORY = "kitamura-tetsuo/auto-coder-test-beta"
 MANAGER_IMAGE = "auto-coder:management-fixture-17a312445be4"
 WORKER_IMAGE = "auto-coder:release-acceptance-065555a6"
@@ -73,8 +73,8 @@ def _source_fixture_revision(source: Path | None) -> str:
 
     remote = git("remote", "get-url", "origin")
     if remote not in (
-        "https://github.com/kitamura-tetsuo/auto-coder-test.git",
-        "git@github.com:kitamura-tetsuo/auto-coder-test.git",
+        "https://github.com/kitamura-tetsuo/auto-coder-test-pr2835-v10.git",
+        "git@github.com:kitamura-tetsuo/auto-coder-test-pr2835-v10.git",
     ):
         raise ValueError("disposable tested source must use the exact test repository remote")
     revision = git("rev-parse", "HEAD")

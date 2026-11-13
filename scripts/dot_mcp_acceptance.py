@@ -31,7 +31,7 @@ if __package__:
 else:
     import management_mcp_rollout_smoke as smoke
 
-TEST_REPOSITORY = "kitamura-tetsuo/auto-coder-test"
+TEST_REPOSITORY = "kitamura-tetsuo/auto-coder-test-pr2835-v10"
 BETA_WORK_REPOSITORY = "kitamura-tetsuo/auto-coder-test-beta"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 NONCE = re.compile(r"[0-9a-f]{32}\Z")

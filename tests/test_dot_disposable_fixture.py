@@ -38,7 +38,7 @@ def _git_source_tree(tmp_path: Path) -> Path:
         ("config", "user.email", "fixture@example.invalid"),
         ("add", "-A"),
         ("commit", "-qm", "initial test source"),
-        ("remote", "add", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"),
+        ("remote", "add", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test-pr2835-v10.git"),
     ):
         subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True, text=True)
     return root
@@ -150,7 +150,7 @@ def test_provision_is_dockerless_private_and_observe_only(tmp_path):
     compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
     config = yaml.safe_load((root / "management/config.yaml").read_text(encoding="utf-8"))
     policy = yaml.safe_load((root / "policy/operating-policy.yaml").read_text(encoding="utf-8"))
-    assert marker["repository"] == "kitamura-tetsuo/auto-coder-test"
+    assert marker["repository"] == "kitamura-tetsuo/auto-coder-test-pr2835-v10"
     assert marker["firebase_project_id"] == "fixture-test-123"
     assert marker["docker_authority_in_worker_or_management"] is False
     assert marker["endpoint_namespace"] == "management-container-only"
@@ -366,7 +366,7 @@ def test_scoped_fixture_pat_is_private_and_test_repository_only(tmp_path, monkey
 )
 def test_scoped_fixture_pat_never_enters_child_process_argv(monkeypatch, configured_token, expected_flag):
     # Capture the actual child exec argv, including the optional offline bypass.
-    monkeypatch.setenv("AUTO_CODER_REPOSITORY", "kitamura-tetsuo/auto-coder-test")
+    monkeypatch.setenv("AUTO_CODER_REPOSITORY", "kitamura-tetsuo/auto-coder-test-pr2835-v10")
     monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", "/unused-disposable-test")
     monkeypatch.setenv("GITHUB_TOKEN", configured_token)
     for name in (
@@ -496,7 +496,7 @@ def test_source_with_unmounted_git_storage_is_rejected_before_fixture_writes(tmp
         assert (candidate / ".git").is_file()
     else:
         subprocess.run(["git", "clone", "--shared", str(donor), str(candidate)], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test-pr2835-v10.git"], check=True, capture_output=True)
         assert (candidate / ".git/objects/info/alternates").read_text(encoding="utf-8").strip() == str(donor / ".git/objects")
 
     command = ["git", "-C", str(candidate), "cat-file", "-p", "HEAD:uv.lock"]
@@ -532,7 +532,7 @@ def test_materialized_source_remains_readable_without_its_original_donor(tmp_pat
     donor = _git_source_tree(tmp_path / "donor")
     candidate = tmp_path / "candidate"
     subprocess.run(["git", "clone", "--shared", str(donor), str(candidate)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test-pr2835-v10.git"], check=True, capture_output=True)
     revision = subprocess.run(["git", "-C", str(candidate), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     subprocess.run(["git", "-C", str(candidate), "repack", "-a", "-d"], check=True, capture_output=True)
     (candidate / ".git/objects/info/alternates").unlink()
@@ -573,3 +573,41 @@ def test_wrong_test_source_remote_refused_before_fixture_creation(tmp_path, _use
             test_source=test_source,
         )
     assert not (source / ".agent-tmp").exists()
+
+
+def test_retired_source_remote_is_rejected_before_fixture_creation(tmp_path, _use_real_commands):
+    """An unresolved publication in the old repository cannot become this lane."""
+    source = source_tree(tmp_path / "code")
+    candidate = _git_source_tree(tmp_path / "candidate")
+    subprocess.run(["git", "-C", str(candidate), "remote", "set-url", "origin", "https://github.com/kitamura-tetsuo/auto-coder-test.git"], check=True, capture_output=True)
+    with pytest.raises(ValueError, match="exact test repository remote"):
+        fixture.provision(source=source, fixture_id="pr2835-test-retired", firebase_project="fixture-test-123", owner_uid=1000, owner_gid=1000, test_source=candidate)
+    assert not (source / ".agent-tmp").exists()
+
+
+def test_retired_source_repository_cannot_load_a_fixture_token(tmp_path, monkeypatch):
+    """The fixed worker reader must not acquire old publication-lane authority."""
+    token = tmp_path / "read-token"
+    token.write_text("github_pat_offline-fixture-only", encoding="utf-8")
+    token.chmod(0o600)
+    monkeypatch.setenv("GITHUB_TOKEN", "unchanged-offline-placeholder")
+    with pytest.raises(ValueError, match="fixed test repositories"):
+        offline_worker.activate_scoped_fixture_token(token, "kitamura-tetsuo/auto-coder-test")
+    assert offline_worker.os.environ["GITHUB_TOKEN"] == "unchanged-offline-placeholder"
+
+
+def test_independent_source_repository_binds_every_generated_role(tmp_path, _use_real_commands):
+    """Use literal destinations so a shared constant cannot hide a stale binding."""
+    _, root, compose = _mount_case(tmp_path, True)
+    expected_source = "kitamura-tetsuo/auto-coder-test-pr2835-v10"
+    expected_beta = "kitamura-tetsuo/auto-coder-test-beta"
+    assert fixture.TEST_REPOSITORY == expected_source
+    assert offline_worker.FIXTURE_WORK_REPOSITORIES == frozenset({expected_source, expected_beta})
+    assert json.loads((root / "fixture.json").read_text(encoding="utf-8"))["repository"] == expected_source
+    assert yaml.safe_load((root / "management/config.yaml").read_text(encoding="utf-8"))["source_repository"] == expected_source
+    assert json.loads((root / "policy/source-release-policy.json").read_text(encoding="utf-8"))["source_repository"] == expected_source
+    registry = json.loads(compose["services"]["management"]["environment"]["AUTO_CODER_WORKER_REGISTRY"])
+    assert {(entry["channel"], entry["repository"]) for entry in registry["workers"]} == {("beta", expected_beta), ("release", expected_source)}
+    for role, repository in (("beta", expected_beta), ("release", expected_source)):
+        assert compose["services"][role]["environment"]["AUTO_CODER_REPOSITORY"] == repository
+        assert json.loads((root / role / "routing/ownership.json").read_text(encoding="utf-8")) == {repository: role}
