@@ -62,6 +62,7 @@ _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _MAX_GROUPS = 8192
 _MAX_TASKS = 131072
 _MAX_SERVICES = 4096
+_MAX_OBSERVATION_ATTEMPTS = 3
 # systemd v255 cg_needs_escape also prefixes controller.* cgroup names.
 _ESCAPED_SERVICE_PREFIXES = ("cgroup", "cpu", "cpuacct", "cpuset", "io", "blkio", "memory", "devices", "pids", "bpf-firewall", "bpf-devices", "bpf-foreign", "bpf-socket-bind", "bpf-restrict-network-interfaces")
 _PROPERTIES = ("Id", "LoadState", "UnitFileState", "ActiveState", "SubState", "MainPID", "ControlPID", "NeedDaemonReload", "FragmentPath", "SourcePath", "DropInPaths", "ControlGroup", "Slice", "Delegate")
@@ -69,6 +70,14 @@ _PROPERTIES = ("Id", "LoadState", "UnitFileState", "ActiveState", "SubState", "M
 
 class CronInhibitionUnavailable(ValueError):
     """The bounded stock cron execution scope is not currently closed."""
+
+
+class _ProcInventoryChanged(CronInhibitionUnavailable):
+    """An independently changed inventory invalidated the entire observation."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.source_binding: _CronSourceBinding | None = None
 
 
 class CronScopeRetainsTasks(CronInhibitionUnavailable):
@@ -223,6 +232,19 @@ class CronInhibitedSource:
         return cls(PROFILE, value["boot_id"], "cron.service", value["scheduler_sha256"], properties, sources, value["mask_path"], tuple(mask), CronCgroupScope.parse(value["cgroups"], inhibited_units=units), services)
 
 
+@dataclass(frozen=True)
+class _CronSourceBinding:
+    boot_id: str
+    controller_properties: tuple[tuple[str, str], ...]
+    sources: tuple[CommandSourceFact, ...]
+    mask_path: str
+    mask_identity: tuple[int, ...]
+
+    @classmethod
+    def from_observation(cls, value: CronInhibitedSource) -> _CronSourceBinding:
+        return cls(value.boot_id, value.controller_properties, value.sources, value.mask_path, value.mask_identity)
+
+
 def _validate_service_units(units: tuple[str, ...]) -> None:
     # Literal service names map to literal cgroup components. Templates,
     # instances, escaping and reserved controller prefixes need other profiles.
@@ -325,44 +347,70 @@ def _empty_group(path: Path, relative: str, *, scope: str | None = None) -> Empt
     return EmptyCgroupFact(relative, (), (), 0, int(values["frozen"]))
 
 
+def _proc_inventory(path: Path) -> tuple[str, ...]:
+    return tuple(sorted(entry.name for entry in path.iterdir() if entry.name.isdecimal()))
+
+
+def _proc_identity_disappeared(proc: Path, pid: str, tid: str | None) -> bool:
+    if pid not in _proc_inventory(proc):
+        return True
+    if tid is None:
+        return False
+    try:
+        return tid not in _proc_inventory(proc / pid / "task")
+    except FileNotFoundError:
+        # A live process with an unavailable task directory is not an exit.
+        return pid not in _proc_inventory(proc)
+
+
 def _proc_scopes_empty(roots: tuple[str, ...], *, proc: Path = Path("/proc"), inhibited_units: tuple[str, ...] = ("cron.service",)) -> None:
-    pids = tuple(sorted(path.name for path in proc.iterdir() if path.name.isdecimal()))
+    pids = _proc_inventory(proc)
     count = 0
     for pid in pids:
         task_root = proc / pid / "task"
-        tids = tuple(sorted(path.name for path in task_root.iterdir() if path.name.isdecimal()))
-        for tid in tids:
-            count += 1
-            if count > _MAX_TASKS:
-                raise CronInhibitionUnavailable("stock cron task inventory exceeds its bound")
-            task = task_root / tid
-            before = _read(task / "stat", 16384)
-            tail = before.rpartition(")")[2].split()
-            if len(tail) < 20 or not tail[19].isdecimal():
-                raise CronInhibitionUnavailable("stock cron task lifetime is unavailable")
-            groups = _read(task / "cgroup", 16384).splitlines()
-            if len(groups) != 1 or not groups[0].startswith("0::/"):
-                raise CronInhibitionUnavailable("stock cron task cgroup membership is unsupported")
-            group = groups[0][3:]
-            if any(group == root or group.startswith(root + "/") for root in roots) or any(part in inhibited_units for part in Path(group).parts):
-                raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: pid=" + pid + " tid=" + tid + " state=" + tail[0] + " start=" + tail[19], scope=_retained_task_scope(group, roots, inhibited_units))
-            after = _read(task / "stat", 16384).rpartition(")")[2].split()
-            if len(after) < 20 or after[19] != tail[19] or _read(task / "cgroup", 16384).splitlines() != groups:
-                raise CronInhibitionUnavailable("stock cron task changed during scope inspection")
-        if tids != tuple(sorted(path.name for path in task_root.iterdir() if path.name.isdecimal())):
-            raise CronInhibitionUnavailable("stock cron thread inventory changed during inspection")
-        # A daemon started outside its normal unit still remains an ordinary
-        # scheduler, even if that service's own cgroup is empty.
-        with (proc / pid / "cmdline").open("rb") as stream:
-            command = stream.read(131073)
-        if len(command) > 131072:
-            raise CronInhibitionUnavailable("stock cron process command exceeds its bound")
-        if command:
-            executable = os.readlink(proc / pid / "exe")
-            if executable.removesuffix(" (deleted)") in ("/usr/sbin/cron", *_OTHER_EXECUTABLES):
-                raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: scheduler pid=" + pid)
-    if pids != tuple(sorted(path.name for path in proc.iterdir() if path.name.isdecimal())):
-        raise CronInhibitionUnavailable("stock cron process inventory changed during inspection")
+        active_tid = None
+        try:
+            tids = _proc_inventory(task_root)
+            if not tids or pid not in tids:
+                raise CronInhibitionUnavailable("stock cron live process task inventory is incomplete")
+            for tid in tids:
+                active_tid = tid
+                count += 1
+                if count > _MAX_TASKS:
+                    raise CronInhibitionUnavailable("stock cron task inventory exceeds its bound")
+                task = task_root / tid
+                before = _read(task / "stat", 16384)
+                tail = before.rpartition(")")[2].split()
+                if len(tail) < 20 or not tail[19].isdecimal():
+                    raise CronInhibitionUnavailable("stock cron task lifetime is unavailable")
+                groups = _read(task / "cgroup", 16384).splitlines()
+                if len(groups) != 1 or not groups[0].startswith("0::/"):
+                    raise CronInhibitionUnavailable("stock cron task cgroup membership is unsupported")
+                group = groups[0][3:]
+                if any(group == root or group.startswith(root + "/") for root in roots) or any(part in inhibited_units for part in Path(group).parts):
+                    raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: pid=" + pid + " tid=" + tid + " state=" + tail[0] + " start=" + tail[19], scope=_retained_task_scope(group, roots, inhibited_units))
+                after = _read(task / "stat", 16384).rpartition(")")[2].split()
+                if len(after) < 20 or after[19] != tail[19] or _read(task / "cgroup", 16384).splitlines() != groups:
+                    raise CronInhibitionUnavailable("stock cron task changed during scope inspection")
+            active_tid = None
+            if tids != _proc_inventory(task_root):
+                raise _ProcInventoryChanged("stock cron thread inventory changed during inspection")
+            # A daemon started outside its normal unit remains an ordinary
+            # scheduler, even if that service's own cgroup is empty.
+            with (proc / pid / "cmdline").open("rb") as stream:
+                command = stream.read(131073)
+            if len(command) > 131072:
+                raise CronInhibitionUnavailable("stock cron process command exceeds its bound")
+            if command:
+                executable = os.readlink(proc / pid / "exe")
+                if executable.removesuffix(" (deleted)") in ("/usr/sbin/cron", *_OTHER_EXECUTABLES):
+                    raise CronScopeRetainsTasks("inhibited stock cron scope retains tasks: scheduler pid=" + pid)
+        except FileNotFoundError as exc:
+            if _proc_identity_disappeared(proc, pid, active_tid):
+                raise _ProcInventoryChanged("stock cron process/thread inventory changed during inspection") from exc
+            raise
+    if pids != _proc_inventory(proc):
+        raise _ProcInventoryChanged("stock cron process inventory changed during inspection")
 
 
 def _cgroup_snapshot(*, root: Path = _CGROUP_ROOT, mountinfo: Path = Path("/proc/self/mountinfo"), proc: Path = Path("/proc"), inhibited_units: tuple[str, ...] = ("cron.service",)) -> CronCgroupScope:
@@ -455,7 +503,7 @@ def _properties() -> tuple[tuple[str, str], ...]:
     return tuple(sorted(values.items()))
 
 
-def _snapshot(scheduler_sha256: str, inhibited_services: tuple[tuple[str, str], ...]) -> CronInhibitedSource:
+def _source_snapshot() -> _CronSourceBinding:
     boot = _read(Path("/proc/sys/kernel/random/boot_id"), 128).strip()
     if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot):
         raise CronInhibitionUnavailable("stock cron boot identity is unavailable")
@@ -466,7 +514,17 @@ def _snapshot(scheduler_sha256: str, inhibited_services: tuple[tuple[str, str], 
     if not stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or os.readlink(mask) != "/dev/null":
         raise CronInhibitionUnavailable("stock cron protected mask is unavailable")
     identity = (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_gid)
-    return CronInhibitedSource(PROFILE, boot, "cron.service", scheduler_sha256, properties, _profile_sources(), str(mask), identity, _cgroup_snapshot(inhibited_units=tuple(unit for unit, _ in inhibited_services)), inhibited_services)
+    return _CronSourceBinding(boot, properties, _profile_sources(), str(mask), identity)
+
+
+def _snapshot(scheduler_sha256: str, inhibited_services: tuple[tuple[str, str], ...]) -> CronInhibitedSource:
+    source = _source_snapshot()
+    try:
+        cgroups = _cgroup_snapshot(inhibited_units=tuple(unit for unit, _ in inhibited_services))
+    except _ProcInventoryChanged as exc:
+        exc.source_binding = source
+        raise
+    return CronInhibitedSource(PROFILE, source.boot_id, "cron.service", scheduler_sha256, source.controller_properties, source.sources, source.mask_path, source.mask_identity, cgroups, inhibited_services)
 
 
 def observe_inhibited_stock_cron_scope(systemd_facts: tuple[object, ...]) -> CronInhibitedSource:
@@ -485,10 +543,33 @@ def observe_inhibited_stock_cron_scope(systemd_facts: tuple[object, ...]) -> Cro
         raise CronInhibitionUnavailable("stock cron controller observation identity is unavailable")
     try:
         services = _inhibited_service_bindings(systemd_facts)
-        first = _snapshot(digest, services)
-        if _snapshot(digest, services) != first:
-            raise CronInhibitionUnavailable("stock cron source/controller/task scope changed during observation")
-        return first
+        source_binding: _CronSourceBinding | None = None
+
+        def retain_source_binding(current: _CronSourceBinding) -> None:
+            nonlocal source_binding
+            if source_binding is not None and current != source_binding:
+                raise CronInhibitionUnavailable("stock cron source/controller authority changed during observation")
+            source_binding = current
+
+        for attempt in range(_MAX_OBSERVATION_ATTEMPTS):
+            try:
+                first = _snapshot(digest, services)
+                retain_source_binding(_CronSourceBinding.from_observation(first))
+                second = _snapshot(digest, services)
+                retain_source_binding(_CronSourceBinding.from_observation(second))
+            except _ProcInventoryChanged as exc:
+                if exc.source_binding is None:
+                    raise CronInhibitionUnavailable("stock cron incomplete observation lacks its source binding") from exc
+                retain_source_binding(exc.source_binding)
+                if attempt == _MAX_OBSERVATION_ATTEMPTS - 1:
+                    raise CronInhibitionUnavailable("stock cron process/thread inventory did not stabilize") from exc
+                # No earlier successful or partial task snapshot supplies any
+                # part of the next positive observation pair.
+                continue
+            if second != first:
+                raise CronInhibitionUnavailable("stock cron source/controller/task scope changed during observation")
+            return first
+        raise CronInhibitionUnavailable("stock cron complete observation pair is unavailable")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         if isinstance(exc, CronInhibitionUnavailable):
             raise

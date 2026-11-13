@@ -205,6 +205,8 @@ class BootstrapConfig:
     new_instance_initialization: bool = False
     new_docker_network: str | None = None
     new_docker_host_port: int | None = None
+    original_genesis: Path | None = None
+    recovery_epoch_config: Path | None = None
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
@@ -232,6 +234,8 @@ class BootstrapConfig:
             "new_instance_initialization",
             "new_docker_network",
             "new_docker_host_port",
+            "original_genesis",
+            "recovery_epoch_config",
         }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
@@ -273,6 +277,8 @@ class BootstrapConfig:
             raw.get("new_instance_initialization", False),
             raw.get("new_docker_network"),
             raw.get("new_docker_host_port"),
+            Path(raw["original_genesis"]) if raw.get("original_genesis") else None,
+            Path(raw["recovery_epoch_config"]) if raw.get("recovery_epoch_config") else None,
         )
         config.validate()
         return config
@@ -295,6 +301,12 @@ class BootstrapConfig:
             raise ValueError("invalid management self-update bootstrap profile")
         if type(self.new_instance_initialization) is not bool:
             raise ValueError("NEW initialization selector must be a boolean")
+        if self.original_genesis is not None:
+            if self.original_genesis != Path("/bootstrap/original-genesis.json") or self.new_instance_initialization or self.fresh_guard_path is not None or self.fresh_prior_lock_path is not None or self.archived_exclusions or self.fresh_runtime_binding is not None:
+                raise ValueError("original genesis requires the explicitly selected ordinary bootstrap profile")
+        if self.recovery_epoch_config is not None:
+            if self.recovery_epoch_config != Path("/bootstrap/recovery-epoch.json") or self.original_genesis is not None or self.new_instance_initialization or self.fresh_guard_path is not None or self.fresh_prior_lock_path is not None or self.fresh_runtime_binding is not None:
+                raise ValueError("recovery epoch requires its separate explicitly selected bootstrap profile")
         if (self.new_docker_network is None) != (self.new_docker_host_port is None):
             raise ValueError("NEW Docker loopback network and port must be selected together")
         if self.new_docker_network is not None:
@@ -369,6 +381,8 @@ class ManagementBootstrapSupervisor:
 
     def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False, new_initialization_request: Path | None = None, source_authority: TestedSourcePublisher | None = None) -> None:
         config.validate()
+        if config.recovery_epoch_config is not None:
+            raise ValueError("recovery custody cannot enter the ordinary child supervisor")
         if bool(new_initialization_request) != config.new_instance_initialization or (fresh_initialization and new_initialization_request is not None):
             raise ValueError("NEW bootstrap must select only its dedicated first-launch path")
         from .worker_network_client import configured_worker_bridge_environment
@@ -401,6 +415,31 @@ class ManagementBootstrapSupervisor:
         unenrolled Supervisor profiles keep their existing opening behavior.
         """
         path = self.config.state_root / ".supervisor-owner.lock"
+        if self.config.original_genesis is not None:
+            from .original_attempts import history_lock, identity
+            from .original_genesis import HISTORY_MOUNT, LAUNCH_NAME, NATIVE_NAME, validate_history_genesis
+
+            with history_lock(HISTORY_MOUNT, exclusive=False):
+                original = validate_history_genesis(HISTORY_MOUNT, mounted_genesis=self.config.original_genesis)
+                original_state = original.root("state")
+                if identity(self.config.state_root, directory=True) != (original_state.device, original_state.inode):
+                    raise PermissionError("original genesis owner root differs")
+            # An interrupted first owner cannot be retried on an empty-looking
+            # root. Reconstruction requires both original native boundaries.
+            recorded = all((self.config.state_root / name).is_file() for name in (NATIVE_NAME, LAUNCH_NAME))
+            flags = os.O_RDWR | os.O_NOFOLLOW | (0 if recorded else os.O_CREAT | os.O_EXCL)
+            descriptor = os.open(path, flags, 0o600)
+            with os.fdopen(descriptor, "a+b") as owner:
+                info = os.fstat(owner.fileno())
+                if (info.st_dev, info.st_ino) != identity(path):
+                    raise PermissionError("original genesis owner lock differs")
+                if not recorded:
+                    os.fsync(owner.fileno())
+                    from .original_attempts import _sync
+
+                    _sync(self.config.state_root)
+                yield owner
+            return
         if self.new_initialization_request is not None:
             # O_EXCL is a durable fail-closed lifetime gate. A crashed or
             # partially published NEW owner cannot acquire a second owner.
@@ -830,6 +869,9 @@ class ManagementBootstrapSupervisor:
 
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
+        if self.config.original_genesis is not None and (not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
+            logger.error("Original genesis state root is unavailable; refusing reconstruction")
+            return 1
         if self.config.new_instance_initialization and (self.new_initialization_request is None or not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
             logger.error("NEW initialization requires an explicit original request and protected state root")
             return 1
@@ -897,6 +939,15 @@ class ManagementBootstrapSupervisor:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
         owner_start_token = self._await_owner_start_token()
+        original_first_launch = None
+        if self.config.original_genesis is not None:
+            from .original_genesis import prepare_original_genesis
+
+            try:
+                original_first_launch = prepare_original_genesis(self, owner_start_token)
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                logger.exception("Original ordinary genesis is unavailable; preserving originals without launch")
+                return 1
         if self.new_initialization_request is not None:
             if not self._start_new_initialization():
                 return 1
@@ -980,7 +1031,7 @@ class ManagementBootstrapSupervisor:
         self.store.require_existing = True
         consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
-        initial_state_pristine = self._pristine_initial_state() if record.child_generation == 0 else False
+        initial_state_pristine = original_first_launch is not None or (self._pristine_initial_state() if record.child_generation == 0 else False)
         if consumer is not None and record.child_generation == 0 and not consumer.store.path.exists() and not consumer.store.path.is_symlink():
             try:
                 consumer.store.active()
@@ -1006,7 +1057,8 @@ class ManagementBootstrapSupervisor:
             if not initial_state_pristine or self.store.has_unresolved_effects():
                 self.store.reserve(record, replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
             else:
-                self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
+                operation, attempt = original_first_launch or (f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()))
+                self.start_selected(operation, attempt, self.config.initial_runtime)
         if self.config.restart_after_clean_shutdown and record.child_generation > 0 and not self._container_shutdown_requested:
             from .clean_restart import restart_verified_stop
 
@@ -1476,9 +1528,16 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--fresh-initialization", action="store_true")
     parser.add_argument("--new-initialization", action="store_true")
+    parser.add_argument("--recovery-epoch", action="store_true")
     parser.add_argument("--request-file", type=Path)
     args = parser.parse_args()
     config = BootstrapConfig.read(args.config)
+    if config.recovery_epoch_config is not None or args.recovery_epoch:
+        if not args.recovery_epoch or config.recovery_epoch_config is None or args.new_initialization or args.fresh_initialization or args.request_file is not None:
+            parser.exit(1, "Recovery epoch requires its distinct fixed bootstrap profile\n")
+        from .recovery_epoch_bootstrap import run_recovery_epoch_bootstrap
+
+        raise SystemExit(run_recovery_epoch_bootstrap(config))
     if config.new_instance_initialization:
         if not args.new_initialization or args.fresh_initialization or args.request_file is None:
             parser.exit(1, "NEW initialization requires a separately admitted first-launch controller\n")
@@ -1492,6 +1551,13 @@ def main() -> None:
             parser.exit(1, f"NEW first-launch original unavailable: {error}\n")
     elif args.new_initialization or args.request_file is not None:
         parser.exit(1, "NEW initialization flags require a selected NEW profile\n")
+    if config.original_genesis is not None:
+        from .original_genesis import validate_bootstrap_genesis
+
+        try:
+            validate_bootstrap_genesis(config, args.config)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            parser.exit(1, f"Ordinary genesis original unavailable: {error}\n")
     setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
     raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization, new_initialization_request=args.request_file).run())
 

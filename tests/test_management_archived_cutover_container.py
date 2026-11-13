@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -147,7 +147,11 @@ class Generation:
 
 
 class Chain:
-    def __init__(self, root: Path, *, with_workers: bool = False, original_history: bool = False):
+    def __init__(self, root: Path, *, with_workers: bool = False, original_history: bool = False, original_genesis: bool = False):
+        if original_genesis and original_history:
+            raise ValueError("original genesis cannot reenroll a prospective history")
+        self.original_genesis = original_genesis
+        self.genesis = None
         self.root = root
         self.names: list[str] = []
         self.generations: list[Generation] = []
@@ -162,7 +166,8 @@ class Chain:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
         self.oauth = root / "oauth"
-        self.oauth.mkdir(mode=0o700)
+        if not original_genesis:
+            self.oauth.mkdir(mode=0o700)
         self.history_binding = None
         if original_history:
             history = root / "original-history"
@@ -185,7 +190,7 @@ class Chain:
 
     def prepare_caddy_image(self) -> str:
         """Use the real pinned Caddy binary with the supported bind-only profile."""
-        source = _resolve_fixture_base("caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
+        source = _resolve_fixture_base(os.environ["AUTOCODER_RECOVERY_CADDY_IMAGE"] if self.original_genesis else "caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
         binary = self.root / "caddy"
         donor = self.docker("create", "--network", "none", source)
         target = None
@@ -238,17 +243,21 @@ class Chain:
 
     @staticmethod
     def checkpoint(database: Path) -> None:
-        with sqlite3.connect(database) as connection:
+        # Checkpoint an existing producer store, then release its WAL/SHM
+        # handles before the immutable original-evidence baseline is taken.
+        with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True)) as connection:
             assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
     def grants(self):
-        with sqlite3.connect(self.oauth / "oauth.sqlite3") as connection:
+        with closing(sqlite3.connect(self.oauth / "oauth.sqlite3")) as connection:
             return {name: connection.execute(f"SELECT * FROM {name} ORDER BY 1").fetchall() for name in ("authority", "grants", "access_tokens", "refresh_tokens")}
 
     def prepare(self, name: str, prior: Generation | None = None, *, omit_archive: bool = False) -> Generation:
         root = self.root / name
         root.mkdir(mode=0o700)
         for part in ("state", "journal", "guard", "bootstrap"):
+            if self.original_genesis and prior is None and part in ("state", "journal"):
+                continue
             (root / part).mkdir(mode=0o700)
         runtime = {
             "reference": "bootstrap",
@@ -275,7 +284,7 @@ class Chain:
         if prior is not None:
             captured = capture_prior_container(prior.container, self.image, expected_mounts=tuple((str(a), b, c) for a, b, c in prior.mounts), require_owner_lock=True, require_deployment_identity=True)
             self.ensure_proxy(prior)
-            proxy = capture_prior_container(prior.proxy, self.proxy_image, expected_mounts=((str(prior.path("Caddyfile")), "/etc/caddy/Caddyfile", False),))
+            proxy = capture_prior_container(prior.proxy, self.proxy_image, expected_mounts=self.proxy_mounts(prior))
             bindings = required_exclusions(captured)
             config.update(fresh_guard_path="/management-initialization/fresh-guard.sock", fresh_prior_lock_path="/management-prior-owner.lock", archived_exclusions=[] if omit_archive else [asdict(item) for item in bindings])
         if self.worker_environment is not None:
@@ -329,7 +338,26 @@ class Chain:
                 for item in bindings:
                     mounts += [(Path(item.host_journal_root), item.journal_root, False), (Path(item.host_fence), item.fence, False)]
         self.configure_profile(name, root, config, runtime, management, mounts, fresh=prior is not None)
+        if self.original_genesis and prior is None:
+            config["original_genesis"] = "/bootstrap/original-genesis.json"
         config_file.write_text(json.dumps(config))
+        if self.original_genesis:
+            management.chmod(0o600)
+        root_authority = None
+        if self.original_genesis and prior is None:
+            from auto_coder.management.original_attempts import canonical
+            from auto_coder.management.original_genesis import ROOTS_PROFILE, GenesisRootAuthorization, prepare_original_genesis_roots
+
+            caddyfile = self._write_proxy_config(root)
+            history = self.root / "original-history"
+            roots_request = GenesisRootAuthorization(
+                ROOTS_PROFILE, "separately-authorized-new-deployment", "isolated-original-recovery-" + uuid.uuid4().hex, str(uuid.uuid4()), str(config_file), str(management), str(caddyfile), str(root / "state"), str(root / "journal"), str(self.oauth), str(history)
+            )
+            roots_authorization = root / "original-root-authorization.json"
+            roots_authorization.write_bytes(canonical(asdict(roots_request)))
+            roots_authorization.chmod(0o600)
+            root_authority = prepare_original_genesis_roots(roots_authorization)
+            mounts.append((history, "/management-original-history", False))
         container_name = "ancestor-fixture-" + uuid.uuid4().hex[:16]
         self.names.append(container_name)
         args = ["create", "--name", container_name, "--read-only", "--publish", f"127.0.0.1:{self.port}:8080"]
@@ -338,7 +366,10 @@ class Chain:
         args += ["--network", "bridge"]
         for source, target, writable in mounts:
             args += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
-        args += [self.image, "--config", "/bootstrap/config.json"]
+        if self.original_genesis:
+            args += ["--workdir", "/workspace", "--env", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]
+        else:
+            args += [self.image, "--config", "/bootstrap/config.json"]
         if prior is not None:
             args += ["--fresh-initialization"]
         container = self.docker(*args)
@@ -348,6 +379,18 @@ class Chain:
             assert set(connected) == {"bridge", self.worker_network}
         generation = Generation(name, root, container, mounts)
         self.generations.append(generation)
+        if self.original_genesis:
+            self._create_recovery_proxy(generation)
+        if root_authority is not None:
+            from auto_coder.management.original_genesis import PROFILE, GenesisSelection, capture_original_genesis
+
+            assert generation.proxy is not None
+            selected = GenesisSelection(PROFILE, roots_request.purpose, roots_request.deployment_id, roots_request.authorization_id, generation.container, generation.proxy, roots_request.history_root, str(config_file), str(management), roots_request.proxy_config_path, str(root_authority))
+            authorization = root / "original-capture-authorization.json"
+            authorization.write_bytes(canonical(asdict(selected)))
+            authorization.chmod(0o600)
+            self.genesis = capture_original_genesis(authorization)
+            self.history_binding = self.genesis.binding
         if captured is not None:
             generation.network_fd = os.open(f"/proc/{captured.pid}/ns/net", os.O_RDONLY)
             self.fds.append(generation.network_fd)
@@ -440,6 +483,8 @@ class Chain:
 
     def ensure_proxy(self, generation: Generation) -> None:
         if generation.proxy is not None:
+            if self.original_genesis and self.docker("inspect", "--format", "{{.State.Status}}", generation.proxy) == "created":
+                self.docker("start", generation.proxy)
             return
         actual = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", generation.container))
         assert actual == {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(self.port)}]}, "actual loopback Caddy port mapping unavailable"
@@ -451,6 +496,27 @@ class Chain:
         generation.proxy = self.docker(
             "run", "-d", "--name", name, "--network", "container:" + generation.container, "--mount", f"type=bind,src={caddyfile},dst=/etc/caddy/Caddyfile,readonly", "--entrypoint", "caddy", self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"
         )
+
+    def proxy_mounts(self, generation: Generation) -> tuple[tuple[str, str, bool], ...]:
+        return ((str(generation.path("Caddyfile")), "/etc/caddy/Caddyfile", False),)
+
+    @staticmethod
+    def _write_proxy_config(root: Path) -> Path:
+        path = root / "Caddyfile"
+        if not path.exists():
+            path.write_text("{\n admin off\n auto_https off\n}\nhttp://127.0.0.1:8080 {\n reverse_proxy 127.0.0.1:8081 {\n header_up Host 127.0.0.1:8081\n }\n}\n")
+            path.chmod(0o600)
+        return path
+
+    def _create_recovery_proxy(self, generation: Generation) -> None:
+        """Create the real paired object before original capture, without start."""
+        self._write_proxy_config(generation.root)
+        name = "original-recovery-proxy-" + uuid.uuid4().hex[:16]
+        self.names.append(name)
+        arguments = ["create", "--name", name, "--workdir", "/srv", "--network", "container:" + generation.container, "--entrypoint", "caddy"]
+        for source, destination, writable in self.proxy_mounts(generation):
+            arguments += ["--mount", f"type=bind,src={source},dst={destination}" + ("" if writable else ",readonly")]
+        generation.proxy = self.docker(*arguments, self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
 
     def call(self, generation: Generation, tool: str, arguments: dict[str, object], *, authenticated: bool = True):
         assert generation.proxy is not None
@@ -467,7 +533,47 @@ class Chain:
                 return {"http_status": error.code}
             raise ValueError("synthetic authenticated proxy HTTP unavailable") from None
 
-    def ready(self, generation: Generation, *, fresh: bool) -> None:
+    def fresh_status(self, generation: Generation, *, require_live: bool = False) -> dict[str, object]:
+        code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;status=read_fresh_status(Path('/management-child-state'))\n"
+        if require_live:
+            code += (
+                "import time\n"
+                "from auto_coder.management.bootstrap_supervisor import BootstrapConfig,ManagementBootstrapSupervisor\n"
+                "from auto_coder.management.self_update_handoff import observe_supervisor\n"
+                "config=BootstrapConfig.read(Path('/bootstrap/config.json'))\n"
+                "observed=observe_supervisor(config)\n"
+                "if status.get('status') not in {'launched','succeeded'} or observed is None:\n"
+                " raise ValueError('fresh launch is not live')\n"
+                "owner,child=observed\n"
+                "if child.phase.value!='running' or owner!=status['owner_incarnation'] or child.supervisor_incarnation!=owner or ManagementBootstrapSupervisor._identity(child)!=status['child_identity']:\n"
+                " raise ValueError('fresh launch lifetime differs')\n"
+                "if not status['started']<=time.time()<=status['deadline'] or not 0<status['deadline']-status['started']<=config.verification_timeout:\n"
+                " raise ValueError('fresh launch observation window expired or differs')\n"
+            )
+        code += "print(json.dumps(status))"
+        return json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
+
+    def wait_for_fresh_launch(self, generation: Generation) -> dict[str, object]:
+        # Source verification precedes dispatch. Give that phase its own finite
+        # budget, just as the first A child is observed before HTTP readiness.
+        deadline = time.monotonic() + 60
+        last = "not observed"
+        while time.monotonic() < deadline:
+            try:
+                launch = self.fresh_status(generation, require_live=True)
+                last = str(launch["status"])
+                if launch["status"] in {"launched", "succeeded"} and time.monotonic() < deadline:
+                    return launch
+            except (subprocess.CalledProcessError, ValueError, KeyError, OSError) as error:
+                last = type(error).__name__
+            time.sleep(0.1)
+        raise AssertionError("exact synthetic fresh launch was not proven; " + last)
+
+    @staticmethod
+    def same_fresh_launch(first: dict[str, object], second: dict[str, object]) -> bool:
+        return {key: value for key, value in first.items() if key != "status"} == {key: value for key, value in second.items() if key != "status"}
+
+    def ready(self, generation: Generation, *, fresh: bool, expected_launch: dict[str, object] | None = None) -> None:
         self.ensure_proxy(generation)
         deadline = time.monotonic() + 60
         last = "not observed"
@@ -475,12 +581,13 @@ class Chain:
             try:
                 observation = ""
                 if fresh:
-                    code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
-                    status = json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
+                    status = self.fresh_status(generation)
                     last = "fresh initialization status=" + str(status["status"])
                     if status["status"] not in {"launched", "succeeded"}:
                         time.sleep(0.1)
                         continue
+                    if expected_launch is not None and not self.same_fresh_launch(status, expected_launch):
+                        raise ValueError("fresh initialization launch changed after dispatch")
                     observation = status["observation_id"]
                 last = "unauthenticated Caddy challenge"
                 if self.call(generation, "auto_coder_whoami", {}, authenticated=False)["http_status"] != 401:
@@ -488,7 +595,16 @@ class Chain:
                     continue
                 last = "authenticated Caddy whoami"
                 result = self.call(generation, "auto_coder_whoami", {"observation_id": observation})
-                if result["uid"] == "operator" and (not fresh or status["status"] == "succeeded"):
+                confirmed = result["uid"] == "operator"
+                if confirmed and fresh:
+                    # Authenticated I/O can complete readiness after the initial
+                    # sample. Require a current terminal result for that same launch.
+                    terminal = self.fresh_status(generation)
+                    last = "fresh initialization terminal status=" + str(terminal["status"])
+                    if not self.same_fresh_launch(terminal, status):
+                        raise ValueError("fresh initialization launch changed during authenticated readback")
+                    confirmed = terminal["status"] == "succeeded"
+                if confirmed:
                     if self.worker_baseline is not None:
                         last = "authenticated worker identity readback"
                         self.assert_worker_reads(generation)
@@ -503,7 +619,7 @@ class Chain:
 
     @staticmethod
     def child(generation: Generation):
-        with sqlite3.connect((generation.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect((generation.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True)) as connection:
             return json.loads(connection.execute("SELECT record_json FROM child_state").fetchone()[0])
 
     def prove_child(self, generation: Generation) -> None:
@@ -530,7 +646,8 @@ class Chain:
         self.docker("start", new.container)
         out, err = process.communicate(timeout=60)
         assert process.returncode == 0, (out, err)
-        self.ready(new, fresh=True)
+        launch = self.wait_for_fresh_launch(new)
+        self.ready(new, fresh=True, expected_launch=launch)
         self.prove_child(new)
 
     def seed(self, generation: Generation):
@@ -767,7 +884,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
     deadline = time.monotonic() + 30
     while True:
         try:
-            with sqlite3.connect((a.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect((a.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True)) as db:
                 row = db.execute("SELECT record_json FROM child_state").fetchone()
                 record = json.loads(row[0]) if row else {}
             if record.get("phase") == "running" and record.get("pid", 0) > 0:
@@ -827,7 +944,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
         assert not (c.path("state") / "fresh-launch-claimed.json").exists()
         ledger = c.path("state") / "management-child.sqlite3"
         if ledger.exists():
-            with sqlite3.connect(ledger) as db:
+            with closing(sqlite3.connect(ledger)) as db:
                 assert db.execute("SELECT count(*) FROM effects").fetchone()[0] == 0
                 assert db.execute("SELECT count(*) FROM child_state").fetchone()[0] == 0
         assert not list(c.path("journal").iterdir())
@@ -844,7 +961,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
                 assert chain.call(c, "auto_coder_operation_get", {"operation_id": old.operation_id})["status"] == "NOT_FOUND"
             else:
                 assert response["operation_id"] == old.operation_id and response["history_origin"] == "retained_prior_instance"
-        with sqlite3.connect(c.path("journal") / "management-operations.sqlite3") as db:
+        with closing(sqlite3.connect(c.path("journal") / "management-operations.sqlite3")) as db:
             assert db.execute("SELECT count(*) FROM operations").fetchone()[0] == 0
         # Preserve host fences across the deliberate clean C reconstruction.
         held = []

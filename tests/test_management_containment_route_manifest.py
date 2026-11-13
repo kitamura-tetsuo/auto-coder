@@ -39,6 +39,21 @@ def test_systemd_timer_without_service_main_pid_is_fingerprinted(monkeypatch: py
     assert fact.inhibited is False
 
 
+def test_generic_docker_restarter_uses_the_enrolled_container_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    unit = "auto-coder-recovery-negative-" + "1" * 32 + ".service"
+    selected = "2" * 64
+    shown = f"Id={unit}\nLoadState=loaded\nUnitFileState=static\nActiveState=inactive\nSubState=dead\nFragmentPath=/run/systemd/system/{unit}\nNeedDaemonReload=no\nMainPID=0\nExecStart=/usr/bin/docker start {selected}\n"
+    source = f"[Service]\nType=oneshot\nExecStart=/usr/bin/docker start {selected}\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else source)
+    assert not routes._systemd_unit(unit).management_candidate
+    assert not routes._systemd_unit(unit, extra_cues=("3" * 64,)).management_candidate
+    fact = routes._systemd_unit(unit, extra_cues=(selected,))
+    assert fact.management_candidate
+    assert not fact.inhibited
+    assert fact.main_pid == 0
+    assert fact.active_state == "inactive"
+
+
 @pytest.mark.parametrize("unit", ("apport-autoreport.path", "multi-user.target", "etc-fstab.mount", "proc-sys-fs-binfmt_misc.automount", "dev-zram0.swap"))
 def test_other_service_activators_are_fingerprinted_without_main_pid(monkeypatch: pytest.MonkeyPatch, unit: str) -> None:
     shown = "Id=" + unit + "\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=running\nFragmentPath=/etc/systemd/system/" + unit + "\nNeedDaemonReload=no\n"

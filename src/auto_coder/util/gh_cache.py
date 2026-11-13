@@ -85,7 +85,8 @@ class GitHubGitDataClient:
 
     def __init__(self, token: str, repository: str, api_url: str = "https://api.github.com", timeout: float = 30.0) -> None:
         self._repository = repository
-        self._base = f"{api_url.rstrip('/')}/repos/{repository}"
+        self._api_url = api_url.rstrip("/")
+        self._base = f"{self._api_url}/repos/{repository}"
         self._timeout = timeout
         self._headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if not token:
@@ -93,11 +94,37 @@ class GitHubGitDataClient:
             # without provisioning a credential to a replaceable manager.
             self._headers.pop("Authorization")
 
-    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
-        """Perform one non-cached request; transport ambiguity remains an error."""
+    def _repository_read_redirect(self, response: httpx.Response) -> httpx.URL | None:
+        """Recognize GitHub's permanent move to the same repository's ID route."""
         try:
-            with github_http_client(subsystem="git-data", api_origin=self._base.split("/repos/", 1)[0], timeout=self._timeout) as client:
+            target = httpx.URL(response.headers.get("location", ""))
+            api = httpx.URL(self._api_url)
+        except (httpx.InvalidURL, ValueError):
+            return None
+        original = response.request.url
+        if (target.scheme, target.host, target.port) != (api.scheme, api.host, api.port) or target.userinfo or target.fragment or target.query != original.query:
+            return None
+        prefix = httpx.URL(self._base).raw_path.split(b"?", 1)[0] + b"/"
+        original_path = original.raw_path.split(b"?", 1)[0]
+        if not original_path.startswith(prefix):
+            return None
+        api_path = api.raw_path.split(b"?", 1)[0].rstrip(b"/")
+        expected_path = re.escape(api_path) + rb"/repositories/[1-9][0-9]*/" + re.escape(original_path[len(prefix) :])
+        if re.fullmatch(expected_path, target.raw_path.split(b"?", 1)[0]) is None:
+            return None
+        return target
+
+    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        """Read through one repository move; transport ambiguity remains an error."""
+        try:
+            with github_http_client(subsystem="git-data", api_origin=self._api_url, timeout=self._timeout, follow_redirects=False) as client:
                 response = client.request(method, f"{self._base}/{path}", headers=self._headers, json=payload)
+                if method == "GET" and response.status_code == 301:
+                    redirected = self._repository_read_redirect(response)
+                    if redirected is not None:
+                        # The trusted API supplies the move; immutable source/run
+                        # readback still decides whether the returned evidence matches.
+                        response = client.request(method, redirected, headers=self._headers, json=payload)
         except httpx.RequestError as exc:
             raise RuntimeError("GitHub Git-data request unavailable") from exc
         try:

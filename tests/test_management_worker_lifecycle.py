@@ -8,6 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -728,6 +729,97 @@ def test_concurrent_status_cannot_rebind_client_during_lifecycle_effect(real_bou
             assert pending.result(timeout=5) is record
             status.result(timeout=5)
             assert status_entered.is_set()
+
+
+@pytest.mark.parametrize("receipt_state", ("complete", "pending", "digest-conflict", "missing", "expired-pending"))
+def test_supervisor_reconstruction_between_identity_checks_retains_original_effect(real_boundary, tmp_path: Path, monkeypatch, receipt_state: str) -> None:
+    """Control typed Supervisor observations around the real dispatcher and SQLite journal."""
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
+    bridge = LifecycleBridge()
+    bridge.selected = "bootstrap"
+    assert bridge.worker is not None
+    bridge.worker["runtime_id"] = "bootstrap"
+    app = create_management_app(settings, OAuthGrantService(oauth, identity, clock=lambda: state["now"]), worker_clients={"beta": bridge})  # type: ignore[dict-item]
+    runtime = app.state.management_runtime
+
+    async def no_background_monitor() -> None:
+        # Every lifecycle iteration is driven explicitly at the identity boundary.
+        pass
+
+    monkeypatch.setattr(runtime, "start_monitor", no_background_monitor)
+    with TestClient(app, base_url=origin) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        arguments = {"target_id": "beta-worker", "idempotency_key": "owner-changes-between-observations", "expected_supervisor_generation": "supervisor-a", "expected_process_run_id": "run-old", "expected_deployment_generation": "generation-old", "expected_runtime_id": "bootstrap"}
+        admitted = _call(client, bearer, "auto_coder_stop_worker", arguments)
+        operation_id = str(admitted["operation_id"])
+        effect_id = "d-" + operation_id
+        for _ in range(8):
+            _drive(app, operation_id, 1)
+            if effect_id in bridge.receipts:
+                break
+        else:
+            raise AssertionError("original drain was never dispatched")
+        original = runtime.journal.lifecycle_snapshot(operation_id)
+        original_record = runtime.journal.get(operation_id).record
+        assert original is not None and original[1]["stage"] == "DRAINING"
+        assert original[1]["steps"]["drain"]["state"] == "SENT_UNKNOWN"
+        original_receipt = dict(bridge.receipts[effect_id])
+        actions = list(bridge.actions)
+        original_inspect = bridge.inspect_supervisor
+        inspections = 0
+
+        def reconstruct_between_checks() -> WorkerNetworkResult:
+            nonlocal inspections
+            inspections += 1
+            observed = original_inspect()
+            if inspections == 1:
+                # The first check saw the old owner; the step sees its replacement.
+                bridge.supervisor_generation = "supervisor-reconstructed"
+            return observed
+
+        monkeypatch.setattr(bridge, "inspect_supervisor", reconstruct_between_checks)
+        _drive(app, operation_id, 1)
+        assert inspections == 2
+        assert runtime.journal.lifecycle_snapshot(operation_id) == original
+        assert runtime.journal.get(operation_id).record == original_record
+        assert bridge.actions == actions
+        monkeypatch.setattr(bridge, "inspect_supervisor", original_inspect)
+
+        if receipt_state in {"pending", "expired-pending"}:
+            bridge.receipts[effect_id] = {**original_receipt, "status": "DRAINING"}
+        elif receipt_state == "digest-conflict":
+            bridge.receipts[effect_id] = {**original_receipt, "intent_digest": "0" * 64}
+        elif receipt_state == "missing":
+            monkeypatch.setattr(bridge, "read_worker_operation", lambda _operation: bridge._result("UNKNOWN", {}))
+        if receipt_state == "expired-pending":
+            monkeypatch.setattr("auto_coder.management.worker_lifecycle.time", SimpleNamespace(time=lambda: original[1]["deadline"] + 1))
+
+        _drive(app, operation_id, 8)
+        if receipt_state == "pending":
+            assert runtime.journal.lifecycle_snapshot(operation_id) == original
+            assert bridge.actions == actions
+            bridge.receipts[effect_id] = original_receipt
+            _drive(app, operation_id, 8)
+        result = _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})
+        final = runtime.journal.lifecycle_snapshot(operation_id)
+        assert final is not None
+        assert final[1]["deadline"] == original[1]["deadline"]
+        assert final[1]["original_deadline"] == original[1]["original_deadline"]
+        assert all(final[1]["steps"]["drain"][field] == original[1]["steps"]["drain"][field] for field in ("operation_id", "sent_at", "owner_generation", "attempt_id", "correlation_identity", "expected_digest"))
+        assert bridge.actions == actions == [("REQUEST_GRACEFUL_STOP", effect_id)]
+        if receipt_state in {"complete", "pending"}:
+            assert result["status"] == "SUCCEEDED", result
+            assert final[1]["current_supervisor_generation"] == "supervisor-reconstructed"
+        else:
+            assert result["status"] == "NEEDS_ATTENTION", result
+            assert result["reason"] == "original_supervisor_incarnation_changed"
+            assert _call(client, bearer, "auto_coder_stop_worker", {**arguments, "idempotency_key": "competing-after-owner-change"})["status"] == "BUSY"
+        assert _call(client, bearer, "auto_coder_stop_worker", arguments)["operation_id"] == operation_id
 
 
 def test_full_policy_allows_release_process_restart_but_never_beta_source_update(real_boundary, tmp_path: Path) -> None:

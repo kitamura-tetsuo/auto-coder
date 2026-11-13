@@ -30,6 +30,10 @@ container profiles with the expected mounts are accepted. The evidence file is
 created once in the new owner-only guard directory. Access errors are refusal,
 including inability to inspect an old process namespace.
 
+Supervisor-ledger observations close their read-only SQLite connections after
+each read, including refusals. They retain no database handle beyond that check;
+the owner fences and namespace descriptors have their separate required lifetimes.
+
 The host commands accept only explicit, private files and exact container IDs:
 
 ```sh
