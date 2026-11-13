@@ -773,7 +773,7 @@ def test_unselected_exec_management_change_between_reads_refuses(scope: ScopeFix
 
 
 @pytest.mark.parametrize("pair_index", [0, 1, 2])
-@pytest.mark.parametrize("mutation", ["image", "proxy-image", "stopped-image", "supervisor", "module", "serve", "manager-network", "proxy-network", "bind-parent", "bind-child"])
+@pytest.mark.parametrize("mutation", ["image", "proxy-image", "stopped-image", "supervisor", "module", "serve", "manager-network", "proxy-network", "manager-pid", "proxy-pid", "manager-ipc", "proxy-ipc", "bind-parent", "bind-child"])
 def test_unselected_candidates_cannot_hide_as_workers(scope: ScopeFixture, pair_index: int, mutation: str):
     worker = _unrelated_worker(scope)
     pair = scope.raw["originals"][pair_index]["pair"] if pair_index < 2 else scope.raw["target"]
@@ -793,6 +793,10 @@ def test_unselected_candidates_cannot_hide_as_workers(scope: ScopeFixture, pair_
         }[mutation]
     elif mutation.endswith("network"):
         worker["HostConfig"]["NetworkMode"] = "container:" + pair["manager_id" if mutation == "manager-network" else "proxy_id"]
+    elif mutation.endswith(("-pid", "-ipc")):
+        field = "PidMode" if mutation.endswith("-pid") else "IpcMode"
+        role = "manager" if mutation.startswith("manager") else "proxy"
+        worker["HostConfig"][field] = "container:" + pair[role + "_id"]
     else:
         root = Path(manager["Mounts"][0]["Source"])
         if mutation == "bind-child":
@@ -953,7 +957,16 @@ def test_unrelated_worker_preserves_consistent_optional_docker_state_flags(scope
     assert observed.unrelated_inspections[0][0] == worker["Id"]
 
 
-@pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
+@pytest.mark.parametrize(("field", "value"), [("PidMode", ""), ("IpcMode", "private")])
+def test_unselected_independent_pid_and_ipc_modes_remain_workers(scope: ScopeFixture, field: str, value: str):
+    worker = _unrelated_worker(scope)
+    worker["HostConfig"][field] = value
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+    assert observed.unrelated_inspections == ((worker["Id"], recovery._digest(recovery.unrelated_inspection(worker))),)
+
+
+@pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "pid-namespace-alias", "ipc-namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
 def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)
     if mutation == "image":
@@ -974,6 +987,8 @@ def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
         worker["HostConfig"].pop("NetworkMode")
     elif mutation == "namespace-alias":
         worker["HostConfig"]["NetworkMode"] = "container:ambiguous-name"
+    elif mutation in ("pid-namespace-alias", "ipc-namespace-alias"):
+        worker["HostConfig"]["PidMode" if mutation.startswith("pid") else "IpcMode"] = "container:ambiguous-name"
     elif mutation == "mounts":
         worker["Mounts"] = [None]
     elif mutation == "bind":

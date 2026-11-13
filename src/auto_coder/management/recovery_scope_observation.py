@@ -310,6 +310,21 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
             raise RecoveryScopeUnavailable("unselected Docker command or network facts unavailable")
         if host["NetworkMode"].startswith("container:") and not re.fullmatch(r"container:[0-9a-f]{64}", host["NetworkMode"]):
             raise RecoveryScopeUnavailable("unselected Docker namespace identity is inconclusive")
+        # A worker may join a selected generation's PID or IPC namespace
+        # without sharing its image, command, network or bind sources.
+        # Such a container is not independently unrelated to that generation.
+        for field in ("PidMode", "IpcMode"):
+            namespace_mode = host.get(field)
+            if namespace_mode is None:
+                continue
+            if not isinstance(namespace_mode, str) or len(namespace_mode) > 256:
+                raise RecoveryScopeUnavailable("unselected Docker namespace identity is inconclusive")
+            if namespace_mode.startswith("container:"):
+                linked = namespace_mode[len("container:") :]
+                if not re.fullmatch(r"[0-9a-f]{64}", linked):
+                    raise RecoveryScopeUnavailable("unselected Docker namespace identity is inconclusive")
+                if linked in expected:
+                    raise RecoveryScopeUnavailable("unexpected unselected management/proxy candidate")
         for pair in pairs:
             roles = management_candidate_roles(obj, identity, pair.manager_id, pair.proxy_id, result[pair.manager_id]["Image"], result[pair.proxy_id]["Image"], tuple(sources))
             if roles or host["NetworkMode"] == "container:" + pair.proxy_id:
