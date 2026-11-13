@@ -184,6 +184,7 @@ class CustodyFact:
 class BindingFacts:
     bind_roots: tuple[tuple[str, str, int, int, int, int, int], ...]
     watcher_configs: tuple[tuple[int, int, int, int, int], ...]
+    unrelated_bind_roots: tuple[tuple[str, str, int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -384,7 +385,28 @@ def _bindings(enrollment: RecoveryEnrollment, snapshot: dict[str, dict[str, obje
             raise RecoveryScopeUnavailable("watcher does not bind the selected pair and actual controller lock")
         _text(raw["config_sha256"], r"[0-9a-f]{64}")
         configs.append(_file_identity(info))
-    return BindingFacts(tuple(identities), tuple(configs))
+    # Docker inspection preserves the declared bind source, not the host inode.
+    # Retain the independently read worker-root identity across both samples
+    # and between producer and consumer. Do not pin directory timestamps:
+    # unrelated workers may legitimately create or remove files there.
+    selected_ids = {identity for pair in pairs.values() for identity in (pair.manager_id, pair.proxy_id)}
+    selected_inodes = {(item[2], item[3]) for item in identities}
+    unrelated_roots: list[tuple[str, str, int, int]] = []
+    for identity in sorted(set(snapshot) - selected_ids):
+        mounts = snapshot[identity].get("Mounts")
+        if not isinstance(mounts, list):
+            raise RecoveryScopeUnavailable("unselected bind inventory unavailable")
+        for mount in mounts:
+            if not isinstance(mount, dict) or mount.get("Type") != "bind":
+                raise RecoveryScopeUnavailable("unselected bind root unavailable")
+            source = Path(_path(mount.get("Source")))
+            if source != source.resolve(strict=True):
+                raise RecoveryScopeUnavailable("unselected bind root is not canonical")
+            info = source.stat()
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)) or (info.st_dev, info.st_ino) in selected_inodes:
+                raise RecoveryScopeUnavailable("unselected bind root aliases selected source or is unsupported")
+            unrelated_roots.append((identity, str(source), info.st_dev, info.st_ino))
+    return BindingFacts(tuple(identities), tuple(configs), tuple(unrelated_roots))
 
 
 @contextmanager

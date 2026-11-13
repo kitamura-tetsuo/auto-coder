@@ -1036,3 +1036,44 @@ def test_actual_docker_launch_requires_complete_facts_if_present(scope: ScopeFix
         worker["Args"] = ["worker.py"] * 65
     with pytest.raises(recovery.RecoveryScopeUnavailable, match="actual launch"):
         recovery.observe_recovery_custody("fixture")
+
+
+def test_worker_bind_root_replacement_between_producer_and_consumer_refuses(scope: ScopeFixture):
+    worker = _unrelated_worker(scope)
+    previous = _produce_from_separate_process(scope)
+    source = Path(worker["Mounts"][0]["Source"])
+    source.rename(scope.root / "worker-replaced")
+    source.mkdir()
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="independently repeated recovery component differs"):
+        recovery.verify_recovery_custody("fixture", previous)
+
+
+def test_worker_bind_root_replacement_during_observation_refuses(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
+    worker = _unrelated_worker(scope)
+    source = Path(worker["Mounts"][0]["Source"])
+    old_bindings = recovery._bindings
+    read_count = 0
+
+    def replace_after_first_bindings(enrollment, snapshot):
+        nonlocal read_count
+        result = old_bindings(enrollment, snapshot)
+        read_count += 1
+        if read_count == 1:
+            source.rename(scope.root / "worker-replaced")
+            source.mkdir()
+        return result
+
+    monkeypatch.setattr(recovery, "_bindings", replace_after_first_bindings)
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="scope or bindings changed"):
+        recovery.observe_recovery_custody("fixture")
+
+
+def test_worker_root_directory_content_updates_are_not_identity_changes(scope: ScopeFixture):
+    worker = _unrelated_worker(scope)
+    previous = _produce_from_separate_process(scope)
+    source = Path(worker["Mounts"][0]["Source"])
+    (source / "worker-output.txt").write_text("benign workspace output")
+    current = recovery.verify_recovery_custody("fixture", previous)
+    info = source.stat()
+    assert current.bindings.unrelated_bind_roots == ((worker["Id"], str(source), info.st_dev, info.st_ino),)
+    assert current.status == "observed-component-only"

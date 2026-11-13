@@ -121,9 +121,17 @@ and classification pass is repeated while custody descriptors remain open. All
 container IDs, including admitted workers, remain in `engine_inventory`.
 `unrelated_inspections` stores each worker's stable full-inspection SHA-256; every
 separate consumer repeats and compares it. A disappearing or swapped worker, or
-a changed stable inspection, refuses. Only validated volatile `ExecIDs` on
-independently classified unrelated objects are normalized, as in the existing
-consumer. Selected full SHA-256 enrollment checks preserve that field. Workers
+a changed stable inspection, refuses. `bindings.unrelated_bind_roots`
+independently records each unrelated worker's canonical host bind source,
+device and inode at both sampling points and in the separate consumer; replacing
+an unrelated worker's host directory while its Docker inspection remains the
+same is refused. Ordinary content writes inside the same unrelated bind root
+are not a scope change (its mtime/ctime are deliberately not pinned). These
+extra host facts are local filesystem observations, **not** Docker Engine
+readback, and cannot prove historical or uninterrupted mount containment.
+Only validated volatile `ExecIDs` on independently classified unrelated objects
+are normalized, as in the existing consumer. Selected full SHA-256
+enrollment checks preserve that field. Workers
 are never treated as management closure or enrolled controller members.
 Digests otherwise preserve all fields and normalize only effective mount ordering
 through the existing Docker canonicalizer. Enrollment snapshots select expected
