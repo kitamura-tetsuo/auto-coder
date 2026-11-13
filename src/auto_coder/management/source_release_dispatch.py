@@ -274,7 +274,9 @@ class SourceReleaseDispatch:
                     record = begun.record
                     if not self.runtime.retained_effect_permitted(record):
                         return self._hold(record, "retained_effect_fence_denied")
-                    inputs = {key: getattr(request, key) for key in ("operation_id", "source_repository", *INPUT_FIELDS, "release_target")}
+                    # REST dispatch values follow GitHub CLI's string wire
+                    # format; the retained candidate keeps positive integer IDs.
+                    inputs = {key: str(getattr(request, key)) for key in ("operation_id", "source_repository", *INPUT_FIELDS, "release_target")}
                     # Persist SENT_UNKNOWN before entering the shared HTTP transport.
                     response = client.request("POST", f"actions/workflows/{workflow_id}/dispatches", {"ref": policy.release_branch, "inputs": inputs, "return_run_details": True})
                     data = response.data
@@ -288,7 +290,15 @@ class SourceReleaseDispatch:
                             return self._hold(record, "response_binding_unavailable")
                         record = self.journal.get(record.operation_id).record or record
                     elif response.status != 204:
-                        return self._hold(record, "dispatch_response_unconfirmed")
+                        reason = f"dispatch_http_{response.status}"
+                        if response.status == 422 and isinstance(data, dict):
+                            # Only fixed input names can enter the diagnostic;
+                            # arbitrary response content is not logged or saved.
+                            for name in inputs:
+                                if data.get("message") == f"Invalid value for input '{name}'":
+                                    reason += f"_invalid_input_{name}"
+                                    break
+                        return self._hold(record, reason)
                 return self._observe(record, policy, workflow_id, snapshot, client)
             except (RuntimeError, OSError, ValueError, TypeError, KeyError):
                 if record.effect.state is EffectState.NOT_SENT:

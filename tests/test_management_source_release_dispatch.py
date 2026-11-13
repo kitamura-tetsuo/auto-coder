@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from loguru import logger
 from starlette.testclient import TestClient
 
 from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
@@ -26,10 +27,11 @@ from auto_coder.source_release_catalog import RELEASE_WORKFLOW, SourceReleaseReq
 from auto_coder.source_release_promotion import SourceReleasePromotion
 from auto_coder.util.gh_cache import GitDataResponse
 from tests.test_management_mcp import _issue, _mcp, real_boundary  # noqa: F401
-from tests.test_source_release_promotion import OTHER_SHA, RELEASE_REF, ReleaseGit, _harness
+from tests.test_source_release_promotion import OTHER_SHA, RELEASE_REF, SOURCE_SHA, ReleaseGit, _harness
 
 ACTION = "auto_coder_promote_accepted_source_release"
 WORKFLOW_ID = 321
+SOURCE_CI_RUN_ID = 43_321_934_554
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +57,7 @@ class WorkflowBoundary:
         self.mutate_run = None
         self.mutate_workflow = None
         self.response_change = None
+        self.dispatch_response = None
         self.entered = threading.Event()
         self.resume = threading.Event()
         self.block = False
@@ -83,7 +86,15 @@ class WorkflowBoundary:
                 raise RuntimeError("lost before remote effect")
             if self.failure == "denied":
                 return GitDataResponse(403)
+            if self.dispatch_response is not None:
+                return self.dispatch_response
             inputs = payload["inputs"]
+            # GitHub's CLI sends every REST dispatch input as a string, even
+            # when its workflow declaration uses type: number. Retain the
+            # observed refusal shape at this controlled HTTP boundary.
+            for field, value in inputs.items():
+                if not isinstance(value, str):
+                    return GitDataResponse(422, {"message": f"Invalid value for input '{field}'"})
             self.inputs = inputs
             run_id = 900 + len(self.runs)
             run = {
@@ -104,7 +115,10 @@ class WorkflowBoundary:
             }
             self.runs[run_id] = run
             if self.publish:
-                SourceReleasePromotion(self, self.configured, clock=self.clock).execute(SourceReleaseRequest(**inputs, promotion_run_id=run_id, promotion_run_attempt=1))
+                # The workflow forwards environment strings to Click's int
+                # options before the publisher validates the domain identity.
+                workflow_inputs = {**inputs, "ci_run_id": int(inputs["ci_run_id"]), "ci_run_attempt": int(inputs["ci_run_attempt"])}
+                SourceReleasePromotion(self, self.configured, clock=self.clock).execute(SourceReleaseRequest(**workflow_inputs, promotion_run_id=run_id, promotion_run_attempt=1))
             if self.complete:
                 run.update(status="completed", conclusion="success")
             if self.mutate_run:
@@ -156,7 +170,9 @@ def _call(client, token, name, arguments):
 @pytest.fixture
 def dispatch(real_boundary, tmp_path, monkeypatch):
     settings, _, identity, signed, uid_policy, state = real_boundary
-    remote, smoke, request, configured = _harness(tmp_path / "evidence", remote=WorkflowGit())
+    remote = WorkflowGit()
+    remote.add_proof(SOURCE_SHA, remote.proofs[SOURCE_SHA][0], SOURCE_CI_RUN_ID, 1)
+    remote, smoke, request, configured = _harness(tmp_path / "evidence", remote=remote)
     remote.configured, remote.clock = configured, lambda: smoke.clock.now + 1
     # A local deterministic clock, not a production-authority bypass.
     monkeypatch.setattr("auto_coder.management.source_release_dispatch.time", SimpleNamespace(time=remote.clock))
@@ -225,13 +241,19 @@ def test_exact_dispatch_publishes_original_producer_evidence_and_catalog(dispatc
         assert result["worker_deployed"] is False
         assert result["workflow_run"]["head_sha"] == OTHER_SHA != result["selected_source_sha"]
         assert result["workflow_run"]["id"] == 900
-        assert d.remote.dispatches == [{"ref": "main", "inputs": {**{k: v for k, v in d.args.items() if k not in {"target_id", "idempotency_key"}}, "operation_id": result["operation_id"], "source_repository": "owner/repo", "release_target": "release"}, "return_run_details": True}]
+        assert d.remote.dispatches == [{"ref": "main", "inputs": {**{k: str(v) for k, v in d.args.items() if k not in {"target_id", "idempotency_key"}}, "operation_id": result["operation_id"], "source_repository": "owner/repo", "release_target": "release"}, "return_run_details": True}]
+        assert d.remote.inputs["ci_run_id"] == "43321934554"
+        assert d.remote.inputs["ci_run_attempt"] == "1"
         assert _call(client, token, ACTION, d.args)["operation_id"] == result["operation_id"]
         assert _read(client, token, result["operation_id"])["status"] == "SUCCEEDED"
         assert len(d.remote.dispatches) == 1
         changed = _call(client, token, ACTION, {**d.args, "source_sha": OTHER_SHA, "tested_source_ref": f"refs/tags/auto-coder-tested-{OTHER_SHA}"})
         assert changed["status"] == "CONFLICT"
         stored = client.app.state.management_runtime.journal.get(result["operation_id"]).record
+        stored_parameters = {item.name: item.value for item in stored.intent.parameters}
+        assert type(stored_parameters["ci_run_id"]) is int
+        assert stored_parameters["ci_run_id"] == SOURCE_CI_RUN_ID
+        assert type(stored_parameters["ci_run_attempt"]) is int
         assert stored.authority.uid == "alice"
         assert stored.authority.oauth_client_id == "alice-client"
         assert stored.effect.state is EffectState.CONFIRMED
@@ -269,6 +291,60 @@ def test_lost_or_denied_dispatch_restart_never_sends_again(dispatch, failure):
             other = _call(client, token, ACTION, {**d.args, "idempotency_key": "new-key"})
             assert other["status"] == "BUSY"
             assert other["operation_id"] == operation_id
+
+
+@pytest.mark.parametrize(
+    "status,message,category",
+    [
+        (422, "Invalid value for input 'ci_run_id'", "dispatch_http_422_invalid_input_ci_run_id"),
+        (422, "Invalid value for input 'untrusted-field'", "dispatch_http_422"),
+        (403, "provider refusal", "dispatch_http_403"),
+    ],
+)
+def test_dispatch_http_refusal_retains_safe_diagnostic_and_original_lane(dispatch, status, message, category):
+    d = dispatch
+    secret = "never-log-this-provider-token"
+    sentinel = "UNTRUSTED_RESPONSE_SENTINEL"
+    d.remote.dispatch_response = GitDataResponse(status, {"message": message, "errors": [{"message": secret}], "untrusted": sentinel})
+    messages = []
+    sink = logger.add(messages.append, format="{message}")
+    try:
+        with TestClient(d.app(), base_url=d.settings.oauth.canonical_issuer) as client:
+            token = _token(client, d)
+            first = _call(client, token, ACTION, d.args)
+            assert first["status"] == "NEEDS_ATTENTION"
+            assert first["effect_state"] == "sent_unknown"
+            assert first["safe_reason"] == category
+            assert first["workflow_run"] is None
+            operation_id = first["operation_id"]
+            original = client.app.state.management_runtime.journal.get(operation_id).record
+
+        # Reconstruct the production manager over the same SQLite original.
+        with TestClient(d.app(), base_url=d.settings.oauth.canonical_issuer) as client:
+            token = _token(client, d)
+            observed = _read(client, token, operation_id)
+            assert observed["status"] == "NEEDS_ATTENTION"
+            assert observed["effect_state"] == "sent_unknown"
+            assert observed["workflow_run"] is None
+            journal = client.app.state.management_runtime.journal
+            retained = journal.get(operation_id).record
+            assert retained.intent == original.intent
+            assert retained.authority == original.authority
+            assert retained.effect == original.effect
+            history = journal.history(operation_id).entries
+            assert any(item.safe_category == category for item in history)
+            replay = _call(client, token, ACTION, {**d.args, "idempotency_key": "new-key"})
+            assert replay["status"] == "BUSY"
+            assert replay["operation_id"] == operation_id
+            assert len(d.remote.dispatches) == 1
+            assert d.remote.release_pointer_writes == 0
+            evidence = canonical({"first": first, "observed": observed, "record": asdict(retained), "history": [asdict(item) for item in history]})
+            assert secret not in evidence and sentinel not in evidence and message not in evidence
+    finally:
+        logger.remove(sink)
+    logs = "".join(messages)
+    assert category in logs
+    assert secret not in logs and sentinel not in logs and message not in logs
 
 
 @pytest.mark.parametrize("listing", ["empty", "gap", "duplicate", "unavailable", "overflow"])

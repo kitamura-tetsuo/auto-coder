@@ -53,7 +53,13 @@ The token needs Actions write and the reads necessary to verify source evidence,
 Git refs, catalogs and Releases. Credentials are read only by the shared
 `gh_cache.py` HTTP client and never appear in the journal, results or logs.
 
-The fixed POST requests `return_run_details: true` with typed workflow inputs.
+The fixed POST requests `return_run_details: true` and serializes every workflow
+input as a JSON string, matching
+[GitHub CLI's dispatch boundary](https://github.com/cli/cli/blob/trunk/pkg/cmd/workflow/run/run.go).
+Original CI run ID and attempt remain positive integers in MCP arguments, the
+retained intent, and source evidence. The workflow keeps its `number` declarations
+and passes its environment values through the CLI's integer options before
+publication.
 No caller can choose an API URL, workflow, branch, credentials or additional
 inputs. The run name is `accepted-release/<management_operation_id>`. The journal
 records `SENT_UNKNOWN` before any possible send, and a process-owned file lock
@@ -78,6 +84,15 @@ changing, truncated or unavailable results remain `NEEDS_ATTENTION`; a listing
 gap never proves that the request was unsent. Once bound, only the original run
 and attempt are read. No latest-run guessing, workflow editing or second POST
 is used, including after a denied/ambiguous HTTP response or workflow failure.
+
+An unconfirmed HTTP response records its status as a fixed category such as
+`dispatch_http_422`. The recognized validation message for one of the fixed
+input names adds that name, for example
+`dispatch_http_422_invalid_input_ci_run_id`. Other provider response content is
+not recorded in results, logs or journal history. These diagnostics retain
+`SENT_UNKNOWN`, `NEEDS_ATTENTION` and the original lane; they never establish
+absence of an effect or permit another send. Later readback may change the
+current reason, while the original HTTP category remains in journal history.
 
 Workflow success alone is insufficient. Readback must match the strict schema-2
 source catalog, original candidate/test/acceptance/profile/policy binding, exact
