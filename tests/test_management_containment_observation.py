@@ -629,3 +629,52 @@ def test_unselected_management_module_is_a_candidate_with_pinned_exec_ids(monkey
     second = observation._docker(_scope())[2]
     assert second.management_route_roles == ("management-command",)
     assert second.inspection_sha256 != first.inspection_sha256
+
+
+def test_recovery_candidate_roles_include_every_selected_generation():
+    """A later original's network or image cannot become an unrelated worker."""
+    from auto_coder.management.docker_inspection import management_candidate_roles
+
+    original_ids = ("a" * 64, "b" * 64)
+    proxy_ids = ("c" * 64, "d" * 64)
+    original_images = ("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+    proxy_images = ("sha256:" + "3" * 64, "sha256:" + "4" * 64)
+    worker = {
+        "Config": {"Cmd": ["sleep", "600"], "Entrypoint": []},
+        "HostConfig": {"NetworkMode": "container:" + original_ids[1]},
+        "Image": proxy_images[1],
+        "Mounts": [],
+    }
+    roles = management_candidate_roles(
+        worker,
+        "e" * 64,
+        original_ids,
+        proxy_ids,
+        original_images,
+        proxy_images,
+        (),
+    )
+    assert roles == ("same-proxy-image", "selected-management-network")
+
+
+def test_selected_later_generation_is_not_falsely_a_foreign_mount_candidate():
+    """Selected roots stay selected when every original is considered together."""
+    from auto_coder.management.docker_inspection import management_candidate_roles
+
+    original_ids = ("a" * 64, "b" * 64)
+    selected = {
+        "Config": {"Cmd": ["sleep"], "Entrypoint": []},
+        "HostConfig": {"NetworkMode": "bridge"},
+        "Image": "sha256:" + "2" * 64,
+        "Mounts": [{"Type": "bind", "Source": "/srv/original-two"}],
+    }
+    roles = management_candidate_roles(
+        selected,
+        original_ids[1],
+        original_ids,
+        ("c" * 64,),
+        ("sha256:" + "1" * 64, "sha256:" + "2" * 64),
+        ("sha256:" + "3" * 64,),
+        ("/srv/original-two",),
+    )
+    assert roles == ("selected-management",)

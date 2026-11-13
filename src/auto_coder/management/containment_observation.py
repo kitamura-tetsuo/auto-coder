@@ -174,6 +174,22 @@ def _docker_read(arguments: tuple[str, ...]) -> object:
 
 
 def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
+    return _docker_selected((scope.management_id,), (scope.proxy_id,), all_bind_sources=False)
+
+
+def observe_recovery_docker(management_ids: tuple[str, ...], proxy_ids: tuple[str, ...]) -> tuple[DockerObservation, ...]:
+    """Enumerate the whole engine against the explicitly selected recovery union.
+
+    This only discovers candidates. The recovery observer separately validates
+    the protected selection, every object profile and all installed routes.
+    """
+    return _docker_selected(management_ids, proxy_ids, all_bind_sources=True)
+
+
+def _docker_selected(management_ids: tuple[str, ...], proxy_ids: tuple[str, ...], *, all_bind_sources: bool) -> tuple[DockerObservation, ...]:
+    selected = management_ids + proxy_ids
+    if not management_ids or not proxy_ids or len(selected) > 64 or len(set(selected)) != len(selected) or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in selected):
+        raise ValueError("selected Docker identities are absent, duplicate or ambiguous")
     # A remote context cannot supply this host's kernel/Docker correlation.
     if os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"):
         raise ValueError("Docker endpoint override is unsupported for local observation")
@@ -186,7 +202,7 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
     # Enumerate the engine, not an operator/label-filtered selection. Unknown
     # objects remain visible; enumeration does not establish their enrollment.
     containers = _docker_ids()
-    if not {scope.management_id, scope.proxy_id} <= set(containers):
+    if not set(selected) <= set(containers):
         raise ValueError("Selected Docker objects are absent from the complete engine inventory")
     observations = []
     inspected: dict[str, dict[str, object]] = {}
@@ -204,17 +220,28 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
     # its exact images, an installed management command or its network namespace.
     # This is candidate discovery, not proof that all ordinary controllers are
     # known; the separate installed-route inventory is still required.
-    management_image = inspected[scope.management_id]["Image"]
-    proxy_image = inspected[scope.proxy_id]["Image"]
-    management_mounts = inspected[scope.management_id]["Mounts"]
-    if not isinstance(management_mounts, list):
-        raise ValueError("Selected management mount inventory is unavailable")
-    management_sources = tuple(source for mount in management_mounts if isinstance(mount, dict) and mount.get("Type") == "bind" and mount.get("Destination") in _MANAGEMENT_MOUNT_DESTINATIONS and isinstance(source := mount.get("Source"), str) and os.path.isabs(source))
+    management_images = {inspected[identifier]["Image"] for identifier in management_ids}
+    proxy_images = {inspected[identifier]["Image"] for identifier in proxy_ids}
+    management_mounts: list[object] = []
+    for identifier in management_ids:
+        selected_mounts = inspected[identifier]["Mounts"]
+        if not isinstance(selected_mounts, list):
+            raise ValueError("Selected management mount inventory is unavailable")
+        management_mounts.extend(selected_mounts)
+    management_sources = tuple(source for mount in management_mounts if isinstance(mount, dict) and mount.get("Type") == "bind" and (all_bind_sources or mount.get("Destination") in _MANAGEMENT_MOUNT_DESTINATIONS) and isinstance(source := mount.get("Source"), str) and os.path.isabs(source))
 
     classified = []
     for item in observations:
         obj = inspected[item.container_id]
-        roles = management_candidate_roles(obj, item.container_id, scope.management_id, scope.proxy_id, management_image, proxy_image, management_sources)
+        roles = management_candidate_roles(
+            obj,
+            item.container_id,
+            management_ids,
+            proxy_ids,
+            tuple(management_images),
+            tuple(proxy_images),
+            management_sources,
+        )
         if roles or "ExecIDs" not in obj:
             classified.append(replace(item, management_route_roles=tuple(roles)))
         else:

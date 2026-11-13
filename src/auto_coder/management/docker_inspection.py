@@ -52,8 +52,12 @@ def management_command_candidate(arguments: tuple[str, ...]) -> bool:
     return bool(entrypoint and re.search(r"\bmanagement\b", command_text) and re.search(r"\bserve\b", command_text))
 
 
-def management_candidate_roles(obj: dict[str, object], container_id: str, management_id: str, proxy_id: str, management_image: object, proxy_image: object, management_sources: tuple[str, ...]) -> tuple[str, ...]:
-    """Discover bounded candidates; this does not establish controller closure."""
+def management_candidate_roles(obj: dict[str, object], container_id: str, management_id: str | tuple[str, ...], proxy_id: str | tuple[str, ...], management_image: object, proxy_image: object, management_sources: tuple[str, ...]) -> tuple[str, ...]:
+    """Discover bounded candidates across one or more selected generations."""
+    management_ids = (management_id,) if isinstance(management_id, str) else management_id
+    proxy_ids = (proxy_id,) if isinstance(proxy_id, str) else proxy_id
+    management_images = management_image if isinstance(management_image, tuple) else (management_image,)
+    proxy_images = proxy_image if isinstance(proxy_image, tuple) else (proxy_image,)
     config, host = obj.get("Config"), obj.get("HostConfig")
     if not isinstance(config, dict) or not isinstance(host, dict):
         raise ValueError("Docker effective command or network configuration unavailable")
@@ -68,13 +72,13 @@ def management_candidate_roles(obj: dict[str, object], container_id: str, manage
         raise ValueError("Docker network mode is ambiguous")
     arguments = tuple((entrypoint or []) + (command or []))
     roles = []
-    if container_id == management_id:
+    if container_id in management_ids:
         roles.append("selected-management")
-    elif obj.get("Image") == management_image:
+    elif obj.get("Image") in management_images:
         roles.append("same-management-image")
-    if container_id == proxy_id:
+    if container_id in proxy_ids:
         roles.append("selected-proxy")
-    elif obj.get("Image") == proxy_image:
+    elif obj.get("Image") in proxy_images:
         roles.append("same-proxy-image")
     # Config.Cmd/Entrypoint and Docker's actual Path/Args are distinct readbacks.
     # The latter must not hide an effective management launch behind benign config.
@@ -86,9 +90,9 @@ def management_candidate_roles(obj: dict[str, object], container_id: str, manage
             raise ValueError("Docker actual launch command is ambiguous")
         if management_command_candidate((actual_path, *actual_args)):
             roles.append("actual-management-command")
-    if network_mode == "container:" + management_id:
+    if network_mode in {"container:" + identity for identity in management_ids}:
         roles.append("selected-management-network")
-    if container_id not in (management_id, proxy_id) and overlapping_management_source(obj.get("Mounts"), management_sources):
+    if container_id not in management_ids + proxy_ids and overlapping_management_source(obj.get("Mounts"), management_sources):
         roles.append("selected-management-mount-source")
     return tuple(roles)
 

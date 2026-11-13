@@ -1,0 +1,6 @@
+services:
+  fixture:
+    group_add:
+      - "${RECOVERY_KVM_GID:?Set the actual KVM device group}"
+    devices:
+      - /dev/kvm:/dev/kvm:rwm

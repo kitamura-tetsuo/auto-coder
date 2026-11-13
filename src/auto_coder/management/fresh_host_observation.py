@@ -18,6 +18,7 @@ import struct
 import subprocess
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -313,7 +314,7 @@ def _capture_supervisor_identity(prior: PriorContainer, values: list[object], ob
     ledger = Path(state_sources[0]) / "management-child.sqlite3"
     if ledger.is_symlink() or not ledger.is_file():
         raise ValueError("prior supervisor ledger unavailable")
-    with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+    with closing(sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
         rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
     if len(rows) != 1 or rows[0][0] != instance_id or rows[0][2:] != (1, token) or not isinstance(rows[0][1], str) or str(uuid.UUID(rows[0][1])) != rows[0][1]:
         raise ValueError("prior live supervisor identity differs")
@@ -663,6 +664,10 @@ def assert_host_listener_absent(port: int) -> None:
 
 
 def assert_replacement_published_listener(intent: FreshInitializationIntent) -> None:
+    assert_container_published_listener(intent.new_container_id, intent.image_digest, intent.host_listener_port)
+
+
+def assert_container_published_listener(container_id: str, image_id: str, published_port: int) -> None:
     """Prove the host listener is Docker's proxy for this exact replacement.
 
     This intentionally supports only the Docker userland-proxy profile. Kernel
@@ -672,8 +677,10 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
     try:
         if os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net") or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
             raise ValueError("observer is not in the host namespaces")
-        values = _inspect(intent.new_container_id)
-        if values[1] != intent.image_digest or values[2] is not True or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(intent.host_listener_port)}]}:
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) or type(published_port) is not int or not 0 < published_port <= 65535:
+            raise ValueError("published endpoint selection differs")
+        values = _inspect(container_id)
+        if values[1] != image_id or values[2] is not True or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(published_port)}]}:
             raise ValueError("replacement published endpoint differs")
         networks = values[18]
         if not isinstance(networks, dict):
@@ -693,7 +700,7 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
                     if len(fields) < 10:
                         raise ValueError("listener table incomplete")
                     address, port = fields[1].rsplit(":", 1)
-                    if int(port, 16) == intent.host_listener_port and fields[3] == "0A":
+                    if int(port, 16) == published_port and fields[3] == "0A":
                         if table != "tcp" or address != "0100007F" or not fields[9].isdecimal():
                             raise ValueError("unexpected host listener")
                         found.add(fields[9])
@@ -705,8 +712,8 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
         daemon = int(Path("/var/run/docker.pid").read_text(encoding="ascii").strip())
         if daemon <= 0 or os.stat(f"/proc/{daemon}/exe") != os.stat("/usr/bin/dockerd"):
             raise ValueError("Docker daemon identity differs")
-        expected_prefix = ["/usr/bin/docker-proxy", "-proto", "tcp", "-host-ip", "127.0.0.1", "-host-port", str(intent.host_listener_port), "-container-ip"]
-        socket_owners = subprocess.run(["ss", "-ltnpH", f"sport = :{intent.host_listener_port}"], check=True, capture_output=True, text=True, timeout=10).stdout
+        expected_prefix = ["/usr/bin/docker-proxy", "-proto", "tcp", "-host-ip", "127.0.0.1", "-host-port", str(published_port), "-container-ip"]
+        socket_owners = subprocess.run(["ss", "-ltnpH", f"sport = :{published_port}"], check=True, capture_output=True, text=True, timeout=10).stdout
         candidates = [int(value) for value in re.findall(r'"docker-proxy",pid=(\d+),fd=\d+', socket_owners)]
         if len(candidates) != 1:
             raise ValueError("Docker proxy is missing or ambiguous")
@@ -729,7 +736,7 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
                 raise ValueError("replacement proxy lifetime changed")
             if listener_inodes() != inodes:
                 raise ValueError("replacement listener inode changed")
-            final_values = _inspect(intent.new_container_id)
+            final_values = _inspect(container_id)
 
             # Docker reports mounts as an unordered collection. Compare every
             # complete mount object, including duplicate entries, independent
@@ -866,7 +873,7 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
         ledger = Path(intent.host_state_root) / "management-child.sqlite3"
         if ledger.is_symlink() or not ledger.is_file():
             raise ValueError("replacement ledger unavailable")
-        with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        with closing(sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
             rows = connection.execute("SELECT instance_id,incarnation,pid,start_token FROM supervisor_presence").fetchall()
         fields = (Path("/proc") / str(peer_pid) / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
         if len(fields) < 20 or rows != [(intent.new_instance, incarnation, 1, fields[19])]:

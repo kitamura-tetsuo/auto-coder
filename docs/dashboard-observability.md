@@ -3611,3 +3611,56 @@ boundary. The installed release acceptance case is listed separately in the
 required isolated-container profile. Dashboard processing events/renderers need
 no new target outcome: this failure precedes serving and is a daemon/management
 diagnostic, not a completed Issue/PR execution.
+
+## Management recovery ownership evidence and one-shot issuance
+
+The prospective original-genesis producer, full-scope recovery-containment
+observer, and `management/recovery_epoch.py` host issuer have separate authority
+lifetimes. Genesis and containment diagnostics remain evidence-only. The current
+observer emits `observation_only=True`, `recovery_grant=False`, and
+`admission_created=False`; it never writes an operation or readiness outcome.
+The issuer's actual append-only writer emits `recovery_epoch_phase=reserved`,
+`intent`, `consumed`, and `receipt`, with request/target bindings and
+`grant_delivered=False`. These events occur after their durable record/head
+boundaries, and their Loguru source locations identify the real writer. A later
+`grant-send-completed` observation means that one socket send completed; it does
+not acknowledge delivery, launch a child, or establish current readiness.
+
+The explicit bootstrap custody origin logs `consumer-custody` only after a
+verified complete offer and exact consumed grant. `consumer-unavailable` and host
+`unavailable` retain `current_ready=False`. A shutdown signal while awaiting an
+offer immediately fails that prelaunch endpoint. An exited issuer or lost fence
+makes current custody unavailable without changing historical receipts or
+inventing a recovery success. Both CLI origins use the existing Loguru stdout
+and file sinks; the host file is `/var/log/auto-coder/recovery-epoch.log` and the
+bootstrap file is in its separate target state's `logs` directory.
+
+These host commands do not enter an Issue/PR processing attempt, implementation
+slot, management operation admission, dispatch, or worker lifecycle. There is
+therefore no dashboard event-schema or renderer addition. Creating a dashboard
+success/job for a non-authorizing observation or an unacknowledged grant would
+misrepresent the boundary. The separate #2825 consumer must own any future child
+readiness/admission projection. Existing unknown originals and their key/target
+exclusions remain unknown and excluded.
+
+Run `bash scripts/test.sh --ci-tests-only
+ tests/test_management_recovery_epoch_observability.py
+ tests/test_management_recovery_epoch_state.py
+ tests/test_management_recovery_epoch_authorization.py
+ tests/test_management_recovery_epoch_join.py
+ tests/test_management_recovery_epoch_peer.py
+ tests/test_management_recovery_epoch_consumer.py
+ tests/test_management_recovery_containment_resources.py`.
+The observability test drives the real durable writer in a separate process and
+checks the ordered structured phases, source locations, stdout and file output,
+and absent grant/readiness claims. The real-signal consumer cases observe the
+pre-offer barrier, cancellation, no custody-acknowledgment success, no target
+store/child creation and released target exclusion. Dataclass join fixtures are
+component scope checks, not evidence of native containment. The independent
+systemd/Docker VM workflow `Management Recovery Epoch Acceptance` must traverse
+actual original producers, controller/kernel observations, connected peer
+custody and at-most-one issuance for integrated acceptance. See
+`client-features/management-recovery-epoch.md`,
+`client-features/management-original-genesis.md`, and
+`client-features/management-recovery-containment-observation.md` for the fixed
+profiles, interfaces and source-of-truth limits.

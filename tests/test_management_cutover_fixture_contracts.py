@@ -150,6 +150,7 @@ def test_management_ingress_keeps_workers_on_the_internal_network(tmp_path):
     fixture.oauth.mkdir()
     fixture.origin = "http://127.0.0.1:8081"
     fixture.executable_digest = "f" * 64
+    fixture.original_genesis = False
     fixture.image = "sha256:" + "e" * 64
     fixture.port = 23456
     fixture.worker_network = "private-workers"

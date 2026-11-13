@@ -517,6 +517,28 @@ def test_tracked_file_permissions_survive_preparation_and_noop_handoff(tmp_path:
     assert stat.S_IMODE(tracked.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_metadata_only_change_preserves_exact_caller_index_during_preparation(tmp_path: Path, is_noedit: bool) -> None:
+    repo = _init_repo(tmp_path)
+    tracked = repo / "tracked.txt"
+    observed = tracked.stat()
+    # Force a real cached-stat mismatch without a wall-clock race or content edit.
+    os.utime(tracked, ns=(observed.st_atime_ns, observed.st_mtime_ns - 2_000_000_000))
+    tracked.chmod(0o600)
+    index = repo / ".git" / "index"
+    original_index = index.read_bytes()
+
+    with isolated_local_llm_worktree(repo, is_noedit=is_noedit) as workspace:
+        assert index.read_bytes() == original_index
+        private = Path(workspace) / "tracked.txt"
+        assert private.read_text() == "initial content\n"
+        assert stat.S_IMODE(private.stat().st_mode) == 0o600
+
+    assert index.read_bytes() == original_index
+    assert tracked.read_text() == "initial content\n"
+    assert stat.S_IMODE(tracked.stat().st_mode) == 0o600
+
+
 def test_disposing_one_private_workspace_preserves_peer_workspace_and_caller_refs(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     initial_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

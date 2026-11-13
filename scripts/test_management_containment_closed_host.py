@@ -462,45 +462,51 @@ class WatcherFixture:
     config: Path
     state: Path
     stdout: Path
+    unit: str = WATCHER_UNIT
 
     @classmethod
-    def start(cls, root: Path, manager: str, manager_image: str, proxy: str, proxy_image: str, caddyfile: Path) -> WatcherFixture:
+    def start(cls, root: Path, manager: str, manager_image: str, proxy: str, proxy_image: str, caddyfile: Path, *, unit: str = WATCHER_UNIT) -> WatcherFixture:
+        if re.fullmatch(r"auto-coder-management-proxy-watch(?:-[A-Za-z0-9_-]+)?\.service", unit) is None:
+            raise ValueError("fixture watcher unit must use a bounded management name")
         state = root / "watcher-state"
         state.mkdir(mode=0o700)
         config, output = root / "watcher-config.json", root / "watcher-output.log"
         _write_private(config, _json({"state_root": str(state), "manager_id": manager, "manager_image": manager_image, "proxy_id": proxy, "proxy_image": proxy_image, "config_sha256": hashlib.sha256(caddyfile.read_bytes()).hexdigest()}))
         _write_private(output, b"")
-        source = Path("/run/systemd/system") / WATCHER_UNIT
+        source = Path("/run/systemd/system") / unit
         command = f"{sys.executable} -I -B -m auto_coder.management.proxy_watch_cli --config {config}"
         if any(character in command for character in ("\n", "\r", "%", '"')) or " " in sys.executable or " " in str(root):
             raise ValueError("fixture watcher command contains unsupported systemd syntax")
         content = f"[Unit]\nDescription=Disposable original management proxy watcher\n[Service]\nType=simple\nExecStart={command}\nRestart=no\nStandardOutput=append:{output}\nStandardError=append:{output}\n".encode()
         _write_private(source, content)
-        result = cls(source, source.lstat().st_ino, hashlib.sha256(content).hexdigest(), config, state, output)
+        result = cls(source, source.lstat().st_ino, hashlib.sha256(content).hexdigest(), config, state, output, unit)
         try:
             _systemctl("daemon-reload")
-            _systemctl("start", WATCHER_UNIT)
+            _systemctl("start", unit)
             deadline = time.monotonic() + 30
             while "ATTACHED\n" not in output.read_text():
                 if time.monotonic() >= deadline:
                     raise AssertionError("the real installed watcher never observed Caddy attached")
                 time.sleep(0.1)
-            pid = subprocess.run(("systemctl", "show", "--property=MainPID", "--value", WATCHER_UNIT), check=True, capture_output=True, text=True, timeout=10).stdout.strip()
+            pid = subprocess.run(("systemctl", "show", "--property=MainPID", "--value", unit), check=True, capture_output=True, text=True, timeout=10).stdout.strip()
             if not pid.isdigit() or int(pid) <= 1:
                 raise AssertionError("the real watcher has no live unit-owned process")
-            _systemctl("stop", WATCHER_UNIT)
-            _systemctl("mask", WATCHER_UNIT)
-            observe_watcher_unit()
+            _systemctl("stop", unit)
+            _systemctl("mask", unit)
+            if unit == WATCHER_UNIT:
+                observe_watcher_unit()
+            elif not _systemd_unit(unit).inhibited:
+                raise AssertionError("the real additional watcher was not inhibited")
             return result
         except BaseException:
             result.cleanup()
             raise
 
     def cleanup(self) -> None:
-        _systemctl("stop", WATCHER_UNIT)
-        mask = Path("/etc/systemd/system") / WATCHER_UNIT
+        _systemctl("stop", self.unit)
+        mask = Path("/etc/systemd/system") / self.unit
         if mask.is_symlink() and os.readlink(mask) == "/dev/null":
-            _systemctl("unmask", WATCHER_UNIT)
+            _systemctl("unmask", self.unit)
         elif mask.exists() or mask.is_symlink():
             raise AssertionError("fixture watcher mask was externally replaced")
         if self.source.lstat().st_ino != self.inode or hashlib.sha256(self.source.read_bytes()).hexdigest() != self.digest:
