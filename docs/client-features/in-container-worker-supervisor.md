@@ -1,5 +1,22 @@
 # In-container worker supervisor
 
+## Management CI retirement (2026-11-13)
+
+The owner approved retiring the `management-self-update`, `fresh-host`,
+`isolated-containers` and `operator-upgrade` CI jobs and their dedicated planning
+and aggregate wiring. These exercise the discontinued proprietary management,
+bootstrap and supervisor deployment architecture. The detailed native-profile
+procedures below are historical, not active CI gates or acceptance evidence.
+
+`Supervisor Integration Tests` retains the complete `worker-bridge` job unchanged,
+including both real-process invocations, shared graceful-shutdown cases, native
+result validation and artifacts. Its stable aggregate check now requires that
+job to finish successfully; failure, cancellation, skipped or missing results
+fail the aggregate. Ordinary PR/source/browser/live suites remain unchanged.
+Retired native fixtures and their component tests remain until separate source
+cleanup; no runtime implementation or safety gate is modified by this CI change.
+
+
 Release and beta containers use the image-installed `python -m
 auto_coder.worker_supervisor` as their long-lived PID 1. The supervisor owns at
 most one `process-issues` child and accepts one newline-delimited JSON operation

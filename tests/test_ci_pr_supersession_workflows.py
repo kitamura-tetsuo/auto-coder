@@ -102,10 +102,9 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     assert muse_steps["Run real-host conformance"]["run"] == "uv run pytest -m muse_live -vv tests/test_muse_background_live.py"
 
     supervisor_workflow = _load("Supervisor Integration Tests")
-    supervisor_steps = {step.get("name", ""): step for step in supervisor_workflow["jobs"]["isolated-containers"]["steps"]}
-    required_container = supervisor_steps["Verify isolated Supervisor containers"]
-    assert supervisor_workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
-    assert "pytest" in required_container["run"]
+    worker = supervisor_workflow["jobs"]["worker-bridge"]
+    assert "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes" in next(step["run"] for step in worker["steps"] if step.get("name") == "Test real worker processes and management bridge")
+    assert set(supervisor_workflow["jobs"]) == {"worker-bridge", "supervisor-integration"}
 
     source_job = _load("Test Source for Runtime")["jobs"]["complete-source-shard"]
     assert source_job["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
