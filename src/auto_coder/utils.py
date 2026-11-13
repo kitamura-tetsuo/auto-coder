@@ -92,7 +92,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     owner = getattr(context.supervisor, "owner", None)
     uid = getattr(owner, "worker_uid", None)
     gid = getattr(owner, "worker_gid", None)
-    if uid is not None and gid is not None:
+    if context.boundary.backend_type.lower() != "codex" and uid is not None and gid is not None:
         _chown_tree(runtime, uid, gid)
     environment["HOME"] = str(home)
     environment["CODEX_HOME"] = str(home / ".codex")
@@ -397,6 +397,7 @@ class CommandResult:
     stderr: str
     returncode: int
     writer_settled: Optional[bool] = None
+    direct_process_complete: Optional[bool] = None
 
 
 class CommandExecutor:
@@ -919,10 +920,13 @@ class CommandExecutor:
             owner = getattr(supervised.supervisor, "owner", None)
             worker_uid = getattr(owner, "worker_uid", None)
             worker_gid = getattr(owner, "worker_gid", None)
+            direct_mode = boundary.backend_type.lower() == "codex"
+            if direct_mode:
+                worker_uid, worker_gid = os.geteuid(), os.getegid()
             private_runtime: Optional[Path] = None
             final_message_copy: Optional[tuple[Path, Path]] = None
             try:
-                if worker_uid is not None and worker_gid is not None:
+                if not direct_mode and worker_uid is not None and worker_gid is not None:
                     # The private temporary parent is normally mode 0700. This is
                     # invocation-owned state, so transfer it without touching the
                     # caller or peer repositories.
@@ -1008,7 +1012,7 @@ class CommandExecutor:
                 # all worker processes are positively stopped.
                 _chown_tree(binding.workspace.parent, os.geteuid(), os.getegid())
             final_message_error: Optional[str] = None
-            if result.writer_complete and final_message_copy is not None:
+            if result.lifecycle_complete and final_message_copy is not None:
                 provider_output, destination = final_message_copy
                 if provider_output.is_symlink() or (provider_output.exists() and not provider_output.is_file()):
                     final_message_error = "Codex final-message transfer rejected an unsafe output path"
@@ -1017,7 +1021,7 @@ class CommandExecutor:
                         shutil.copyfile(provider_output, destination)
                     except OSError as exc:
                         final_message_error = f"Codex final-message transfer failed: {exc}"
-            if result.writer_complete and private_runtime is not None and boundary.backend_type.lower() != "opencode":
+            if result.lifecycle_complete and private_runtime is not None and boundary.backend_type.lower() != "opencode":
                 shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
                 if result.stdout:
@@ -1032,11 +1036,12 @@ class CommandExecutor:
             if result.outcome is InvocationOutcome.TIMED_OUT:
                 stderr = f"{stderr}\ncommand timed out".strip()
             return CommandResult(
-                result.outcome is InvocationOutcome.SUCCEEDED and result.writer_complete and final_message_error is None,
+                result.outcome is InvocationOutcome.SUCCEEDED and result.lifecycle_complete and final_message_error is None,
                 result.stdout,
                 stderr,
                 result.returncode if result.returncode is not None else -1,
                 result.writer_complete,
+                result.direct_process_complete if direct_mode else None,
             )
 
         try:

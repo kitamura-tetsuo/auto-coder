@@ -123,6 +123,9 @@ def verify_worker_repository(
     if worker_uid is None or worker_gid is None or worker_uid == 0:
         raise RepositoryReadinessError("repository readiness requires an explicit non-root worker identity")
 
+    if os.geteuid() != 0 and (worker_uid != os.geteuid() or worker_gid != os.getegid()):
+        raise RepositoryReadinessError("worker identity differs from non-root controller identity")
+
     system_python = next((candidate for candidate in (Path("/usr/bin/python3"), Path("/usr/local/bin/python3")) if candidate.is_file()), None)
     python = str(system_python.resolve()) if system_python is not None else shutil.which("python3", path=environment.get("PATH"))
     if python is None:
@@ -137,9 +140,9 @@ def verify_worker_repository(
             env=probe_environment,
             capture_output=True,
             text=True,
-            user=worker_uid,
-            group=worker_gid,
-            extra_groups=(),
+            user=worker_uid if os.geteuid() == 0 else None,
+            group=worker_gid if os.geteuid() == 0 else None,
+            extra_groups=() if os.geteuid() == 0 else None,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RepositoryReadinessError(f"worker repository probe could not start: {exc}") from exc

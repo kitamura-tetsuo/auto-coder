@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .local_execution_boundary import EvidenceStatus, LocalBoundaryEvidence
+from .local_execution_boundary import LocalBoundaryEvidence
 from .worktree_utils import LocalWorkspaceBinding
 
 
@@ -112,8 +112,8 @@ class RetainedLocalSession:
                 raise LocalContinuationError("another turn is already active for this local session")
             if backend_name != self.backend_name or session_id != self.provider_session_id or caller_identity != self.caller_identity:
                 raise LocalContinuationError("provider session or controller ownership does not match the retained binding")
-            if self.predecessor.writer_completion is not EvidenceStatus.ESTABLISHED:
-                raise LocalContinuationError("predecessor writers are not positively settled")
+            if not self.predecessor.lifecycle_complete:
+                raise LocalContinuationError("predecessor lifecycle completion is unavailable (writers or Codex direct process)")
             decision = self.reuse_decision
             if decision is None or not decision.allowed:
                 raise LocalContinuationError("positive live-root reuse permission is required")

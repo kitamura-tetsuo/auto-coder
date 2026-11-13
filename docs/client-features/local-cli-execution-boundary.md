@@ -1,5 +1,13 @@
 # Local CLI execution boundary
 
+Local Codex now uses the permanent direct-process completion policy documented
+in [Local Codex direct-process completion](codex-direct-process-completion.md).
+For Codex, references below to mandatory cgroup/root-controller setup and
+all-descendant settlement are superseded by non-root launch and direct-process
+completion with descendant termination explicitly unproven. Filesystem/no-edit,
+invocation identity, and independent continuation authorization remain required.
+OpenCode and other backends retain their existing completion policy.
+
 Each Git-backed local backend call has controller-owned execution state bound to
 the private repository invocation. The state records the actual backend type,
 effective edit mode, private workspace identity, unique turn identity, exact

@@ -452,7 +452,7 @@ class CodexClient(LLMClientBase):
             response_output = stdout or stderr
             low = full_output.lower()
 
-            if result.writer_settled is False:
+            if result.direct_process_complete is False or (result.direct_process_complete is None and result.writer_settled is False):
                 diagnostic = redact_string(stderr)[:2000] or "writer settlement is uncertain"
                 raise LocalWriterSettlementError(f"Codex execution safety could not be established; provider replacement is withheld: {diagnostic}")
 

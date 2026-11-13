@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ class WriterState(str, Enum):
     STOPPING = "stopping"
     POSITIVELY_STOPPED = "positively-stopped"
     TERMINATION_UNKNOWN = "termination-unknown"
+    DIRECT_PROCESS_STOPPED = "direct-process-stopped"
 
 
 class InvocationOutcome(str, Enum):
@@ -107,10 +109,15 @@ class SupervisedInvocationResult:
     stderr: str
     detail: str = ""
     policy_installations: tuple[PolicyInstallation, ...] = ()
+    direct_process_complete: bool = False
 
     @property
     def writer_complete(self) -> bool:
         return self.writer_state is WriterState.POSITIVELY_STOPPED
+
+    @property
+    def lifecycle_complete(self) -> bool:
+        return self.writer_complete or self.direct_process_complete
 
     @property
     def replacement_authorized(self) -> bool:
@@ -235,6 +242,7 @@ class InvocationProcessSupervisor:
     settlement_timeout: float = 5.0
     _states: dict[str, WriterState] = field(default_factory=dict, init=False)
     _retained: dict[str, tuple[subprocess.Popen[bytes], Path]] = field(default_factory=dict, init=False)
+    _direct_invocations: set[str] = field(default_factory=set, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def state(self, invocation_id: str) -> WriterState:
@@ -256,10 +264,27 @@ class InvocationProcessSupervisor:
             return self._unavailable(request, "launch does not match its invocation boundary")
         if self.state(request.invocation_id) is not WriterState.NOT_STARTED:
             return self._unavailable(request, "invocation identity has already been used")
+        direct_mode = request.backend_type.lower() == "codex"
         try:
-            group = self.owner.prepare(request.invocation_id)
-        except CgroupV2Unavailable as exc:
+            if direct_mode:
+                if os.geteuid() == 0:
+                    return self._unavailable(request, "local Codex requires a non-root controller identity")
+                with self._lock:
+                    if request.invocation_id in self._direct_invocations:
+                        return self._unavailable(request, "invocation identity has already been reserved")
+                    self._direct_invocations.add(request.invocation_id)
+                # Policy anchor only: never evidence of process containment.
+                group = Path(tempfile.mkdtemp(prefix="codex-policy-"))
+            else:
+                group = self.owner.prepare(request.invocation_id)
+        except (CgroupV2Unavailable, OSError) as exc:
             return self._unavailable(request, str(exc))
+
+        def discard_owner() -> None:
+            if direct_mode:
+                group.rmdir()
+            else:
+                self.owner.discard(group)
 
         selected_policies: Sequence[ExecutionPolicyInstaller] = (self.filesystem_policy_factory(),) if policies is None else policies
         context = InstallationContext(
@@ -284,21 +309,22 @@ class InvocationProcessSupervisor:
                     close = getattr(prepared_policy, "close", None)
                     if close is not None:
                         close()
-                self.owner.discard(group)
+                discard_owner()
                 return self._unavailable(request, installed.detail or "policy installation failed", tuple(installations))
         if not any(item.establishes_filesystem_enforcement for item in installations):
             for prepared_policy in selected_policies:
                 close = getattr(prepared_policy, "close", None)
                 if close is not None:
                     close()
-            self.owner.discard(group)
+            discard_owner()
             return self._unavailable(request, "filesystem enforcement was not installed", tuple(installations))
 
         stdin = subprocess.PIPE if request.prompt_transport is PromptTransport.STDIN else None
         child_setups = tuple(item.child_setup for item in installations if item.child_setup is not None)
 
         def prepare_child() -> None:
-            self.owner.child_joiner(group)()
+            if not direct_mode:
+                self.owner.child_joiner(group)()
             for setup in child_setups:
                 setup()
 
@@ -317,7 +343,7 @@ class InvocationProcessSupervisor:
                 close = getattr(policy, "close", None)
                 if close is not None:
                     close()
-            self.owner.discard(group)
+            discard_owner()
             return self._unavailable(request, f"owned launch failed: {exc}", tuple(installations))
         for policy in selected_policies:
             close = getattr(policy, "close", None)
@@ -331,8 +357,12 @@ class InvocationProcessSupervisor:
             for monitor in monitors:
                 monitor.attach(process)
         except (OSError, RuntimeError) as exc:
-            self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
-            self.owner.discard(group)
+            if direct_mode:
+                process.kill()
+                process.wait(timeout=self.settlement_timeout)
+            else:
+                self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            discard_owner()
             if boundary is not None:
                 boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.FAILED)
             return self._unavailable(request, f"denial observation unavailable: {exc}", tuple(installations))
@@ -385,7 +415,20 @@ class InvocationProcessSupervisor:
         self._set_state(request.invocation_id, WriterState.STOPPING)
         detail = f"denial observation failed: {monitor_failures[0]}" if monitor_failures else ""
         try:
-            self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            if direct_mode:
+                # Only unreaped direct/traced children are addressed. This
+                # cleanup is best effort and never certifies all descendants.
+                if process.returncode is None:
+                    process.kill()
+                for monitor in monitors:
+                    terminate = getattr(monitor, "terminate_remaining", None)
+                    if terminate is not None:
+                        for denial in terminate():
+                            policy_denials.append(denial)
+                            if boundary is not None:
+                                boundary.report_policy_violation(request.invocation_id, denial)
+            else:
+                self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
             if monitors:
                 monitor_deadline = time.monotonic() + self.settlement_timeout
                 while any(monitor.root_returncode is None for monitor in monitors) and time.monotonic() < monitor_deadline:
@@ -399,26 +442,31 @@ class InvocationProcessSupervisor:
                 if monitored_returncode is not None:
                     process.returncode = monitored_returncode
             process.wait(timeout=self.settlement_timeout)
-            writer_state = WriterState.POSITIVELY_STOPPED
-            self.owner.discard(group)
+            writer_state = WriterState.DIRECT_PROCESS_STOPPED if direct_mode else WriterState.POSITIVELY_STOPPED
+            discard_owner()
             if boundary is not None:
-                boundary.record_writer_completion(request.invocation_id)
-        except (CgroupV2Unavailable, subprocess.TimeoutExpired) as exc:
+                if direct_mode:
+                    boundary.record_direct_process_completion(request.invocation_id)
+                else:
+                    boundary.record_writer_completion(request.invocation_id)
+        except (CgroupV2Unavailable, OSError, subprocess.TimeoutExpired) as exc:
             writer_state = WriterState.TERMINATION_UNKNOWN
             detail = str(exc)
             with self._lock:
                 self._retained[request.invocation_id] = (process, group)
         self._set_state(request.invocation_id, writer_state)
         if boundary is not None:
-            if outcome is InvocationOutcome.SUCCEEDED and writer_state is WriterState.POSITIVELY_STOPPED:
+            if outcome is InvocationOutcome.SUCCEEDED and writer_state in (WriterState.POSITIVELY_STOPPED, WriterState.DIRECT_PROCESS_STOPPED):
                 boundary.record_backend_success(request.invocation_id)
                 boundary.record_violation_observation(request.invocation_id)
             else:
                 boundary.record_backend_failure(request.invocation_id, detail or outcome.value)
-        if writer_state is WriterState.POSITIVELY_STOPPED:
+        if writer_state in (WriterState.POSITIVELY_STOPPED, WriterState.DIRECT_PROCESS_STOPPED):
             for thread in (*readers, input_writer):
                 if thread is not None:
                     thread.join(timeout=self.settlement_timeout)
+        if direct_mode:
+            detail = "\n".join(filter(None, (detail, "Codex direct-process completion policy; descendant termination is unproven")))
         detail = "\n".join(part for part in (detail, *dict.fromkeys(policy_denials)) if part)
         return SupervisedInvocationResult(
             request.invocation_id,
@@ -429,14 +477,17 @@ class InvocationProcessSupervisor:
             b"".join(stderr_chunks).decode("utf-8", errors="replace"),
             detail,
             tuple(installations),
+            writer_state is WriterState.DIRECT_PROCESS_STOPPED,
         )
 
     def authorize_replacement(self, predecessor: SupervisedInvocationResult, *, controller_decision: bool) -> bool:
-        return controller_decision and predecessor.writer_complete and self.state(predecessor.invocation_id) is WriterState.POSITIVELY_STOPPED
+        return controller_decision and predecessor.lifecycle_complete and self.state(predecessor.invocation_id) in (WriterState.POSITIVELY_STOPPED, WriterState.DIRECT_PROCESS_STOPPED)
 
     def settle_retained(self, invocation_id: str) -> bool:
         """Retry authoritative cleanup without converting the original outcome."""
         with self._lock:
+            if invocation_id in self._direct_invocations:
+                return False  # Never route unknown direct completion into cgroup cleanup.
             retained = self._retained.get(invocation_id)
         if retained is None:
             return self.state(invocation_id) is WriterState.POSITIVELY_STOPPED

@@ -52,10 +52,22 @@ class LocalBoundaryEvidence:
     violation_observation: EvidenceStatus
     policy_violation: bool
     failure: Optional[str]
+    direct_process_completion: EvidenceStatus = EvidenceStatus.UNKNOWN
+
+    @property
+    def lifecycle_complete(self) -> bool:
+        """Use the backend-specific completion criterion without inventing facts.
+
+        Local Codex accepts direct-process completion. Descendant writer
+        settlement remains a separate, potentially unknown observation.
+        """
+        if self.backend_type.lower() == "codex":
+            return self.direct_process_completion is EvidenceStatus.ESTABLISHED
+        return self.writer_completion is EvidenceStatus.ESTABLISHED
 
     @property
     def confined_result_authorized(self) -> bool:
-        return self.backend_outcome is BackendOutcome.SUCCEEDED and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
+        return self.backend_outcome is BackendOutcome.SUCCEEDED and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED and self.lifecycle_complete and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
 
     @property
     def promotable(self) -> bool:
@@ -67,10 +79,11 @@ class LocalBoundaryEvidence:
         """Whether default local result handoff has positive lifecycle evidence.
 
         Filesystem/publication confinement is deliberately not a prerequisite for
-        controller publication. Writer settlement and violation observation remain
-        mandatory so an incomplete turn can never promote files.
+        controller publication. Backend-specific lifecycle completion and violation
+        observation remain mandatory. Codex direct completion does not certify
+        that descendant writers have stopped.
         """
-        return self.editable and self.backend_outcome is BackendOutcome.SUCCEEDED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
+        return self.editable and self.backend_outcome is BackendOutcome.SUCCEEDED and self.lifecycle_complete and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
 
 
 @dataclass
@@ -87,6 +100,7 @@ class LocalExecutionBoundary:
     _filesystem_enforcement: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
     _publication_enforcement: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
     _writer_completion: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
+    _direct_process_completion: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
     _violation_observation: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
     _policy_violation: bool = field(default=False, init=False, repr=False)
     _failure: Optional[str] = field(default=None, init=False, repr=False)
@@ -155,6 +169,12 @@ class LocalExecutionBoundary:
             self._accept(invocation_id)
             self._writer_completion = EvidenceStatus.ESTABLISHED
 
+    def record_direct_process_completion(self, invocation_id: str) -> None:
+        """Accept direct-child termination without certifying descendant settlement."""
+        with self._lock:
+            self._accept(invocation_id)
+            self._direct_process_completion = EvidenceStatus.ESTABLISHED
+
     def record_filesystem_enforcement(self, invocation_id: str, status: EvidenceStatus) -> None:
         """Accept installation/lifetime truth from the filesystem producer."""
         with self._lock:
@@ -194,6 +214,7 @@ class LocalExecutionBoundary:
             filesystem_enforcement=self._filesystem_enforcement,
             publication_enforcement=self._publication_enforcement,
             writer_completion=self._writer_completion,
+            direct_process_completion=self._direct_process_completion,
             violation_observation=self._violation_observation,
             policy_violation=self._policy_violation,
             failure=self._failure,

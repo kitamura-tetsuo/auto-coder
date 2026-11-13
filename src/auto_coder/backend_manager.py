@@ -38,7 +38,7 @@ from .invocation_admission import (
 from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
-from .local_execution_boundary import EvidenceStatus, bind_local_execution_boundary
+from .local_execution_boundary import bind_local_execution_boundary
 from .local_llm_observability import observe_local_llm_call
 from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, LocalResultLifecycleAuthority, RetainedLocalSession
 from .logger_config import get_logger, log_calls
@@ -70,7 +70,7 @@ logger = get_logger(__name__)
 def _dispose_local_sessions(sessions: dict[str, RetainedLocalSession]) -> None:
     """Release abandoned manager leases without deleting active writer roots."""
     for session_id, retained in tuple(sessions.items()):
-        if retained.predecessor.writer_completion is not EvidenceStatus.ESTABLISHED:
+        if not retained.predecessor.lifecycle_complete:
             continue
         try:
             retained.dispose()
@@ -917,7 +917,7 @@ class BackendManager(LLMBackendManagerBase):
                         # reuse decision across unrelated fresh tasks.
                         for previous_id in tuple(self._retained_local_sessions):
                             previous = self._retained_local_sessions[previous_id]
-                            if previous.predecessor.writer_completion is not EvidenceStatus.ESTABLISHED:
+                            if not previous.predecessor.lifecycle_complete:
                                 raise LocalWriterSettlementError("cannot replace retained workspace while writer settlement is uncertain")
                             self.release_local_session(previous_id, preserve_reuse=True)
                     if is_local and session_id is None and hasattr(cli, "clear_last_session_id"):
@@ -1076,7 +1076,7 @@ class BackendManager(LLMBackendManagerBase):
                         if retained_session is not None:
                             if completed_turn_evidence is None:
                                 raise LocalContinuationError("continued turn produced no controller-owned evidence")
-                            if completed_turn_evidence.writer_completion is not EvidenceStatus.ESTABLISHED:
+                            if not completed_turn_evidence.lifecycle_complete:
                                 raise LocalWriterSettlementError("continued turn writer settlement is uncertain")
                             if completed_turn_evidence.editable:
                                 if not completed_turn_evidence.handoff_authorized:
@@ -1173,8 +1173,9 @@ class BackendManager(LLMBackendManagerBase):
                     raise
                 finally:
                     # Includes preparation failure and BaseException interruption.
-                    # Unknown descendant writers retain their execution lease.
-                    if workspace_ownership is not None and (not provider_started or (local_boundary is not None and local_boundary.evidence().writer_completion is EvidenceStatus.ESTABLISHED)):
+                    # Incomplete backend-specific lifecycle evidence retains the lease.
+                    # Codex direct completion deliberately leaves descendants unknown.
+                    if workspace_ownership is not None and (not provider_started or (local_boundary is not None and local_boundary.evidence().lifecycle_complete)):
                         workspace_ownership.release_execution()
                     if retained_session is not None and local_boundary is not None and retained_session.active_turn_id is not None:
                         retained_session.fail(local_boundary.evidence())
@@ -1319,7 +1320,7 @@ class BackendManager(LLMBackendManagerBase):
                 pass
         for session_id in tuple(self._retained_local_sessions):
             retained = self._retained_local_sessions[session_id]
-            if retained.predecessor.writer_completion is EvidenceStatus.ESTABLISHED:
+            if retained.predecessor.lifecycle_complete:
                 try:
                     self.release_local_session(session_id)
                 except LocalContinuationError as exc:
