@@ -241,6 +241,20 @@ promotion publisher against real Git; it is not a live GitHub Actions acceptance
 claim. Neither worker has a Docker binary or socket. The test belongs to the
 required `isolated-containers` Supervisor profile rather than ordinary unit CI.
 
+The beta-acceptance precondition retains failures in each scenario's existing
+`supervisor-integration-logs` artifact directory as
+`beta-acceptance-failure.json`. An authenticated original local `FAIL`, `BLOCKED`,
+or `SUPERSEDED` fails the fixture immediately. Local `PASS` with uncertain
+publication continues the existing readback within the unchanged 200-second
+fixture deadline. Failure diagnostics include the last authenticated operation
+projection and receipt, plus one read of the already persisted local result's
+reason and bounded last-sample request IDs/checks. That read covers the interval
+between local-result persistence and operation-receipt persistence; it does not
+sample the worker or extend the original window. Only selected diagnostic fields
+are retained before fixture cleanup, without credentials or complete journal
+contents. Timeout includes the last projection, and unavailable diagnostic reads
+or writes preserve the original failure.
+
 The disposable release fixture waits for a successful authenticated Supervisor
 inspection before starting its prior installed runtime. The control Unix socket
 appears before the private HTTP bridge starts, so its pathname alone is not a

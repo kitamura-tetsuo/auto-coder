@@ -20,6 +20,7 @@ from typing import Iterator
 
 from .fresh_initialization import FreshInitializationIntent, parse_fresh_intent, read_fresh_status
 from .original_attempts import PROFILE, HistoryBinding, HistoryEvent, OriginalEvidenceUnavailable, canonical, history_lock, identity, read_frontier, read_original, source_identity, validate_original_lifetime
+from .original_genesis import HISTORY_PROFILE, GenesisAnchor
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,46 @@ class OriginalAttemptEvidence:
     originals: tuple[OriginalFile, ...] = ()
     unavailable: tuple[str, ...] = ()
     # There is deliberately no completeness boolean or authorization field.
+
+
+@dataclass(frozen=True)
+class OriginalGeneration:
+    """Original scoped identities; an unresolved outcome remains unresolved."""
+
+    request_id: str
+    instance_id: str
+    management_id: str
+    image_id: str
+    bootstrap_config_sha256: str
+    management_config_sha256: str
+    state_root: str
+    state_device: int
+    state_inode: int
+    journal_root: str
+    journal_device: int
+    journal_inode: int
+    oauth_root: str
+    oauth_device: int
+    oauth_inode: int
+    owner_path: str
+    owner_device: int
+    owner_inode: int
+    outcome: str
+    expected_stores: tuple[tuple[str, str], ...]
+    proxy_id: str = ""
+    proxy_image_id: str = ""
+
+
+@dataclass(frozen=True)
+class OriginalLineageEvidence:
+    binding: HistoryBinding
+    profile: str = HISTORY_PROFILE
+    genesis: GenesisAnchor | None = None
+    frontier: str = ""
+    attempts: tuple[AttemptEvidence, ...] = ()
+    generations: tuple[OriginalGeneration, ...] = ()
+    originals: tuple[OriginalFile, ...] = ()
+    unavailable: tuple[str, ...] = ()
 
 
 def _snapshot(path: Path) -> OriginalFile:
@@ -114,14 +155,38 @@ def _check_owner_fence(path: Path, fd: int, expected: tuple[int, int]) -> None:
         raise OriginalEvidenceUnavailable("consumer does not hold original-store owner fence")
 
 
-def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = ()) -> OriginalAttemptEvidence:
+def _derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = (), *, preserve_outcomes: bool = False) -> tuple[OriginalAttemptEvidence, tuple[OriginalGeneration, ...]]:
     """Enumerate original authority, independently of any submitted result."""
     files: dict[str, OriginalFile] = {}
     attempts: list[AttemptEvidence] = []
+    generations: list[OriginalGeneration] = []
     unavailable: list[str] = []
     held_owners: list[tuple[Path, int, tuple[int, int]]] = []
     scanned_namespaces: dict[Path, tuple[tuple[int, int], tuple[str, ...]]] = {}
     frontier = ""
+
+    def generation(intent: FreshInitializationIntent, outcome: str, stores: tuple[tuple[str, str], ...], owner: tuple[int, int] = (0, 0)) -> OriginalGeneration:
+        return OriginalGeneration(
+            intent.request_id,
+            intent.new_instance,
+            intent.new_container_id,
+            intent.image_digest,
+            intent.bootstrap_config_sha256,
+            intent.management_config_sha256,
+            intent.host_state_root,
+            intent.state_device,
+            intent.state_inode,
+            intent.host_journal_root,
+            intent.journal_device,
+            intent.journal_inode,
+            intent.host_oauth_root,
+            intent.oauth_device,
+            intent.oauth_inode,
+            str(Path(intent.host_state_root) / ".supervisor-owner.lock"),
+            *owner,
+            outcome,
+            stores,
+        )
 
     def retain(path: Path) -> bytes:
         # Hash the exact bytes consumed by this derivation. A second read
@@ -230,6 +295,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                 if kinds[-1] == "never-created":
                     if anchor["pristine"] is not True or json.loads(branch[-1].value_json) != {"lifetime": anchor["lifetime"], "stores": expected} or scanned_namespaces[state][1] or scanned_namespaces[journal][1]:
                         raise OriginalEvidenceUnavailable("never-created original boundary conflicts with effects")
+                    generations.append(generation(intent, "never-created", tuple(sorted(expected.items()))))
                     continue
                 if "claimed" not in kinds:
                     unavailable.append(attempt + ": original admission unresolved")
@@ -287,11 +353,18 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                             raise OriginalEvidenceUnavailable("unsupported nested evidence profile")
                         retain(path)
                 status = read_fresh_status(state, host=True)
-                if status["status"] != "succeeded":
+                if preserve_outcomes:
+                    # The actual native receipt follows this original claim.
+                    # A missing claim is a provenance gap, not an unknown outcome.
+                    retain(state / "fresh-launch-claimed.json")
+                    if status["status"] not in ("succeeded", "unknown", "launched"):
+                        raise OriginalEvidenceUnavailable("original first-launch boundary unavailable")
+                    generations.append(generation(intent, str(status["status"]), tuple(sorted(expected.items())), owner_identity))
+                elif status["status"] != "succeeded":
                     unavailable.append(attempt + ": original outcome remains " + str(status["status"]))
             except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
                 unavailable.append(attempt + ": " + (str(error) or type(error).__name__))
-        if not events:
+        if not events and not (preserve_outcomes and authority.genesis_path):
             unavailable.append("prospective enrollment has no original attempts; legacy coverage unavailable")
         # Re-read every byte and identity; no consumer verdict supplies stability.
         for original_path, snapshot in files.items():
@@ -309,7 +382,139 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
             raise OriginalEvidenceUnavailable("original source changed during derivation")
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
         unavailable.append(str(error) or type(error).__name__)
-    return OriginalAttemptEvidence(binding=binding, frontier=frontier, attempts=tuple(attempts), originals=tuple(sorted(files.values(), key=lambda item: item.path)), unavailable=tuple(unavailable))
+    return OriginalAttemptEvidence(binding=binding, frontier=frontier, attempts=tuple(attempts), originals=tuple(sorted(files.values(), key=lambda item: item.path)), unavailable=tuple(unavailable)), tuple(generations)
+
+
+def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = ()) -> OriginalAttemptEvidence:
+    """Keep the prospective-attempt reader's existing outcome requirements."""
+    return _derive(binding, fence, owner_fences)[0]
+
+
+def derive_lineage(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = ()) -> OriginalLineageEvidence:
+    """Join original genesis and every retained attempted successor read-only."""
+    from .original_genesis import LAUNCH_NAME, NATIVE_NAME, native_paths, validate_history_genesis, validate_native_genesis
+
+    evidence, successors = _derive(binding, fence, owner_fences, preserve_outcomes=True)
+    originals = {item.path: item for item in evidence.originals}
+    unavailable = list(evidence.unavailable)
+    generations: list[OriginalGeneration] = []
+    genesis = None
+    try:
+        _check_fence(binding, fence)
+        authority, events = read_frontier(Path(binding.root), binding)
+        if not authority.genesis_path or authority.profile != HISTORY_PROFILE:
+            raise OriginalEvidenceUnavailable("full retained lineage requires original prospective genesis; earlier history remains unavailable")
+        path = Path(authority.genesis_path)
+        genesis = validate_history_genesis(Path(binding.root))
+        if genesis.binding != binding or binding.source != source_identity():
+            raise OriginalEvidenceUnavailable("original genesis source/history differs")
+        state, journal, oauth = (genesis.root(role) for role in ("state", "journal", "oauth"))
+        owner_path = Path(state.host_path) / ".supervisor-owner.lock"
+        owner_identity = identity(owner_path)
+        matching = [fd for fd in owner_fences if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == owner_identity]
+        if len(matching) != 1:
+            raise OriginalEvidenceUnavailable("current original genesis owner fence unavailable")
+        _check_owner_fence(owner_path, matching[0], owner_identity)
+        snapshots = [path, owner_path, Path(state.host_path) / NATIVE_NAME, Path(state.host_path) / LAUNCH_NAME]
+        snapshots.extend(Path(item.path) for item in genesis.files)
+        namespaces = {}
+        for directory in (Path(state.host_path), Path(journal.host_path)):
+            namespaces[directory] = (identity(directory, directory=True), tuple(sorted(item.name for item in directory.iterdir())))
+            for item in sorted(directory.iterdir()):
+                if directory == Path(state.host_path) and item.name == "logs":
+                    info = item.lstat()
+                    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                        raise OriginalEvidenceUnavailable("original genesis diagnostics directory differs")
+                    continue
+                if item.is_symlink() or item.is_dir():
+                    raise OriginalEvidenceUnavailable("unsupported nested original genesis evidence")
+                snapshots.append(item)
+        for original_path in snapshots:
+            observed = _snapshot(original_path)
+            if observed.path in originals and originals[observed.path] != observed:
+                raise OriginalEvidenceUnavailable("original genesis changed during derivation")
+            if any(item.path != observed.path and (item.device, item.inode) == (observed.device, observed.inode) for item in originals.values()):
+                raise OriginalEvidenceUnavailable("original lineage file identity aliases")
+            originals[observed.path] = observed
+        validate_native_genesis(genesis, path, host=True)
+        stores = native_paths(genesis, host=True)
+        for store in stores.values():
+            _database(store)
+        # This is a factual original launch boundary. It never upgrades child,
+        # handoff, recovery or management-operation unknowns into success.
+        with closing(sqlite3.connect(stores["child"].as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+            rows = connection.execute("SELECT instance_id,record_json FROM child_state").fetchall()
+            if len(rows) > 1 or rows and rows[0][0] != genesis.instance_id:
+                raise OriginalEvidenceUnavailable("original genesis child identity differs")
+            outcome = "unknown" if not rows else json.loads(rows[0][1])["phase"]
+            if outcome not in {"stopped", "starting", "running", "draining", "unknown", "needs_attention"}:
+                raise OriginalEvidenceUnavailable("original genesis child outcome is malformed")
+        generations.append(
+            OriginalGeneration(
+                genesis.authorization_id,
+                genesis.instance_id,
+                genesis.management_id,
+                genesis.management_image_id,
+                genesis.file("bootstrap").sha256,
+                genesis.file("management").sha256,
+                state.host_path,
+                state.device,
+                state.inode,
+                journal.host_path,
+                journal.device,
+                journal.inode,
+                oauth.host_path,
+                oauth.device,
+                oauth.inode,
+                str(owner_path),
+                *owner_identity,
+                outcome,
+                tuple(sorted((name, str(store)) for name, store in stores.items())),
+                genesis.proxy_id,
+                genesis.proxy_image_id,
+            )
+        )
+        complete = (generations[0], *successors)
+        expected_owners = {(item.owner_device, item.owner_inode) for item in complete if item.owner_inode > 0}
+        observed_owners = [(os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in owner_fences]
+        if len(observed_owners) != len(expected_owners) or set(observed_owners) != expected_owners:
+            raise OriginalEvidenceUnavailable("original lineage owner descriptor set differs")
+        by_instance = {item.instance_id: item for item in complete}
+        for event in events:
+            if event.kind != "anchor":
+                continue
+            intent = parse_fresh_intent(json.loads(event.value_json)["intent"])
+            generation = by_instance.get(intent.new_instance)
+            if generation is None or generation.outcome == "never-created":
+                continue
+            predecessor = by_instance.get(intent.old_instance)
+            if predecessor is None or (intent.old_container_id, intent.owner_lock_device, intent.owner_lock_inode) != (predecessor.management_id, predecessor.owner_device, predecessor.owner_inode):
+                raise OriginalEvidenceUnavailable("original native successor owner differs from its retained predecessor")
+            if (intent.host_oauth_root, intent.oauth_device, intent.oauth_inode) != (oauth.host_path, oauth.device, oauth.inode) or identity(Path(intent.host_oauth_root), directory=True) != (oauth.device, oauth.inode):
+                raise OriginalEvidenceUnavailable("original native successor retained OAuth root differs")
+        for original_name, expected in originals.items():
+            if _snapshot(Path(original_name)) != expected:
+                raise OriginalEvidenceUnavailable("original lineage changed during derivation")
+        for directory, (expected_id, names) in namespaces.items():
+            if identity(directory, directory=True) != expected_id or tuple(sorted(item.name for item in directory.iterdir())) != names:
+                raise OriginalEvidenceUnavailable("original genesis namespace changed during derivation")
+        if read_frontier(Path(binding.root), binding) != (authority, events) or validate_history_genesis(Path(binding.root)) != genesis:
+            raise OriginalEvidenceUnavailable("original lineage advanced during derivation")
+        _check_fence(binding, fence)
+        _check_owner_fence(owner_path, matching[0], owner_identity)
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+        unavailable.append(str(error) or type(error).__name__)
+    return OriginalLineageEvidence(binding, HISTORY_PROFILE, genesis, evidence.frontier, evidence.attempts, tuple(generations) + successors, tuple(sorted(originals.values(), key=lambda item: item.path)), tuple(unavailable))
+
+
+def verify_lineage(submitted: OriginalLineageEvidence, expected: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = ()) -> OriginalLineageEvidence:
+    """Independently reconstruct all originals at the consumer's current fence."""
+    current = derive_lineage(expected, fence, owner_fences)
+    if current != submitted or submitted.binding != expected:
+        raise OriginalEvidenceUnavailable("submitted lineage is forged, stale, truncated or cross-deployment")
+    if current.unavailable:
+        raise OriginalEvidenceUnavailable("; ".join(current.unavailable))
+    return current
 
 
 def verify(submitted: OriginalAttemptEvidence, expected: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = ()) -> OriginalAttemptEvidence:

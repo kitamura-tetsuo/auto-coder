@@ -23,6 +23,13 @@ its current fences; it must separately decide whether that explicitly bounded
 coverage supplies the history its own contract requires. Neither enrollment
 nor a matching evidence object supplies recovery or launch authority.
 
+The separate `ordinary-original-genesis-v1` profile described in
+[Original ordinary deployment genesis and retained lineage](management-original-genesis.md)
+adds an affirmative original root-creation and ordinary first-launch baseline.
+It uses `ordinary-original-history-v1` authority and the independent
+`derive_lineage`/`verify_lineage` API. It does not change this prospective-only
+profile's pre-enrollment gap or convert any earlier deployment.
+
 ## Original producer and lifetime
 
 An operator must separately provision a new canonical mode-0700 history directory

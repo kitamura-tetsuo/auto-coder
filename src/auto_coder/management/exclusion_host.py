@@ -73,6 +73,21 @@ def inherited_support(mounts: list[object]) -> tuple[tuple[ArchivedExclusion, ..
     if raw.get("fresh_prior_lock_path") is None:
         if archived:
             raise ValueError("archives lack fresh predecessor provenance")
+        if raw.get("original_genesis") is not None:
+            from .original_genesis import GENESIS_NAME, HISTORY_MOUNT, read_genesis, validate_history_genesis
+
+            if raw["original_genesis"] != "/bootstrap/" + GENESIS_NAME:
+                raise ValueError("ordinary original genesis path differs")
+            original = read_genesis(bootstrap.parent / GENESIS_NAME)
+            if validate_history_genesis(Path(original.binding.root)) != original or original.instance_id != raw.get("instance_id") or original.file("bootstrap").sha256 != hashlib.sha256(content).hexdigest():
+                raise ValueError("ordinary original genesis authority differs")
+            for role in ("state", "journal", "oauth", "history"):
+                expected = original.root(role)
+                selected = _mount(mounts, expected.container_path, rw=role != "history")
+                current = selected.lstat()
+                if str(selected) != expected.host_path or (current.st_dev, current.st_ino) != (expected.device, expected.inode):
+                    raise ValueError("ordinary original genesis mounted root differs")
+            return (), {str(HISTORY_MOUNT)}
         return (), set()
     if raw.get("state_root") != "/management-child-state" or raw.get("fresh_prior_lock_path") != "/management-prior-owner.lock":
         raise ValueError("predecessor fresh paths differ")
@@ -119,6 +134,16 @@ def required_exclusions(prior: PriorContainer) -> tuple[ArchivedExclusion, ...]:
 def validate_successor(prior: PriorContainer, intent: FreshInitializationIntent, bootstrap_path: Path | None) -> tuple[ArchivedExclusion, ...]:
     required = required_exclusions(prior)
     prior_config = json.loads(protected_bytes(Path(prior.bootstrap_source), private=False), object_pairs_hook=unique_pairs)
+    if prior_config.get("original_genesis") is not None:
+        from .original_genesis import GENESIS_NAME, read_genesis, validate_history_genesis
+
+        if prior_config["original_genesis"] != "/bootstrap/" + GENESIS_NAME:
+            raise ValueError("original genesis predecessor selection differs")
+        genesis = read_genesis(Path(prior.bootstrap_source).parent / GENESIS_NAME)
+        if validate_history_genesis(Path(genesis.binding.root)) != genesis or (genesis.instance_id, genesis.management_id, genesis.file("bootstrap").sha256) != (prior.instance_id, prior.container_id, prior.bootstrap_sha256):
+            raise ValueError("original genesis predecessor authority differs")
+        if (intent.original_history, intent.original_history_id) != (genesis.binding.root, genesis.binding.history):
+            raise ValueError("covered original genesis history cannot be omitted or replaced")
     if prior_config.get("fresh_prior_lock_path") is not None:
         # An explicitly enrolled original predecessor cannot silently lose its
         # source-bound history when the next real host cutover is prepared.

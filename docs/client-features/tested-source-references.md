@@ -19,6 +19,17 @@ successful result. A tag alone is not eligibility evidence: consumers must also
 read the tag object and direct commit and verify the recorded Actions run and
 both required jobs are completed successfully for that exact attempt and SHA.
 
+When GitHub transfers a repository, historical annotations retain their original
+repository identity. Uncached Git-data reads can follow one HTTP 301 from the
+configured API to its numeric repository-ID route, with the same API origin,
+request path suffix and query. Each send still uses the shared request boundary.
+The move does not rewrite the configured repository, annotation, source identity
+or recorded Actions run/attempt, and their exact readback checks remain required.
+Missing or incompatible locations and further redirects remain unavailable;
+Git-data mutations never follow this read-only transfer path. This permits
+reading preserved historical proof after an owner transfer without relabeling
+that proof or granting publication authority.
+
 Only the completion-triggered publication workflow has `contents: write`; test
 jobs have read-only contents permission. The fixed workflow repository, CLI
 destination, and checked-out GitHub `origin` must all identify the same

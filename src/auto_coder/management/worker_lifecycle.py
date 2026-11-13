@@ -714,9 +714,9 @@ class WorkerLifecycle:
         steps = snapshot["steps"]
         assert isinstance(steps, dict)
         identity = self._original_supervisor(client, snapshot)
-        if identity == "CHANGED":
-            return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "original_supervisor_incarnation_changed")
         if identity != "SAME":
+            # Reconstruction can occur after _process_locked's first check.
+            # Its next iteration must apply the original retained-receipt gate.
             return record
         if name not in steps:
             if not self.runtime.retained_effect_permitted(record):

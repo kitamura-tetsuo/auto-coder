@@ -342,7 +342,80 @@ def _installed_release(
             _docker("rm", "-f", name, check=False)
 
 
-def _published_acceptance(system: _SmokeSystem):
+def _acceptance_failure_projection(response: dict[str, object]) -> dict[str, object]:
+    """Retain only the authenticated operation's non-credential diagnostics."""
+    fields = ("operation_id", "status", "phase", "effect_state", "revision", "reason", "safe_reason", "local_state", "local_result", "local_evidence_id", "next_sample_at")
+    projection = {key: response[key] for key in fields if key in response}
+    receipt = response.get("receipt")
+    if isinstance(receipt, dict):
+        projection["receipt"] = {key: receipt[key] for key in ("source", "result", "observed_at") if key in receipt}
+    elif receipt is None:
+        projection["receipt"] = None
+    return projection
+
+
+def _acceptance_local_failure(system: _SmokeSystem, operation_id: str) -> dict[str, object]:
+    """Read existing local evidence once, without advancing the original result."""
+    try:
+        observation = system.app.state.management_runtime.beta_acceptance.producer.read(operation_id)
+        result: dict[str, object] = {"state": observation.state.value, "reason": observation.reason[:512]}
+        evidence = observation.evidence
+        if evidence is not None:
+            result.update(local_evidence_id=evidence.local_evidence_id[:512], content_sha256=evidence.content_sha256[:64], local_result=evidence.local_result.value)
+            samples = evidence.document().get("samples")
+            if isinstance(samples, list):
+                result["sample_count"] = len(samples)
+                last = samples[-1] if samples else None
+                if isinstance(last, dict):
+                    sample: dict[str, object] = {key: last[key][:128] for key in ("supervisor_request_id", "worker_request_id") if isinstance(last.get(key), str)}
+                    checks = last.get("checks")
+                    if isinstance(checks, list):
+                        sample["checks"] = [{key: check[key][:512] for key in ("check", "disposition", "reason") if isinstance(check.get(key), str)} for check in checks[:16] if isinstance(check, dict)]
+                        sample["checks_truncated"] = len(checks) > 16
+                    result["last_sample"] = sample
+        return result
+    except Exception as error:
+        # Missing diagnostics cannot change the acceptance failure or disclose
+        # exception messages that might contain authority or configuration.
+        return {"state": "UNAVAILABLE", "error_type": type(error).__name__[:80]}
+
+
+def _wait_for_published_acceptance(system: _SmokeSystem, accepted: dict[str, object], scenario: str) -> None:
+    operation_id = str(accepted["operation_id"])
+    last_projection = _acceptance_failure_projection(accepted)
+
+    def require_publishable_local_result() -> None:
+        # An immutable negative cannot become publishable by polling again.
+        # Local PASS still needs the ordinary publication readback below.
+        assert last_projection.get("local_result") not in {"FAIL", "BLOCKED", "SUPERSEDED"}, "Original beta acceptance has an immutable non-passing local result"
+
+    def published():
+        nonlocal last_projection
+        response = _call(system.http, system.bearer, "auto_coder_beta_acceptance_get", {"target_id": "beta-worker", "operation_id": operation_id})
+        last_projection = _acceptance_failure_projection(response)
+        require_publishable_local_result()
+        return response if response["status"] == "PASS_PUBLISHED" else None
+
+    try:
+        require_publishable_local_result()
+        _wait_for(published, timeout=200)
+    except AssertionError as error:
+        # The immutable local result can precede its operation receipt; read
+        # that existing result once so this publication race retains its reason.
+        document = {"operation_id": operation_id, "last_projection": last_projection, "local_observation": _acceptance_local_failure(system, operation_id)}
+        retained = json.dumps(document, sort_keys=True, indent=2) + "\n"
+        failure = AssertionError("Beta acceptance did not reach PASS_PUBLISHED; " + json.dumps(document, sort_keys=True))
+        destination = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "beta-acceptance-failure.json").write_text(retained, encoding="utf-8")
+        except OSError as retention_error:
+            # Diagnostic I/O must not replace the original acceptance failure.
+            failure.add_note(f"Could not retain beta acceptance projection: {type(retention_error).__name__}")
+        raise failure from error
+
+
+def _published_acceptance(system: _SmokeSystem, scenario: str):
     inspected = system.client.inspect_supervisor()
     worker = inspected.data["worker"]
     accepted = _call(
@@ -361,7 +434,7 @@ def _published_acceptance(system: _SmokeSystem):
         },
     )
     operation_id = str(accepted["operation_id"])
-    _wait_for(lambda: result if (result := _call(system.http, system.bearer, "auto_coder_beta_acceptance_get", {"target_id": "beta-worker", "operation_id": operation_id}))["status"] == "PASS_PUBLISHED" else None, timeout=200)
+    _wait_for_published_acceptance(system, accepted, scenario)
     published = SourceAcceptancePublisher(system.remote, "owner/repo").read(operation_id)
     assert published is not None
     evidence = json.loads(published.annotation)["local_evidence"]
@@ -558,7 +631,7 @@ def _exercise_installed_release_join(
         beta_root.mkdir()
         stage = "release-beta-stage-" + uuid.uuid4().hex[:12]
         with _owned_staging(stage, scenario, beta_root), _smoke_system(real_boundary, beta_root, scenario, stage, source_service_type=_ReleaseSourceService) as system:
-            acceptance = _published_acceptance(system)
+            acceptance = _published_acceptance(system, scenario)
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)

@@ -1,0 +1,30 @@
+services:
+  fixture:
+    build:
+      context: ${RECOVERY_VM_TOOLING:?Set the reviewed tooling directory}
+    environment:
+      APPROVED_AUTHORIZATION_ID: ${APPROVED_AUTHORIZATION_ID:?Set the matching disposable fixture authorization}
+    user: "${RECOVERY_VM_UID:?Set the preparation UID}:${RECOVERY_VM_GID:?Set the preparation GID}"
+    init: true
+    cpus: 2.0
+    mem_limit: 6g
+    pids_limit: 256
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=128m
+    volumes:
+      - type: bind
+        source: ${RECOVERY_VM_ROOT:?Set the prepared fixture directory}/input
+        target: /input
+        read_only: true
+      - type: bind
+        source: ${RECOVERY_VM_ROOT:?Set the prepared fixture directory}/disk
+        target: /disk
+      - type: bind
+        source: ${RECOVERY_VM_ROOT:?Set the prepared fixture directory}/output
+        target: /output
+    stop_grace_period: 30s

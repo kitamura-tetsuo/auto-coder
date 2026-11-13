@@ -44,6 +44,7 @@ class HistoryAuthority:
     profile: str
     root: tuple[int, int]
     lock: tuple[int, int]
+    genesis_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,15 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     """Validate the whole bounded append-only event namespace, never truncate."""
     raw, _ = read_original(root / "authority.json")
     authority = json.loads(raw)
-    if not isinstance(authority, dict) or set(authority) != {"binding", "profile", "root", "lock"} or authority["profile"] != PROFILE or canonical(authority) != raw:
+    from .original_genesis import HISTORY_PROFILE, validate_history_genesis
+
+    genesis = None
+    if isinstance(authority, dict) and authority.get("profile") == HISTORY_PROFILE:
+        genesis = validate_history_genesis(root)
+        fields = {"binding", "profile", "root", "lock", "genesis"}
+    else:
+        fields = {"binding", "profile", "root", "lock"}
+    if not isinstance(authority, dict) or set(authority) != fields or authority["profile"] not in (PROFILE, HISTORY_PROFILE) or canonical(authority) != raw:
         raise OriginalEvidenceUnavailable("unsupported history profile")
     binding = HistoryBinding(**authority["binding"])
     if binding.root != str(root) or (expected is not None and binding != expected) or authority["root"] != list(identity(root, directory=True)) or authority["lock"] != list(identity(root / "history.lock")):
@@ -289,10 +298,10 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     # All prior anchors must form one admissible forward history, including
     # failed branches. Checking only a new claim against its immediate parent
     # would accept an unrelated rewritten ancestor elsewhere in the frontier.
-    baseline: tuple[str, str] | None = None
-    known_predecessors: set[tuple[str, str]] = set()
-    seen_targets: set[str] = set()
-    seen_roots: set[tuple[int, int]] = set()
+    baseline: tuple[str, str] | None = (genesis.instance_id, genesis.management_id) if genesis is not None else None
+    known_predecessors: set[tuple[str, str]] = {baseline} if baseline is not None else set()
+    seen_targets: set[str] = {item.host_path for item in genesis.roots} if genesis is not None else set()
+    seen_roots: set[tuple[int, int]] = {(item.device, item.inode) for item in genesis.roots} if genesis is not None else set()
     earlier_predecessor_names: set[str] = set()
     for event in events:
         if event.kind == "claimed":
@@ -330,7 +339,7 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
 
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")
-    return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"])), events
+    return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"]), authority["genesis"]["path"] if genesis is not None else ""), events
 
 
 def _append(root: Path, kind: str, attempt: str, value: object) -> None:
@@ -377,13 +386,18 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
         if authority.binding.history != intent.original_history_id or authority.binding.source != source_identity():
             raise OriginalEvidenceUnavailable("original history source or enrollment differs")
         anchors = [event for event in events if event.kind == "anchor"]
+        genesis = None
+        if authority.genesis_path:
+            from .original_genesis import read_genesis
+
+            genesis = read_genesis(Path(authority.genesis_path))
         keys = {intent.new_instance, intent.new_container_id, intent.host_state_root, intent.host_journal_root}
         prior_targets = [json.loads(event.value_json)["intent"] for event in anchors]
         if any(event.attempt == intent.request_id for event in anchors) or any(keys & {prior["new_instance"], prior["new_container_id"], prior["host_state_root"], prior["host_journal_root"]} for prior in prior_targets):
             raise OriginalEvidenceUnavailable("original attempt or target already anchored; no replay")
-        if anchors:
-            baseline = json.loads(anchors[0].value_json)["intent"]
-            predecessors = [(baseline["old_instance"], baseline["old_container_id"])]
+        if anchors or genesis is not None:
+            baseline_pair = (genesis.instance_id, genesis.management_id) if genesis is not None else (json.loads(anchors[0].value_json)["intent"]["old_instance"], json.loads(anchors[0].value_json)["intent"]["old_container_id"])
+            predecessors = [baseline_pair]
             for prior_event in anchors:
                 prior_kinds = [event.kind for event in events if event.attempt == prior_event.attempt]
                 # A refused, interrupted or merely anchored attempt never established
@@ -391,7 +405,7 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
                 if prior_kinds in (["anchor", "claimed"], ["anchor", "claimed", "grant-possible"]):
                     prior = json.loads(prior_event.value_json)["intent"]
                     predecessors.append((prior["new_instance"], prior["new_container_id"]))
-            if (intent.old_instance, intent.old_container_id) not in predecessors or intent.new_instance == baseline["old_instance"] or intent.new_container_id == baseline["old_container_id"]:
+            if (intent.old_instance, intent.old_container_id) not in predecessors or intent.new_instance == baseline_pair[0] or intent.new_container_id == baseline_pair[1]:
                 raise OriginalEvidenceUnavailable("uncovered, refused or cyclic original predecessor")
         if any(prior["old_instance"] == intent.new_instance for prior in prior_targets):
             raise OriginalEvidenceUnavailable("attempt would cycle covered ancestry")
@@ -402,6 +416,8 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
         if state_id != (intent.state_device, intent.state_inode) or journal_id != (intent.journal_device, intent.journal_inode):
             raise OriginalEvidenceUnavailable("intended root identities differ before anchor")
         prior_root_ids = {tuple(json.loads(event.value_json)[field]) for event in anchors for field in ("state", "journal")}
+        if genesis is not None:
+            prior_root_ids.update((item.device, item.inode) for item in genesis.roots)
         if state_id == journal_id or state_id in prior_root_ids or journal_id in prior_root_ids:
             raise OriginalEvidenceUnavailable("original target aliases a protected mounted root")
         pristine = not any(Path(intent.host_state_root).iterdir()) and not any(Path(intent.host_journal_root).iterdir())

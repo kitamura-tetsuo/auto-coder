@@ -1,0 +1,183 @@
+# Native recovery epoch fixture
+
+This runner boots a fresh Ubuntu VM with its own Linux kernel, initial namespaces,
+systemd, Docker engine and boot identity. It does not run the host issuer on the
+outer CI runner or use a privileged Docker container as a substitute for the VM.
+The driver exercises original provenance, current containment, genuine installed
+READY and the production issuer/consumer entrypoints. A run is acceptance only
+when its exact scenario oracle succeeds and the VM exits successfully.
+
+Preparation selects KVM when the outer host exposes `/dev/kvm`; its separate
+Compose override passes that exact device and its actual group to the unprivileged
+QEMU process. The preparing shell does not need membership in the device group.
+If that device is absent, preparation explicitly selects QEMU TCG CPU emulation
+with the `max` CPU model. The selected accelerator is bound in the input manifest.
+Both modes boot the same real kernel and execute the same native oracles. A KVM
+permission or execution failure is an error; the runner does not silently switch
+an already prepared KVM input to another mode.
+
+The outer QEMU container has a read-only root, no capabilities, no new privileges,
+2 CPUs, 6 GiB memory and a 256-process limit. Only prepared input, the new guest
+disk and bounded output are mounted. Each scenario gets a new directory and new
+32 GiB sparse guest disk; an existing disk or original epoch is never reset.
+
+Preparation also binds the actual source Docker image store (`overlay2` or the
+`overlayfs` containerd snapshotter). The fresh guest configures the same store
+before its first daemon start and verifies both imported images retain their
+exact approved IDs. Importing between these stores can change the meaning of
+Docker's image ID; a changed ID is a preparation failure, not a reason to select
+another image or weaken the production source checks.
+Docker documents the [fresh-install storage default](https://docs.docker.com/engine/storage/containerd/)
+and the [cross-store image-ID behavior](https://github.com/docker/cli/issues/6670).
+
+The selected guest service profile is ordinary system Docker with its standard
+daemon-managed, separate-process containerd and `PrivateMounts=yes`. Before package
+installation can start an engine, preparation masks Docker and the standalone
+containerd service. It then installs the reviewed Docker override, unmasks Docker
+only, and checks the actual daemon command, PID/start identity, systemd cgroup
+driver, empty engine and managed containerd child. Both daemons must share one
+mount namespace distinct from PID 1 while retaining the host PID, user and network
+namespaces. These observations are retained in `docker-profile.json`, and the
+effective service configuration is included in `guest-platform.txt`.
+
+This mount profile keeps transient container mounts out of the host systemd unit
+catalog throughout target starts and restarts; production still requires exact
+equality with the approved catalog and refuses unknown routes. Docker documents
+[automatic containerd startup](https://docs.docker.com/reference/cli/dockerd/#run-containerd-standalone),
+and systemd 255 documents
+[PrivateMounts propagation](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#PrivateMounts=).
+This is provisioning of the fresh synthetic VM before any original history or
+recovery approval exists. It does not change an operational host, configure the
+production issuer, or establish acceptance for every stock Docker service profile
+or an incident with missing originals.
+
+Before original producers or recovery approval, the guest stops and masks these
+six explicitly enumerated timer/service pairs from its observed stock timer
+inventory:
+
+| Timer | Service |
+| --- | --- |
+| `systemd-tmpfiles-clean.timer` | `systemd-tmpfiles-clean.service` |
+| `apt-daily.timer` | `apt-daily.service` |
+| `apt-daily-upgrade.timer` | `apt-daily-upgrade.service` |
+| `dpkg-db-backup.timer` | `dpkg-db-backup.service` |
+| `e2scrub_all.timer` | `e2scrub_all.service` |
+| `fstrim.timer` | `fstrim.service` |
+
+The existing stock-route fixture separately inhibits `motd-news.timer` and its
+service. There is no wildcard timer discovery or inhibition.
+
+A scheduled tmpfiles execution previously changed its approved service readback.
+The [later native after-receipt-head job](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/43321049334/job/131543555073)
+recorded target startup at `2026-11-12 23:58:08.1399639 UTC`, after route approval,
+then `dpkg-db-backup.service` starting at `2026-11-13 00:00:00.2218320 UTC` and
+finishing at `00:00:00.3340939 UTC`. The issuer refused at `00:01:07.623 UTC`
+in the per-unit effective-route comparison, before the selected publication
+boundary. Its bounded cause metadata did not export the exact mismatching unit
+name. The observed post-approval backup execution changes the full `ExecStart`
+readback included in that unit's strict digest even after the service returns
+inactive. The finite preparation profile also covers the other observed stock
+housekeeping timers, so their calendar schedules do not determine acceptance.
+
+Preparation stops all six timers before waiting for any selected service to
+stop. It uses the production systemd reader to require real protected
+`/dev/null` masks, inactive state, zero service PIDs and no pending daemon reload.
+It reobserves every inhibited fact and retains the matching result,
+initial/stopped facts and mask identities in `maintenance-profile.json`, with
+stdout and file logging. An unavailable unit, failed state or stop, preexisting
+mask path or changed final state fails preparation. This finite fresh-VM setup
+leaves the production whole-route catalog and digest comparisons unchanged; it
+never refreshes an approval after maintenance or changes an operational recovery
+host.
+
+The guest installs the exact `uv==0.13.6` release and validates its reported release
+number. The complete observed `--version` banner, including its bounded build
+descriptor, is retained in `uv-version.txt` and supplied to staging and recovery
+authorization. The production installer continues to require exact banner
+equality; the fixture does not strip build identity from that comparison.
+
+## Reproduce a reviewed scenario
+
+Use a clean, committed checkout with the locked test dependencies installed. The
+read credential is used only to verify the actual immutable tested-source tag and
+successful GitHub test run for the installed READY. It needs repository contents
+and Actions read access, not publication authority. Keep it in an existing private
+file; do not put its value on the command line.
+
+```sh
+uv sync --locked --dev --extra test
+uv run python scripts/prepare_management_test_image.py
+docker pull caddy:2
+export APPROVED_AUTHORIZATION_ID=reviewed-recovery-fixture-unique
+RECOVERY_FIXTURE=/var/tmp/ac-recovery-vm-unique
+MANAGER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' auto-coder:management-fixture-$(git rev-parse --short=12 HEAD))
+CADDY_IMAGE_ID=$(docker image inspect --format '{{.Id}}' caddy:2)
+READ_TOKEN_FILE=/absolute/path/to/private-read-token
+bash scripts/recovery_vm/prepare.sh "$RECOVERY_FIXTURE" "$APPROVED_AUTHORIZATION_ID" "$MANAGER_IMAGE_ID" "$CADDY_IMAGE_ID" "$READ_TOKEN_FILE" grant
+docker compose --env-file "$RECOVERY_FIXTURE/compose.env" build
+docker compose --env-file "$RECOVERY_FIXTURE/compose.env" run --rm fixture
+```
+
+The prepared `compose.env` selects the exact reviewed Compose files, including the
+KVM-only device override when applicable. Do not add a separate `-f` argument
+that would discard this selection. The VM-only authorization marker binds the
+actual new machine, boot and engine. The driver verifies it before provisioning
+any management fixture. It refuses a populated engine or earlier fixture roots.
+
+`ACCEPTANCE_SCENARIOS` and `required_cases()` in
+`scripts/test_management_recovery_epoch_host.py` define the complete finite
+scenario oracle. CI derives its matrix directly from this list and requires
+every matrix job to pass. The two `kill-after-*` debug aliases select boundaries
+already present in the matrix and do not add independent cases. All before/after
+publication cases and all eleven mutations after the original intent head run on
+independent fresh VMs. A distinct `post-receipt-ready-mutation` scenario changes
+the exact READY receipt after consumption and receipt-head publication, then
+resumes that same issuer and independently proves refusal with no queued grant.
+They
+use real ptrace syscall stops around the actual exclusive record/head creation
+and successful file/directory fsync, with a pinned SIGKILL and no syscall-result
+replacement. The native process oracles also inspect real peer custody, original
+store preservation, unrelated worker lifetimes and effect requests, and absence
+of a replacement child/admission. Component guard tests cannot substitute for
+these executions.
+
+The `grant` scenario first requires all four actual protocol refusals implemented
+in `scripts/recovery_epoch_native_peer.py`: queued rights without a receipt,
+received rights without a receipt, a replaced target lifetime, and an SH lock
+whose acquiring process differs from the target. Each must preserve an entirely
+unreserved epoch before a later independent invocation can grant. Its successful
+path also holds the original issuer at the durable reservation head while an
+overlapping contender is refused. The separate `lost-reply` scenario requires an
+actual successful grant send while the receiver is stopped, then verifies the
+issuer's pidfd is dead before resuming the receiver; consumption must remain and
+the receiver must refuse current custody. The companion helper tests validate
+the fixture's native message parsing and guards; they are not VM acceptance.
+
+## Verifier-omission control
+
+A separate CI job proves that the post-receipt scenario detects omission of only
+the second final verification. It uses another fresh VM, copies the reviewed
+project into a private control directory, and removes exactly that one call with
+structural and byte-level checks. Its original producers, source identities,
+derived images and issuer all use the same copied package before any history is
+created. The canonical checkout and installed package remain unchanged.
+
+The control must reach the real receipt-head barrier and fail the unchanged
+native oracle because an exact canonical grant is actually queued on the stopped
+receiver's socket. An unrelated error, timeout, process exit or log message cannot
+pass this control. The result has a separate `mutation-detected` status, binds the
+exact original/mutant source evidence and preserves consumed state, the deliberate
+READY mutation and unrelated workers. It supplies test-sensitivity evidence and
+does not count as a successful production acceptance scenario.
+
+To prepare this explicitly selected control, use the reproduction command above
+with `post-receipt-ready-mutation omit-post-consumption-verifier` as the final two
+arguments to `prepare.sh`. Every ordinary preparation records `mutation_control`
+as `none`. Both the complete unmodified production matrix and this separate
+control must succeed for the aggregate CI gate.
+
+The guest read credential is deleted on exit. The outer input credential must
+also be deleted after the run; the CI workflow does this even on failure.
+Artifacts contain the result, bounded diagnostics and guest/serial logs, not the
+original OAuth stores or a reusable authority inventory. The fixture is not an
+incident-recovery procedure and cannot fill missing historical evidence.

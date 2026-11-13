@@ -365,7 +365,8 @@ def test_timeout_and_confirmation_uncertainty_remain_distinct(tmp_path: Path) ->
     assert supervisor.settle_retained(result.invocation_id)
 
 
-def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Path) -> None:
+def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Path, _use_real_sleep) -> None:
+    # Actual concurrent owners and readiness polling must yield between observations.
     supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     cancel = threading.Event()
     first_result = tmp_path / "first-result"
