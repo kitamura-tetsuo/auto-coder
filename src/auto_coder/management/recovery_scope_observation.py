@@ -251,7 +251,11 @@ def _inspect_unselected_exec(container_id: str, exec_id: str, engine_id: str) ->
     process = details.get("ProcessConfig")
     if not isinstance(process, dict):
         raise RecoveryScopeUnavailable("unselected exec command unavailable")
-    entrypoint, arguments = process.get("entrypoint"), process.get("arguments")
+    # A missing argument-vector field is not evidence of an empty Docker exec.
+    # An explicitly reported null vector is the supported no-argument form.
+    if "arguments" not in process:
+        raise RecoveryScopeUnavailable("unselected exec argument vector unavailable")
+    entrypoint, arguments = process.get("entrypoint"), process["arguments"]
     if arguments is None:
         arguments = []
     if not isinstance(entrypoint, str) or not entrypoint or len(entrypoint) > 4096 or not isinstance(arguments, list) or len(arguments) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in arguments):

@@ -745,6 +745,14 @@ def test_unselected_exec_identity_and_command_must_be_independently_read(scope: 
         recovery.observe_recovery_custody("fixture")
 
 
+def test_unselected_exec_requires_explicit_argument_vector(scope: ScopeFixture):
+    # Omitted Docker exec argument evidence cannot establish an unrelated command.
+    _unrelated_worker(scope)
+    scope.exec_inspections["d" * 64]["ProcessConfig"].pop("arguments")
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="exec"):
+        recovery.observe_recovery_custody("fixture")
+
+
 def test_unselected_exec_management_change_between_reads_refuses(scope: ScopeFixture, monkeypatch: pytest.MonkeyPatch):
     _unrelated_worker(scope)
     docker_exec = recovery._docker_exec_inspection
