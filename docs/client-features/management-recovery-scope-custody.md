@@ -102,7 +102,14 @@ This check does not establish continuous process lifetime or authorize recovery.
 Candidate detection inspects module/management-serve
 tokens even when embedded in a shell `-c` or Python `-c` argument; splitting
 only on Docker's argv array would otherwise classify an explicit management
-invocation as an unrelated worker. This conservative command-text check does
+invocation as an unrelated worker. In this recovery-only component every
+unselected Docker object must additionally expose complete actual `Path` and
+`Args` launch facts. Both the declared `Config.Cmd`/`Entrypoint` and the
+independent actual launch are classified: benign declared configuration cannot
+conceal a management invocation in the actual launch. Missing, malformed or
+ambiguous actual launch facts refuse. The existing single-pair observer's
+readback requirement is not strengthened when both actual fields are absent.
+This conservative command-text check does
 not prove the absence of indirect wrapper execution, source aliases or hidden
 controllers; full source and process closure remains an unmet requirement.
 Bind roots must resolve canonically and must not lexically overlap or alias a

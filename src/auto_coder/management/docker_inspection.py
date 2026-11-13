@@ -76,9 +76,16 @@ def management_candidate_roles(obj: dict[str, object], container_id: str, manage
         roles.append("selected-proxy")
     elif obj.get("Image") == proxy_image:
         roles.append("same-proxy-image")
-    # Include shell-wrapped management invocations, not just argv tokens.
+    # Config.Cmd/Entrypoint and Docker's actual Path/Args are distinct readbacks.
+    # The latter must not hide an effective management launch behind benign config.
     if management_command_candidate(arguments):
         roles.append("management-command")
+    if "Path" in obj or "Args" in obj:
+        actual_path, actual_args = obj.get("Path"), obj.get("Args")
+        if not isinstance(actual_path, str) or not actual_path or len(actual_path) > 4096 or not isinstance(actual_args, list) or len(actual_args) > 64 or any(not isinstance(arg, str) or len(arg) > 4096 for arg in actual_args):
+            raise ValueError("Docker actual launch command is ambiguous")
+        if management_command_candidate((actual_path, *actual_args)):
+            roles.append("actual-management-command")
     if network_mode == "container:" + management_id:
         roles.append("selected-management-network")
     if container_id not in (management_id, proxy_id) and overlapping_management_source(obj.get("Mounts"), management_sources):

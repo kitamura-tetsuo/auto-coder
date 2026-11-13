@@ -615,6 +615,8 @@ def _unrelated_worker(scope: ScopeFixture) -> dict:
         "Id": "f" * 64,
         "Image": "sha256:" + "c" * 64,
         "Config": {"Cmd": ["python", "worker.py"], "Entrypoint": None},
+        "Path": "python",
+        "Args": ["worker.py"],
         "HostConfig": {"NetworkMode": "bridge", "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
         "State": {"Running": True, "Pid": 12345, "Status": "running", "StartedAt": "2026-11-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"},
         "RestartCount": 0,
@@ -988,4 +990,41 @@ def test_selected_exec_ids_remain_full_inspection_evidence(scope: ScopeFixture):
     recovery.observe_recovery_custody("fixture")
     scope.inspections[selected]["ExecIDs"] = ["e" * 64]
     with pytest.raises(recovery.RecoveryScopeUnavailable, match="^enrolled full Docker inspection differs$"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize(
+    ("path", "arguments"),
+    [
+        ("python", ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]),
+        ("/bin/sh", ["-c", "exec python3 -m auto_coder.management.proxy_watch_cli --config /watcher/config.json"]),
+        ("/opt/auto-coder/.venv/bin/auto-coder", ["management", "serve"]),
+    ],
+)
+def test_actual_docker_launch_cannot_hide_management_behind_benign_config(scope: ScopeFixture, path: str, arguments: list[str]):
+    # Docker's actual Path/Args are independent candidate evidence from Config.Cmd.
+    worker = _unrelated_worker(scope)
+    worker["Path"] = path
+    worker["Args"] = arguments
+    assert worker["Config"]["Cmd"] == ["python", "worker.py"]
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="unexpected unselected management/proxy candidate"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize("mutation", ["path-missing", "args-missing", "path-type", "args-type", "args-too-many"])
+def test_actual_docker_launch_requires_complete_facts_if_present(scope: ScopeFixture, mutation: str):
+    worker = _unrelated_worker(scope)
+    worker["Path"] = "python"
+    worker["Args"] = ["worker.py"]
+    if mutation == "path-missing":
+        del worker["Path"]
+    elif mutation == "args-missing":
+        del worker["Args"]
+    elif mutation == "path-type":
+        worker["Path"] = 123
+    elif mutation == "args-type":
+        worker["Args"] = "worker.py"
+    else:
+        worker["Args"] = ["worker.py"] * 65
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="actual launch"):
         recovery.observe_recovery_custody("fixture")

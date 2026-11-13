@@ -296,6 +296,10 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
     for identity in set(ids) - set(expected):
         obj = result[identity]
         validate_container_facts(obj)
+        # An absent actual launch readback cannot establish an unrelated worker.
+        # The legacy single-pair observer retains its separate prior contract.
+        if "Path" not in obj or "Args" not in obj:
+            raise RecoveryScopeUnavailable("unselected Docker actual launch unavailable")
         config, host = obj.get("Config"), obj.get("HostConfig")
         if not isinstance(config, dict) or not {"Cmd", "Entrypoint"} <= config.keys() or not isinstance(host, dict) or not isinstance(host.get("NetworkMode"), str) or not host["NetworkMode"]:
             raise RecoveryScopeUnavailable("unselected Docker command or network facts unavailable")
