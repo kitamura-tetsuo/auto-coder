@@ -966,6 +966,32 @@ def test_unselected_independent_pid_and_ipc_modes_remain_workers(scope: ScopeFix
     assert observed.unrelated_inspections == ((worker["Id"], recovery._digest(recovery.unrelated_inspection(worker))),)
 
 
+@pytest.mark.parametrize("field", ["NetworkMode", "PidMode", "IpcMode"])
+def test_unselected_namespace_link_requires_current_engine_member(scope: ScopeFixture, field: str):
+    # An absent referenced container cannot prove namespace separation.
+    worker = _unrelated_worker(scope)
+    worker["HostConfig"][field] = "container:" + "b" * 64
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="namespace identity"):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize("field", ["NetworkMode", "PidMode", "IpcMode"])
+def test_unselected_namespace_link_to_known_worker_is_preserved(scope: ScopeFixture, field: str):
+    # Linking to another independently inspected unrelated worker remains valid.
+    worker = _unrelated_worker(scope)
+    sibling = copy.deepcopy(worker)
+    sibling["Id"] = "b" * 64
+    sibling["ExecIDs"] = None
+    sibling_root = scope.root / "other-worker"
+    sibling_root.mkdir()
+    sibling["Mounts"][0]["Source"] = str(sibling_root)
+    scope.inspections[sibling["Id"]] = sibling
+    worker["HostConfig"][field] = "container:" + sibling["Id"]
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+    assert {entry[0] for entry in observed.unrelated_inspections} == {worker["Id"], sibling["Id"]}
+
+
 @pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "pid-namespace-alias", "ipc-namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
 def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)

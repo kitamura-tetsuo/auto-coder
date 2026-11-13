@@ -98,6 +98,12 @@ also supplies the independent `State.Paused`, `State.Restarting` and `State.Dead
 flags, each must be a boolean and agree with its corresponding status; contradictory
 optional flags refuse rather than silently claiming an unrelated worker. Consistent
 running, paused, stopped and dead workers remain permitted when otherwise unrelated.
+Any unselected container-namespace reference for network, PID, or IPC must
+resolve to an object in the complete current Docker Engine inventory. A
+well-formed full container ID absent from that inventory cannot establish
+an unrelated worker and refuses; a reference to another independently
+verified unrelated object remains permitted. This is bounded inventory
+membership validation, not native namespace pin or process closure.
 This check does not establish continuous process lifetime or authorize recovery.
 Candidate detection inspects module/management-serve
 tokens even when embedded in a shell `-c` or Python `-c` argument; splitting
