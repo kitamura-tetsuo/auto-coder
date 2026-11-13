@@ -50,19 +50,8 @@ def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -> None:
-    """Prevent an unguarded outer-Docker positive test from replacing the gate."""
-    workflow = yaml.safe_load((ROOT / ".github/workflows/new-instance-private-engine.yml").read_text())
-    job = workflow["jobs"]["private-engine"]
-    assert job["runs-on"] == "ubuntu-latest"
-    step = _step(job, "Prove private Engine parent, excluded API starts, and retained first child")
-    assert step["env"]["AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE"] == "1"
-    assert step["env"]["DOCKER_HOST"] == "unix:///var/run/docker.sock"
-    assert "docker:29-dind" in step["run"]
-    assert "tests/test_management_new_private_engine_docker.py" in step["run"]
-    assert "tests/test_management_new_private_engine_gate.py" in step["run"]
-    assert "test_management_new_instance_first_launch_docker.py" not in step["run"]
-    assert "chmod 0666" not in (ROOT / ".github/workflows/new-instance-private-engine.yml").read_text()
+def test_retained_private_engine_fixture_keeps_negative_scenarios() -> None:
+    """Retain fixture coverage while its retired management CI gate is removed."""
     assert not (ROOT / "tests/test_management_new_instance_first_launch_docker.py").exists()
     regression = (ROOT / "tests/test_management_new_private_engine_docker.py").read_text()
     assert "def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused" in regression
