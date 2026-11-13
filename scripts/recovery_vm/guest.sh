@@ -160,13 +160,23 @@ import sys
 from auto_coder.logger_config import get_logger, setup_logger
 from auto_coder.management.containment_route_manifest import _systemd_unit
 
-MAINTENANCE_UNITS = ("systemd-tmpfiles-clean.timer", "systemd-tmpfiles-clean.service")
+MAINTENANCE_PAIRS = (
+    ("systemd-tmpfiles-clean.timer", "systemd-tmpfiles-clean.service"),
+    ("apt-daily.timer", "apt-daily.service"),
+    ("apt-daily-upgrade.timer", "apt-daily-upgrade.service"),
+    ("dpkg-db-backup.timer", "dpkg-db-backup.service"),
+    ("e2scrub_all.timer", "e2scrub_all.service"),
+    ("fstrim.timer", "fstrim.service"),
+)
+MAINTENANCE_TIMERS = tuple(timer for timer, _ in MAINTENANCE_PAIRS)
+MAINTENANCE_SERVICES = tuple(service for _, service in MAINTENANCE_PAIRS)
+MAINTENANCE_UNITS = tuple(unit for pair in MAINTENANCE_PAIRS for unit in pair)
 MASK_ROOT = Path("/etc/systemd/system")
 logger = get_logger(__name__)
 
 
 def inhibit_maintenance(output):
-    """Settle only this fresh VM's measured maintenance pair before originals."""
+    """Stop and mask this fresh VM's selected maintenance pairs before originals."""
     evidence = {"schema": "auto-coder-recovery-vm-maintenance-profile-v1", "status": "preparing"}
     try:
         masks = tuple(MASK_ROOT / unit for unit in MAINTENANCE_UNITS)
@@ -175,31 +185,31 @@ def inhibit_maintenance(output):
         initial = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
         evidence["initial"] = [asdict(fact) for fact in initial]
         if any(not fact.unit_file_state or fact.active_state not in {"active", "inactive"} or fact.needs_daemon_reload for fact in initial):
-            raise ValueError("The original installed maintenance pair is unavailable")
-        # Stop the timer first, then wait for its service to stop. Never reset
-        # failed units or change an already approved recovery environment.
-        for unit in MAINTENANCE_UNITS:
+            raise ValueError("The original installed maintenance units are unavailable")
+        # Stop every selected timer before waiting for any selected service.
+        # Never reset failed units or change an approved recovery environment.
+        for unit in (*MAINTENANCE_TIMERS, *MAINTENANCE_SERVICES):
             subprocess.run(("systemctl", "stop", "--", unit), check=True, timeout=30)
         stopped = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
         evidence["stopped"] = [asdict(fact) for fact in stopped]
         if any(fact.active_state != "inactive" or fact.main_pid != 0 or fact.needs_daemon_reload for fact in stopped):
-            raise ValueError("The actual maintenance pair did not stop")
+            raise ValueError("The actual maintenance units did not stop")
         subprocess.run(("systemctl", "mask", "--", *MAINTENANCE_UNITS), check=True, timeout=30)
         subprocess.run(("systemctl", "daemon-reload"), check=True, timeout=30)
         observed = tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS)
         evidence["observed"] = [asdict(fact) for fact in observed]
         if any(not fact.inhibited or fact.unit_file_state != "masked" or fact.active_state != "inactive" or fact.main_pid != 0 or fact.needs_daemon_reload for fact in observed):
-            raise ValueError("The actual maintenance pair is not masked and inactive")
+            raise ValueError("The actual maintenance units are not masked and inactive")
         evidence["masks"] = []
         for path in masks:
             info = path.lstat()
             if not path.is_symlink() or os.readlink(path) != "/dev/null":
-                raise ValueError("The maintenance pair lacks its actual /dev/null masks")
+                raise ValueError("The maintenance units lack their actual /dev/null masks")
             evidence["masks"].append({"unit": path.name, "path": str(path), "device": info.st_dev, "inode": info.st_ino, "ctime_ns": info.st_ctime_ns, "mode": info.st_mode, "uid": info.st_uid, "target": os.readlink(path)})
         if tuple(_systemd_unit(unit) for unit in MAINTENANCE_UNITS) != observed:
-            raise ValueError("The inhibited maintenance pair changed during verification")
+            raise ValueError("The inhibited maintenance units changed during verification")
         evidence["status"] = "inhibited"
-        logger.info("Verified the fixed maintenance timer/service pair is masked and inactive before original fixture creation")
+        logger.info("Verified the fixed maintenance timer/service pairs are masked and inactive before original fixture creation")
     except Exception as error:
         evidence.update(status="failed", failure_type=type(error).__name__)
         logger.error("Fresh recovery VM maintenance preparation failed: {}", type(error).__name__)

@@ -51,19 +51,44 @@ recovery approval exists. It does not change an operational host, configure the
 production issuer, or establish acceptance for every stock Docker service profile
 or an incident with missing originals.
 
-Before original producers or recovery approval, the guest stops and masks the
-exact `systemd-tmpfiles-clean.timer` / `systemd-tmpfiles-clean.service` pair. Its
-ordinary scheduled execution changed the approved service's execution readback
-during the longer grant scenario. Preparation now stops the timer first, waits
-for the service to stop, and uses the production systemd reader to require real
-protected `/dev/null` masks, inactive state, zero service PID and no pending
-daemon reload. It reobserves the inhibited facts and retains the matching result,
+Before original producers or recovery approval, the guest stops and masks these
+six explicitly enumerated timer/service pairs from its observed stock timer
+inventory:
+
+| Timer | Service |
+| --- | --- |
+| `systemd-tmpfiles-clean.timer` | `systemd-tmpfiles-clean.service` |
+| `apt-daily.timer` | `apt-daily.service` |
+| `apt-daily-upgrade.timer` | `apt-daily-upgrade.service` |
+| `dpkg-db-backup.timer` | `dpkg-db-backup.service` |
+| `e2scrub_all.timer` | `e2scrub_all.service` |
+| `fstrim.timer` | `fstrim.service` |
+
+The existing stock-route fixture separately inhibits `motd-news.timer` and its
+service. There is no wildcard timer discovery or inhibition.
+
+A scheduled tmpfiles execution previously changed its approved service readback.
+The [later native after-receipt-head job](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/43321049334/job/131543555073)
+recorded target startup at `2026-11-12 23:58:08.1399639 UTC`, after route approval,
+then `dpkg-db-backup.service` starting at `2026-11-13 00:00:00.2218320 UTC` and
+finishing at `00:00:00.3340939 UTC`. The issuer refused at `00:01:07.623 UTC`
+in the per-unit effective-route comparison, before the selected publication
+boundary. Its bounded cause metadata did not export the exact mismatching unit
+name. The observed post-approval backup execution changes the full `ExecStart`
+readback included in that unit's strict digest even after the service returns
+inactive. The finite preparation profile also covers the other observed stock
+housekeeping timers, so their calendar schedules do not determine acceptance.
+
+Preparation stops all six timers before waiting for any selected service to
+stop. It uses the production systemd reader to require real protected
+`/dev/null` masks, inactive state, zero service PIDs and no pending daemon reload.
+It reobserves every inhibited fact and retains the matching result,
 initial/stopped facts and mask identities in `maintenance-profile.json`, with
-stdout and file logging.
-An unavailable unit, failed stop, preexisting mask path or changed final state
-fails preparation. This finite fresh-VM setup leaves the production whole-route
-catalog and digest comparisons unchanged; it never refreshes an approval after
-maintenance or changes an operational recovery host.
+stdout and file logging. An unavailable unit, failed state or stop, preexisting
+mask path or changed final state fails preparation. This finite fresh-VM setup
+leaves the production whole-route catalog and digest comparisons unchanged; it
+never refreshes an approval after maintenance or changes an operational recovery
+host.
 
 The guest installs the exact `uv==0.13.6` release and validates its reported release
 number. The complete observed `--version` banner, including its bounded build

@@ -231,14 +231,19 @@ succeed. A missing case, failed VM, unavailable native kernel operation or faile
 preservation check cannot become a passed result. The VM runner and reviewed
 reproduction procedure are documented in `scripts/recovery_vm/README.md`.
 
-The fresh recovery VM stops and masks only the measured
-`systemd-tmpfiles-clean.timer` / `systemd-tmpfiles-clean.service` maintenance pair
-before original producers and route approval. It records the actual stopped and
-inhibited systemd facts and protected mask identities in
-`maintenance-profile.json`; unavailable or changing state fails preparation.
-This keeps scheduled maintenance from changing its approved execution readback
-during the long native grant scenario. Production catalog/digest equality and
-all ordinary or quarantined containment profiles remain unchanged.
+The fresh recovery VM stops and masks six explicitly named timer/service pairs
+from its observed stock timer inventory: `systemd-tmpfiles-clean`, `apt-daily`,
+`apt-daily-upgrade`, `dpkg-db-backup`, `e2scrub_all` and `fstrim`, each with its
+exact `.timer` and `.service` name. All selected timers stop before any selected
+service, before original producers and route approval. The existing stock-route
+fixture retains ownership of the separate `motd-news` pair. The guest records
+actual stopped and inhibited systemd facts and protected mask identities in
+`maintenance-profile.json`; unavailable, failed or changing state and preexisting
+mask paths fail preparation. This finite setup prevents the observed scheduled
+maintenance from changing its approved execution readback during native
+acceptance, including the measured midnight backup execution documented in
+`scripts/recovery_vm/README.md`. Production catalog/digest equality and all
+ordinary or quarantined containment profiles remain unchanged.
 
 Before recovery preparation, the fixture proves that all original A/B/C managers,
 proxies and cutover readers have stopped. It may then close only the empty WAL
