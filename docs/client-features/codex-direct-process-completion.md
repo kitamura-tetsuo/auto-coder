@@ -42,3 +42,13 @@ Focused boundary/continuation coverage is in
 `tests/test_local_execution_boundary.py`, and
 `tests/test_local_session_continuation.py`. Launcher and filesystem regressions
 must separately validate the actual non-root launch and no-edit denial path.
+
+`tests/test_codex_noedit_runtime.py` drives the pinned real Codex executable,
+production Strong Audit path, and a local controlled inference endpoint through
+PASS, FINDINGS, INCONCLUSIVE, malformed output and source/Git/caller/peer write
+attempts. Its Docker profile is non-root with all capabilities dropped and
+no-new-privileges, without a writable cgroup mount. In an already isolated
+non-root environment with the pinned executable, run
+`AUTO_CODER_CODEX_HOST_RUNTIME=1 bash scripts/test.sh tests/test_codex_noedit_runtime.py`.
+This tests the audit boundary without using production inference credentials or
+changing production PR state. It does not replace live deployment verification.

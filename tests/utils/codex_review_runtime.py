@@ -1,4 +1,4 @@
-"""Real Codex/cgroup review driver, run in a fresh controller process."""
+"""Real non-root Codex review driver, run in a fresh controller process."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from auto_coder.invocation_process_supervisor import CgroupV2Owner, InvocationLaunch, InvocationOutcome, InvocationProcessSupervisor
+from auto_coder.invocation_process_supervisor import InvocationLaunch, InvocationOutcome, InvocationProcessSupervisor
 from auto_coder.local_execution_boundary import bind_local_execution_boundary
 from auto_coder.pr_processor import TwoTierGateInputs, _execute_pending_strong_audit
 from auto_coder.pr_review_cycle import ContractSnapshot, StrongPolicyIdentity
@@ -44,19 +44,13 @@ def main() -> None:
     diagnostic_runtime = root / "runtime" / "diagnostic"
     diagnostic_home = diagnostic_runtime / "home" / ".codex"
     diagnostic_home.mkdir(parents=True)
-    for path in (diagnostic_runtime, diagnostic_home.parent, diagnostic_home):
-        os.chown(path, 65532, 65532)
     with isolated_local_llm_worktree(str(repository), is_noedit=True) as workspace:
         binding = get_current_local_workspace()
         assert binding is not None
-        for current, directories, files in os.walk(binding.workspace.parent):
-            os.chown(current, 65532, 65532)
-            for name in (*directories, *files):
-                os.chown(Path(current) / name, 65532, 65532, follow_symlinks=False)
         environment = os.environ.copy()
         environment.update(HOME=str(diagnostic_home.parent), CODEX_HOME=str(diagnostic_home), TMPDIR=str(diagnostic_runtime))
         with bind_local_execution_boundary(binding, backend_type="codex", editable=False) as boundary:
-            diagnostic = InvocationProcessSupervisor(owner=CgroupV2Owner(worker_uid=65532, worker_gid=65532)).run(
+            diagnostic = InvocationProcessSupervisor().run(
                 InvocationLaunch(
                     invocation_id=binding.invocation_id,
                     backend_type="codex",

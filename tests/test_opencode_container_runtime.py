@@ -321,7 +321,7 @@ import os, subprocess
 from pathlib import Path
 from auto_coder.cli_helpers import build_backend_manager
 
-home = Path("/runtime/home")
+home = Path("/tmp/codex-runtime/home")
 (home / ".auto-coder").mkdir(parents=True, exist_ok=True)
 (home / ".auto-coder" / "llm_config.toml").write_text("""
 [backends.codex-live]
@@ -362,19 +362,17 @@ else:
             "docker",
             "run",
             "--rm",
-            "--privileged",
-            "--cgroupns=host",
-            "--volume",
-            "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             *_container_network_args(),
             "-e",
-            "HOME=/runtime/home",
+            "HOME=/tmp/codex-runtime/home",
             "-e",
-            "AUTO_CODER_RUNTIME_ROOT=/runtime",
-            "-e",
-            "AUTO_CODER_LOCAL_WORKER_UID=65532",
-            "-e",
-            "AUTO_CODER_LOCAL_WORKER_GID=65532",
+            "AUTO_CODER_RUNTIME_ROOT=/tmp/codex-runtime",
             "-e",
             "OPENAI_API_KEY=controlled-key",
             "-e",
