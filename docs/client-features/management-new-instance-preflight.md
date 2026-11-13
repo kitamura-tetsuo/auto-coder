@@ -1,5 +1,15 @@
 # NEW-instance origin and isolated first launch (DRAFT)
 
+## CI retirement
+
+The dedicated `NEW Docker Private Engine Acceptance` workflow was removed on
+2026-11-13 as part of retiring the proprietary management/bootstrap architecture.
+Its Docker-in-Docker first-launch gate is not a requirement of the replacement
+one-instance-per-container deployment. Existing component tests and fixture
+sources remain pending staged source cleanup; their retention does not restore
+this retired CI gate or claim native acceptance success.
+
+
 Issue #2672's Objective remains: “Allow an operator to initialize a new management
 bootstrap while retaining existing OAuth state.” The read-only assessment and
 protected one-use origin record remain distinct from first-launch authorization.

@@ -221,15 +221,18 @@ listener refusals and interruption/host-death boundaries. Passing the component
 selection alone does not establish those native obligations or applicability to
 a current incident with missing originals.
 
-### Maintained native acceptance
+### Historical native acceptance (retired from CI)
 
-`scripts/test_management_recovery_epoch_host.py` owns the actual host-entrypoint
-driver and each scenario's required outcomes. The
-`Management Recovery Epoch Acceptance` workflow derives its complete matrix from
-that driver's `ACCEPTANCE_SCENARIOS`; its final job requires every scenario to
-succeed. A missing case, failed VM, unavailable native kernel operation or failed
-preservation check cannot become a passed result. The VM runner and reviewed
-reproduction procedure are documented in `scripts/recovery_vm/README.md`.
+The dedicated `Management Recovery Epoch Acceptance` workflow was removed on
+2026-11-13 following the decision to retire the proprietary management,
+bootstrap, OAuth and self-update deployment architecture. Recovery epoch
+acceptance is no longer a CI gate. This is feature retirement, not evidence that
+any historical native acceptance scenario passed.
+
+`scripts/test_management_recovery_epoch_host.py` and its component regression
+coverage remain during staged source cleanup. Its VM reproduction procedure is
+retained in `scripts/recovery_vm/README.md` for historical investigation, not as
+a required deployment path for the replacement one-instance-per-container setup.
 
 The fresh recovery VM stops and masks six explicitly named timer/service pairs
 from its observed stock timer inventory: `systemd-tmpfiles-clean`, `apt-daily`,

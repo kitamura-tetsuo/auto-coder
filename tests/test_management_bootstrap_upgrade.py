@@ -689,28 +689,6 @@ def test_operator_source_proof_requires_private_original_artifacts(tmp_path: Pat
         upgrade._source_proof_inputs(source, 17, 2)
 
 
-def test_supervisor_source_contract_matches_native_workflow_names() -> None:
-    import yaml
-
-    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    jobs = workflow["jobs"]
-    names = {job["name"] for job in jobs.values()}
-    assert set(upgrade._SUPERVISOR_FIXED_STEPS) <= names
-    for profile, job_key in (
-        ("management-self-update", "management-self-update"),
-        ("fresh-host", "fresh-host"),
-        ("isolated-containers", "isolated-containers"),
-    ):
-        template = jobs[job_key]["name"]
-        assert template == f"Supervisor {profile} (shard ${{{{ matrix.shard }}}})"
-    required = {**upgrade._SUPERVISOR_FIXED_STEPS}
-    for profile, steps in upgrade._SUPERVISOR_MATRIX_STEPS.items():
-        required[jobs[profile]["name"]] = steps
-    job_by_name = {job["name"]: job for job in jobs.values()}
-    for name, steps in required.items():
-        assert set(steps) <= {step.get("name") for step in job_by_name[name]["steps"]}
-
-
 def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A protected whoami read produces proof; only the observer can seal success."""
     credential = private_file(tmp_path / "fresh-client", b"disposable-authenticated-client")

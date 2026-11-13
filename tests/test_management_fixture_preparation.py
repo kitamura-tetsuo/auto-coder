@@ -180,20 +180,6 @@ def test_default_tag_consumer_rejects_wrong_source_before_assertion_docker(monke
     exercise.assert_not_called()
 
 
-def test_fresh_host_workflow_passes_verified_image_across_sudo():
-    """Each executing shard independently binds the installed image to its source."""
-    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    steps = workflow["jobs"]["fresh-host"]["steps"]
-    runs = [str(step.get("run", "")) for step in steps]
-    handoff = next(i for i, step in enumerate(steps) if step.get("name") == "Verify and export retained-startup image identity")
-    execution = next(i for i, step in enumerate(steps) if step.get("name") == "Verify fresh initialization with host evidence")
-    assert handoff < execution
-    assert "AUTOCODER_OPENCODE_IMAGE_ID" in runs[handoff]
-    assert "verify_image(" in runs[handoff]
-    assert "AUTOCODER_FRESH_TEST_BASE_IMAGE=$AUTOCODER_FRESH_TEST_BASE_IMAGE" in runs[execution]
-    assert "tests/test_management_retained_startup_container.py" in (Path(__file__).parents[1] / "scripts/supervisor_ci_profiles.py").read_text()
-
-
 def test_dirty_consumer_reports_actual_checkout_changes_and_never_runs_docker(tmp_path, monkeypatch):
     """A CI-dirtied checkout must identify the offender without running an image."""
     monkeypatch.setattr(
@@ -225,10 +211,3 @@ def test_consumer_identity_ci_artifacts_live_outside_checkout():
     shard = source["jobs"]["complete-source-shard"]
     assert shard["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/tmp/auto-coder-playwright-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
     assert shard["env"]["PLAYWRIGHT_BROWSERS_PATH"] != "${{ github.workspace }}/.playwright-browsers"
-
-    supervisor = yaml.safe_load((root / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    fresh_host = supervisor["jobs"]["fresh-host"]
-    assert fresh_host["env"]["SUPERVISOR_PLAN_PATH"] == "/tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}/plan.json"
-    download = next(step for step in fresh_host["steps"] if step.get("name") == "Download immutable fresh-host plan")
-    assert download["with"]["path"] == "/tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
-    assert "tests/test_management_retained_startup_container.py" in (root / "scripts/supervisor_ci_profiles.py").read_text()
