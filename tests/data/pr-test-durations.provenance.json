@@ -1,15 +1,213 @@
 {
   "attempt": 1,
-  "job_id": 124670670900,
-  "nodes": 9371,
-  "normalization": "Difference between consecutive completed test result timestamps; exclude negative and >=300s intervals, floor at 0.001 seconds; first result omitted; unknown nodes use matched-current mean.",
-  "phase": "inter-result wall time, including intervening setup/teardown and reporting, not native per-test duration",
-  "pytest": "9.1.1",
+  "comparison_limitations": "The source producer uses a broader selector, prebuilt Python-only management image, Chromium and timing diagnostics. PR intervals are closer-profile approximations but still include reporting and buffering. Missing PR intervals and the timed-out tail retain native values without invented completion. Estimates exclude startup/collection and post-result overhead; the largest observed startup across all attempts was 62.785251 seconds. Actual future PR completion remains unproved. Source bootstrap treats this file as advisory estimates, never as native passing evidence.",
+  "comparison_review_sha256": "dec9ff06c0ee08e37a41469aa35e6c3ef0948398db86c79ce61eeba106b42021",
+  "consumer_selector": "not browser and not opencode_live and not muse_live and not supervisor_integration",
+  "native_baseline_weights_sha256": "c258edc89e9b1dd508e34d3f08f93e26246199433f586ce2bd54294bb7969f8a",
+  "native_receipt_evidence_sha256": "359d32af6808498550281592833e882860bae8b6eb6c99d388fe96aef26a6345",
+  "nodes": 12678,
+  "normalization": "Validate all 12 current-attempt source receipts against the immutable source plan and actual job time intervals. Sum only reported native phases; a call omitted after an authoritative setup skip is not fabricated. Replace only exact nodes with complete consecutive current-PR intervals described below. Floor every resulting weight at 0.001 seconds and round to six decimals. Unknown current nodes retain the existing matched-current mean.",
+  "phase": "The baseline sums native setup, call and teardown report.duration from the exact outer source execution. PR overlays are wall-clock intervals between consecutive results and include intervening teardown/setup/reporting; they are not native phase durations.",
+  "plan_digest": "sha256:3abebfc876849deca236b0069a5a8a7733f8f539fbe139628b8004b81416d250",
+  "plan_sha256": "11e1a2dc7577efa66f2f08bc65b00f16d970ff725df30beb68e34cc8967dade6",
+  "pr_interval_overlay": {
+    "actions_run_attempt": 1,
+    "intervals_sha256": "a0fae2eb7e92e3b4e858679d08c56b905c2b9b4c824171f220e9c868c5a0083f",
+    "jobs": [
+      {
+        "actions_run_attempt": 1,
+        "censored_by_deadline": false,
+        "group": 1,
+        "internal_attempt": 1,
+        "job_id": 131703895282,
+        "observed_attempts": [
+          {
+            "internal_attempt": 1,
+            "reported_results": 5427,
+            "startup_until_first_result_seconds": 44.797959
+          }
+        ],
+        "overlay_nodes": 5406,
+        "overlay_seconds": 443.069271,
+        "raw_log_sha256": "488f5ba1205f9b2592d1e608da02d42a8bf6092fdac98da3120ab93cd7ae7e4f",
+        "reported_results": 5427,
+        "selected_nodes": 5428
+      },
+      {
+        "actions_run_attempt": 1,
+        "censored_by_deadline": false,
+        "group": 2,
+        "internal_attempt": 1,
+        "job_id": 131703895336,
+        "observed_attempts": [
+          {
+            "internal_attempt": 1,
+            "reported_results": 2042,
+            "startup_until_first_result_seconds": 46.892262
+          }
+        ],
+        "overlay_nodes": 2039,
+        "overlay_seconds": 316.507651,
+        "raw_log_sha256": "96f13061f822bcee5f947c891c26ec0686f152fc158557c90628fcfbe0cc89e7",
+        "reported_results": 2042,
+        "selected_nodes": 2042
+      },
+      {
+        "actions_run_attempt": 1,
+        "censored_by_deadline": true,
+        "group": 3,
+        "internal_attempt": 2,
+        "job_id": 131703895294,
+        "observed_attempts": [
+          {
+            "internal_attempt": 1,
+            "reported_results": 1122,
+            "startup_until_first_result_seconds": 62.785251
+          },
+          {
+            "internal_attempt": 2,
+            "reported_results": 1291,
+            "startup_until_first_result_seconds": 13.646222
+          }
+        ],
+        "overlay_nodes": 1290,
+        "overlay_seconds": 646.252069,
+        "raw_log_sha256": "ea89e1ce0717f63e3c8b6b25fa36ff81a00481119895e1f7c4ebf1e5e3cfcf57",
+        "reported_results": 1291,
+        "selected_nodes": 1901
+      },
+      {
+        "actions_run_attempt": 1,
+        "censored_by_deadline": false,
+        "group": 4,
+        "internal_attempt": 1,
+        "job_id": 131703895328,
+        "observed_attempts": [
+          {
+            "internal_attempt": 1,
+            "reported_results": 3129,
+            "startup_until_first_result_seconds": 50.257873
+          }
+        ],
+        "overlay_nodes": 3124,
+        "overlay_seconds": 472.234935,
+        "raw_log_sha256": "c560cf881b0b3bde10bcd0149f024ae0356dd6274c6ce077f3762e874d32e89f",
+        "reported_results": 3129,
+        "selected_nodes": 3139
+      }
+    ],
+    "nodes": 11859,
+    "retained_native_nodes": 819,
+    "revision": "3c10d39bb4f43d2c0c08a4f9c51fce8a7e7171af",
+    "rule": "Use timestamps of neighboring result lines only when both exact node IDs are consecutive in the original selected order. The first result, unmatched or masked IDs, gaps and the censored/unobserved tail retain native baseline values. Use internal attempt 1 for groups 1, 2 and 4, and internal attempt 2 for group 3; do not merge or average retries.",
+    "run": "https://github.com/outliner-online/auto-coder/actions/runs/43370190674",
+    "selector": "not browser and not opencode_live and not muse_live and not supervisor_integration",
+    "workflow_path": ".github/workflows/pr-tests.yml"
+  },
+  "profile": {
+    "configuration_digest": "sha256:c8b3e90714696a7a57b380e4e3d84909978cca99998cded78f51e6133a30c34d",
+    "profile_id": "source-required-v1",
+    "python_major_minor": "3.12",
+    "repository": "outliner-online/auto-coder"
+  },
+  "pytest": "9.2.0",
   "pytest_split": "0.11.0",
-  "python": "3.12.15",
+  "python": "3.12.16",
   "selector": "not opencode_live",
-  "snapshot_sha256": "ab8d5bb9994f8809aca59b7295421578790236d8db97e6fe2cc39ab9f4f00528",
-  "source_revision": "1f28e2cacfaa016e8513402cf82ed8b61a9ff250",
-  "source_run": "https://github.com/kitamura-tetsuo/auto-coder/actions/runs/41246415733",
-  "unit": "seconds"
+  "selector_scope": "The full native baseline inventory uses this selector; the PR interval overlay has the separate narrower selector below.",
+  "setup_skipped_nodes": 82,
+  "snapshot_sha256": "45a0bf6c4c887c31fa91b89b1fa1e8b61995249895bb2557ef5815a293bf4ac7",
+  "source_artifacts": [
+    {
+      "archive_sha256": "4b24191ee6ba154888b4d7c8ee9d034280ad03d7c5ea1a27d10da09f3ba196a6",
+      "artifact_id": 14012777002,
+      "job_id": 131704335317,
+      "receipt_sha256": "bf06f82b571942074f913bd92c152be730341210102d91ced1d2390e273f3f03",
+      "shard": 1
+    },
+    {
+      "archive_sha256": "5f61ab70a65b86003790f3d71bccc7b8d335ca7d9bd0963915ab8521ef9a7ad0",
+      "artifact_id": 14011799707,
+      "job_id": 131704335343,
+      "receipt_sha256": "73730791f6179189b75ef789302c110567a940171f058a968a6b878bff3f7b54",
+      "shard": 2
+    },
+    {
+      "archive_sha256": "09b296a1ea533d6d59f61f74ce633b09a2b575e17d224c6d406c7a67441c3584",
+      "artifact_id": 14011839292,
+      "job_id": 131704335361,
+      "receipt_sha256": "fc744b7c6e000fff4586511759dfc920eb738c3f132eb7c6c4104958536e40d0",
+      "shard": 3
+    },
+    {
+      "archive_sha256": "f6de78c63916806d9178235ba06a39964f53963723cf94206bd1e6b9f48c8d66",
+      "artifact_id": 14012701195,
+      "job_id": 131704335291,
+      "receipt_sha256": "120117817b21b180b9e1d7fb4db84f363013ce71691a8958c6d739729e5c8a0a",
+      "shard": 4
+    },
+    {
+      "archive_sha256": "da5dca98927aee639bb38252fd797a2af96a5c20ab64cb696e026114e9ac1c41",
+      "artifact_id": 14012767082,
+      "job_id": 131704335261,
+      "receipt_sha256": "703368ca97cee86a94edc82d9a7721d28f79d1060d116ffc1781a9626b0d75bc",
+      "shard": 5
+    },
+    {
+      "archive_sha256": "147da5209a5df879e2762cf28004ae15d2cdae91a958297477c1365533f40d7e",
+      "artifact_id": 14012845785,
+      "job_id": 131704335325,
+      "receipt_sha256": "75ffcdbc9e57c215c58515515eb6c966a33d6f5ed1e168c492f9d2aac2624b80",
+      "shard": 6
+    },
+    {
+      "archive_sha256": "6ae6dc42e9c090d2c62829e004b4b21dad4e8b4b37bf6c6879769bdc057035a9",
+      "artifact_id": 14012133570,
+      "job_id": 131704335285,
+      "receipt_sha256": "0e67fed325eeee6e730ad17713eca1d1275d21823bd3e833cd75ad897b17af24",
+      "shard": 7
+    },
+    {
+      "archive_sha256": "28dadd4fbcf205d50389bd1aee267b35935ce133b9c2417dc577d8ff09cbe5f7",
+      "artifact_id": 14012652768,
+      "job_id": 131704335288,
+      "receipt_sha256": "33686ed4c735684b70cd3f0fdcac2833c3e120bef1c95fab6606b22666bd7520",
+      "shard": 8
+    },
+    {
+      "archive_sha256": "82c95668f292245b515283bb52468636fbb292c72171409868ba107296aac761",
+      "artifact_id": 14012731736,
+      "job_id": 131704335302,
+      "receipt_sha256": "8cc1106f08b7c529a04e323d9d6b7b704c1e1c9e78be4d855bb967ecf5943c8e",
+      "shard": 9
+    },
+    {
+      "archive_sha256": "4351d2bc6363676a996b10845fad24a35e5775081424048c490769a2a382a61b",
+      "artifact_id": 14011729945,
+      "job_id": 131704335449,
+      "receipt_sha256": "b6afb97ac14cc696ecc16024fda5639929c7771b4d302cbede406890597f3930",
+      "shard": 10
+    },
+    {
+      "archive_sha256": "49356be65e7ec049868dc6ed691e9fcefe29e0b5cd2c6397b6e190e67e354f67",
+      "artifact_id": 14012756727,
+      "job_id": 131704335333,
+      "receipt_sha256": "38042d5087d28bd2e1eb4df8185e90df988e18f5fb269e695c110d4ede5b0689",
+      "shard": 11
+    },
+    {
+      "archive_sha256": "17aa95e0056813401032e771ba1bf92aa60fbfb59e4e2c9e115a80ac07257d3b",
+      "artifact_id": 14012416936,
+      "job_id": 131704335321,
+      "receipt_sha256": "e023dbc64de0655090a6dc38715ee29c876c836f06e0e4905295b8be98ce9830",
+      "shard": 12
+    }
+  ],
+  "source_event": "pull_request",
+  "source_revision": "3c10d39bb4f43d2c0c08a4f9c51fce8a7e7171af",
+  "source_run": "https://github.com/outliner-online/auto-coder/actions/runs/43370190764",
+  "unit": "seconds",
+  "weight_basis": "Mixed advisory scheduling estimates: native source phase sums with exact current-PR complete inter-result intervals replacing only observed nodes.",
+  "workflow_id": 395675928,
+  "workflow_path": ".github/workflows/test-source-for-runtime.yml"
 }
