@@ -10,7 +10,7 @@ from pathlib import Path
 
 from auto_coder.ci_shard_plan import ShardContext, ShardPlanError, read_plan
 
-REPOSITORY = "kitamura-tetsuo/auto-coder"
+REPOSITORY = "outliner-online/auto-coder"
 PROFILES = ("management-self-update", "fresh-host", "isolated-containers")
 
 OPERATOR_REQUIRED = (

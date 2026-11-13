@@ -56,7 +56,8 @@ def joined(tmp_path, request):
         record = begun.record
         remote.complete = complete
         inputs = {**values, "operation_id": record.operation_id, "source_repository": policy.source_repository, "release_target": policy.release_target}
-        sent = remote.request("POST", f"actions/workflows/{WORKFLOW_ID}/dispatches", {"ref": "main", "inputs": inputs, "return_run_details": True})
+        wire_inputs = {name: str(value) for name, value in inputs.items()}
+        sent = remote.request("POST", f"actions/workflows/{WORKFLOW_ID}/dispatches", {"ref": "main", "inputs": wire_inputs, "return_run_details": True})
         assert sent.status == 200
         assert journal.bind_source_release_run(record, {"id": sent.data["workflow_run_id"]}, kind="response")
         record = journal.get(record.operation_id).record

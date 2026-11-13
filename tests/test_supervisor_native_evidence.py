@@ -8,9 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).parents[1]
@@ -21,7 +23,9 @@ from supervisor_aggregate_evidence import REQUIRED_GROUPS, evaluate  # noqa: E40
 from supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, HARNESS, OPERATOR_REQUIRED, PROFILES, REPOSITORY, SEMANTIC_ENV, check_plan
 from supervisor_ci_profiles import context as profile_context  # noqa: E402
 from supervisor_ci_profiles import profile_args
-from supervisor_native_evidence import GitDataResponse, NativeEvidenceError, _inventory_ok, capture, native_job_name, original_producer  # noqa: E402
+from supervisor_native_evidence import GitDataResponse, NativeEvidenceError, _inventory_ok, capture
+from supervisor_native_evidence import main as capture_main  # noqa: E402
+from supervisor_native_evidence import native_job_name, original_producer
 
 from auto_coder.ci_shard_plan import ShardContext, VerifiedPlan, _canonical, build_plan, read_plan  # noqa: E402
 from auto_coder.util.gh_cache import GitHubGitDataClient  # noqa: E402
@@ -123,6 +127,70 @@ def _inventory(profile: str, shard: int | None, nodes: tuple[str, ...], plan: Ve
         "first_case_phase_epoch": 1794132010.0 if attempt == 1 else 1794135610.0,
         "last_case_phase_epoch": 1794132020.0 if attempt == 1 else 1794135620.0,
     }
+
+
+@pytest.mark.parametrize("profile", ("worker", "fresh-host"))
+def test_native_capture_cli_uses_canonical_repository_after_transfer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str) -> None:
+    """The real CLI must reach the transferred repository without a redirect."""
+    canonical_repository = "outliner-online/auto-coder"
+    runner = 41
+    shard = None if profile == "worker" else 1
+    plan = _plan(profile, tmp_path / "plans") if shard is not None else None
+    job = _job(native_job_name(profile, shard), 123, 1, start="2026-11-08T10:00:00Z", runner=runner)
+    destination = tmp_path / "receipt.json"
+    arguments = ["supervisor_native_evidence.py", "--profile", profile, "--output", str(destination)]
+    nodes = (("worker::test_bridge",), ("worker::test_daemon",)) if plan is None else (plan.inventory,)
+    for index, selected in enumerate(nodes):
+        inventory = tmp_path / f"inventory-{index}.json"
+        inventory.write_text(json.dumps(_inventory(profile, shard, selected, plan, 1, runner)), encoding="utf-8")
+        arguments.extend(("--inventory", str(inventory)))
+    if plan is not None:
+        arguments.extend(("--plan", str(tmp_path / "plans" / profile / "plan.json"), "--shard", "1"))
+
+    environ = {
+        "GITHUB_REPOSITORY": canonical_repository,
+        "GITHUB_WORKFLOW": "Supervisor Integration Tests",
+        "GITHUB_RUN_ID": str(RUN),
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": SHA,
+        "GITHUB_JOB": "worker-bridge" if plan is None else profile,
+        "RUNNER_NAME": str(job["runner_name"]),
+        "GITHUB_TOKEN": "",
+    }
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr("supervisor_native_evidence.subprocess.check_output", lambda *_args, **_kwargs: SHA)
+    # Preserve the test session's sinks while exercising the real CLI/client.
+    monkeypatch.setattr("supervisor_native_evidence._logging", lambda _directory: None)
+    canonical_url = f"https://api.github.com/repos/{canonical_repository}/actions/runs/{RUN}/attempts/1/jobs?per_page=100&page=1"
+    legacy_url = canonical_url.replace("outliner-online/auto-coder", "kitamura-tetsuo/auto-coder")
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        requests.append(str(request.url))
+        if str(request.url) == legacy_url:
+            return httpx.Response(301, headers={"Location": canonical_url}, json={"message": "Moved Permanently"})
+        assert str(request.url) == canonical_url
+        return httpx.Response(200, json={"total_count": 1, "jobs": [job]})
+
+    @contextmanager
+    def github_client(**_kwargs):
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            yield client
+
+    monkeypatch.setattr("auto_coder.util.gh_cache.github_http_client", github_client)
+    assert capture_main() == 0
+    assert requests == [canonical_url]
+    receipt = json.loads(destination.read_text(encoding="utf-8"))
+    assert receipt["repository"] == canonical_repository
+    assert (receipt["run_id"], receipt["run_attempt"], receipt["job_id"]) == (RUN, 1, job["id"])
+    if plan is not None:
+        context = profile_context(profile, environ=environ, checkout=SHA)
+        assert context.repository == context.origin["repository"] == canonical_repository
+        assert plan.context.repository == plan.context.origin["repository"] == canonical_repository
+        assert receipt["plan_digest"] == plan.digest
 
 
 def _artifact(base: Path, profile: str, shard: int | None, plan: VerifiedPlan | None, job: dict[str, object], attempt: int) -> Path:

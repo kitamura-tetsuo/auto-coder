@@ -129,7 +129,12 @@ matrix jobs and every native per-shard pytest receipt are complete and successfu
 
 The shared source of profile selectors and stable anchors is
 `scripts/supervisor_ci_profiles.py`, consumed identically by planning and
-execution. The unchanged worker/daemon selectors, whole-file selections in all
+execution. Its shared canonical repository is `outliner-online/auto-coder`.
+Planning origins, native Actions reads, produced receipts, duration-history
+discovery and aggregation all use that identity after the repository transfer.
+Native API evidence requires HTTP 200; a repository redirect is not evidence.
+
+The unchanged worker/daemon selectors, whole-file selections in all
 three long profiles, the five special fresh-host node selectors, and all six
 parameterized installed-handoff nodes are preserved. The complete fresh-host
 required-node registry includes the four archived-cutover variants and six
