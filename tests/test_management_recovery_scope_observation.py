@@ -904,6 +904,45 @@ def test_unrelated_worker_accepts_consistent_docker_lifetime(scope: ScopeFixture
     assert observed.unrelated_inspections[0][0] == worker["Id"]
 
 
+@pytest.mark.parametrize(
+    "status,field,value",
+    [
+        ("running", "Paused", True),
+        ("paused", "Paused", False),
+        ("restarting", "Restarting", False),
+        ("running", "Restarting", True),
+        ("dead", "Dead", False),
+        ("exited", "Dead", True),
+        ("running", "Paused", 1),
+        ("running", "Restarting", "false"),
+        ("running", "Dead", None),
+    ],
+)
+def test_unrelated_worker_refuses_inconsistent_optional_docker_state_flags(scope: ScopeFixture, status: str, field: str, value: object):
+    worker = _unrelated_worker(scope)
+    worker["State"]["Status"] = status
+    worker["State"][field] = value
+    with pytest.raises(recovery.RecoveryScopeUnavailable):
+        recovery.observe_recovery_custody("fixture")
+
+
+@pytest.mark.parametrize(
+    "status,running,pid,paused,dead",
+    [
+        ("running", True, 12345, False, False),
+        ("paused", True, 12345, True, False),
+        ("exited", False, 0, False, False),
+        ("dead", False, 0, False, True),
+    ],
+)
+def test_unrelated_worker_preserves_consistent_optional_docker_state_flags(scope: ScopeFixture, status: str, running: bool, pid: int, paused: bool, dead: bool):
+    worker = _unrelated_worker(scope)
+    worker["State"].update(Status=status, Running=running, Pid=pid, Paused=paused, Restarting=False, Dead=dead)
+    observed = recovery.observe_recovery_custody("fixture")
+    assert observed.status == "observed-component-only"
+    assert observed.unrelated_inspections[0][0] == worker["Id"]
+
+
 @pytest.mark.parametrize("mutation", ["image", "state", "policy", "config", "missing-command", "command", "entrypoint", "network", "namespace-alias", "mounts", "bind", "volume", "symlink", "exec"])
 def test_malformed_unselected_facts_refuse(scope: ScopeFixture, mutation: str):
     worker = _unrelated_worker(scope)

@@ -115,6 +115,11 @@ def validate_container_facts(obj: dict[str, object]) -> tuple[str, dict, dict, l
         raise ValueError("Docker running/PID relationship is contradictory")
     if (state["Status"] in ("running", "paused") and not state["Running"]) or (state["Status"] in ("created", "exited", "dead") and state["Running"]):
         raise ValueError("Docker status and running lifetime are contradictory")
+    # Docker reports these status flags independently. Never accept a
+    # contradictory present flag as evidence of an unrelated worker.
+    for flag, status in (("Paused", "paused"), ("Restarting", "restarting"), ("Dead", "dead")):
+        if flag in state and (type(state[flag]) is not bool or state[flag] != (state["Status"] == status)):
+            raise ValueError("Docker status and lifetime flag are contradictory")
     restart_count = obj.get("RestartCount")
     if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(restart_count) is not int or restart_count < 0:
         raise ValueError("Docker lifetime identity unavailable")

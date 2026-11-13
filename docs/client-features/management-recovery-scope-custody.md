@@ -93,9 +93,12 @@ existing single-pair observer; its existing refusal behavior is preserved.
 Unselected inspections require unambiguous image, effective command, network,
 lifetime and restart facts. Docker `State.Status`, `State.Running`, and `State.Pid`
 must agree: an exited/created/dead object cannot also claim to be running, and
-a running/paused object cannot simultaneously claim to be stopped. Consistent
-stopped workers remain permitted when otherwise unrelated. This check does not
-establish continuous process lifetime or authorize recovery.
+a running/paused object cannot simultaneously claim to be stopped. When Docker
+also supplies the independent `State.Paused`, `State.Restarting` and `State.Dead`
+flags, each must be a boolean and agree with its corresponding status; contradictory
+optional flags refuse rather than silently claiming an unrelated worker. Consistent
+running, paused, stopped and dead workers remain permitted when otherwise unrelated.
+This check does not establish continuous process lifetime or authorize recovery.
 Candidate detection inspects module/management-serve
 tokens even when embedded in a shell `-c` or Python `-c` argument; splitting
 only on Docker's argv array would otherwise classify an explicit management
