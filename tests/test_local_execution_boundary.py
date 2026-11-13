@@ -124,6 +124,7 @@ def test_operational_success_does_not_require_retired_publication_certificate(tm
         violations_observed=EvidenceStatus.ESTABLISHED,
     )
 
+    boundary.record_direct_process_completion(invocation_id)
     evidence = boundary.require_confined_result(invocation_id)
     assert evidence.confined_result_authorized is True
     assert evidence.publication_enforcement is EvidenceStatus.UNKNOWN
@@ -142,6 +143,7 @@ def test_provider_session_is_turn_scoped_metadata_not_edit_authority(tmp_path: P
         violations_observed=EvidenceStatus.ESTABLISHED,
     )
 
+    boundary.record_direct_process_completion(invocation_id)
     evidence = boundary.require_confined_result(invocation_id)
     assert evidence.provider_session_id == "session-1"
     assert evidence.turn_id != evidence.invocation_id
@@ -805,10 +807,9 @@ def test_retained_continuation_policy_denial_allows_caller_handoff(tmp_path: Pat
     assert (repository / "tracked.txt").read_text() == "denied continuation edit\n"
 
 
-@pytest.mark.parametrize("failure", ["policy", "owner"])
-def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, failure: str, _use_real_commands) -> None:
+def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, _use_real_commands) -> None:
     from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy
-    from src.auto_coder.invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
+    from src.auto_coder.invocation_process_supervisor import InvocationProcessSupervisor
     from tests.utils.supervised_local import ProcessGroupOwner
 
     binding = _binding(tmp_path)
@@ -816,7 +817,7 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
     executable = tmp_path / "codex"
     executable.write_text(f"#!/bin/sh\nprintf started > '{marker}'\n")
     executable.chmod(0o755)
-    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=os.getuid(), worker_gid=os.getgid()) if failure == "owner" else ProcessGroupOwner()
+    owner = ProcessGroupOwner()
     supervisor = InvocationProcessSupervisor(
         owner=owner,  # type: ignore[arg-type]
         filesystem_policy_factory=lambda: LandlockFilesystemPolicy(read_visibility=(tmp_path / "missing-policy-input",)),
@@ -836,23 +837,14 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
         )
     assert result.success is False
     assert not marker.exists()
-    if failure == "policy":
-        assert result.stderr.startswith(
-            (
-                "the Linux runtime does not provide usable Landlock confinement",
-                "visible runtime input is unavailable:",
-            )
+    assert result.stderr.startswith(
+        (
+            "the Linux runtime does not provide usable Landlock confinement",
+            "visible runtime input is unavailable:",
         )
-        if result.stderr.startswith("visible runtime input is unavailable:"):
-            assert str(tmp_path / "missing-policy-input") in result.stderr
-    else:
-        assert result.stderr.startswith(
-            (
-                "private workspace repository preparation failed",
-                "delegated cgroup lacks cgroup.procs",
-                "cannot create delegated invocation cgroup:",
-            )
-        )
+    )
+    if result.stderr.startswith("visible runtime input is unavailable:"):
+        assert str(tmp_path / "missing-policy-input") in result.stderr
     assert boundary.evidence().backend_outcome is BackendOutcome.UNKNOWN
 
 

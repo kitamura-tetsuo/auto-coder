@@ -8,6 +8,7 @@ import os
 import platform
 import signal
 import stat
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -353,6 +354,22 @@ class PtraceDenialMonitor:
                     # remains authoritative; the race is not lost observation.
                     if exc.errno != errno.ESRCH:
                         raise
+        return tuple(denials)
+
+    def terminate_remaining(self) -> tuple[str, ...]:
+        """Best-effort cleanup of unreaped tracees, not descendant proof."""
+        denials = list(self.pump())
+        for pid in tuple(self._tracees):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # Reap known tracees opportunistically. The bound is independent of
+        # result acceptance and cannot turn this into all-descendant evidence.
+        deadline = time.monotonic() + 0.1
+        while self._tracees and time.monotonic() < deadline:
+            denials.extend(self.pump())
+            time.sleep(0.001)
         return tuple(denials)
 
     def _handle_stop(self, pid: int, status: int) -> tuple[str, ...]:

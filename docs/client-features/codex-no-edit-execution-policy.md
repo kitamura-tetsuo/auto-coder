@@ -1,5 +1,13 @@
 # Codex No-Edit Execution Policy
 
+Local Codex now uses the permanent direct-process completion policy documented
+in [Local Codex direct-process completion](codex-direct-process-completion.md).
+For Codex, references below to mandatory cgroup/root-controller setup and
+all-descendant settlement are superseded by non-root launch and direct-process
+completion with descendant termination explicitly unproven. Filesystem/no-edit,
+invocation identity, and independent continuation authorization remain required.
+OpenCode and other backends retain their existing completion policy.
+
 No-edit Codex backends do not require
 `--dangerously-bypass-approvals-and-sandbox`. Editable Codex backends must use
 an unattended policy: that bypass flag, `--full-auto`, or explicit

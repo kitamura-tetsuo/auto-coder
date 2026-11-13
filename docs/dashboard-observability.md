@@ -3664,3 +3664,25 @@ custody and at-most-one issuance for integrated acceptance. See
 `client-features/management-original-genesis.md`, and
 `client-features/management-recovery-containment-observation.md` for the fixed
 profiles, interfaces and source-of-truth limits.
+
+## Local Codex direct-process completion
+
+Local Codex no longer requires all-descendant termination proof. The launcher
+keeps filesystem confinement, records `direct_process_completion=established`
+only after the direct process is reaped, and leaves `writer_completion=unknown`.
+Its command diagnostics explicitly state `descendant termination is unproven`.
+Timeout, cancellation, enforcement failure and malformed review output remain
+failures; direct exit is not itself an accepted review verdict. OpenCode retains
+its existing cgroup settlement policy. See
+[Codex direct-process completion](client-features/codex-direct-process-completion.md).
+
+No dashboard event schema or review-stage outcome taxonomy changes: these are
+invocation-local evidence facts and command diagnostics, not new review verdicts
+or processing stages. Existing strong/ordinary review producers still validate
+payload identities and verdicts before their existing stage events. A dashboard
+review success must not be interpreted as proof that every descendant exited.
+Run `bash scripts/test.sh tests/test_codex_direct_process_supervisor.py
+tests/test_codex_direct_completion_boundary.py tests/test_local_execution_boundary.py`
+for actual non-root launcher denial/timeout/cancellation, truthful evidence,
+result authorization and continuation checks. These launcher tests do not
+substitute for the ordinary/strong review verdict gates or a live beta audit.

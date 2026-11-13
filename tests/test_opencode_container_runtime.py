@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -301,11 +302,13 @@ def test_documentation_describes_opencode_container_runtime() -> None:
 
 
 @pytest.mark.opencode_live
-def test_codex_private_repository_checkpoint_uses_production_worker_boundary() -> None:
+@pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+def test_codex_private_repository_checkpoint_uses_production_worker_boundary(tmp_path: Path) -> None:
     """REQ-007: real Codex progresses beyond its Git check only for a worker-usable private clone."""
-    image = _ensure_image_built()
+    host_runtime = os.environ.get("AUTO_CODER_CODEX_HOST_RUNTIME") == "1"
+    image = "" if host_runtime else _ensure_image_built()
     version = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "codex", image, "--version"],
+        ["codex", "--version"] if host_runtime else ["docker", "run", "--rm", "--entrypoint", "codex", image, "--version"],
         capture_output=True,
         text=True,
         check=True,
@@ -321,7 +324,7 @@ import os, subprocess
 from pathlib import Path
 from auto_coder.cli_helpers import build_backend_manager
 
-home = Path("/runtime/home")
+home = Path("/tmp/codex-runtime/home")
 (home / ".auto-coder").mkdir(parents=True, exist_ok=True)
 (home / ".auto-coder" / "llm_config.toml").write_text("""
 [backends.codex-live]
@@ -362,19 +365,17 @@ else:
             "docker",
             "run",
             "--rm",
-            "--privileged",
-            "--cgroupns=host",
-            "--volume",
-            "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             *_container_network_args(),
             "-e",
-            "HOME=/runtime/home",
+            "HOME=/tmp/codex-runtime/home",
             "-e",
-            "AUTO_CODER_RUNTIME_ROOT=/runtime",
-            "-e",
-            "AUTO_CODER_LOCAL_WORKER_UID=65532",
-            "-e",
-            "AUTO_CODER_LOCAL_WORKER_GID=65532",
+            "AUTO_CODER_RUNTIME_ROOT=/tmp/codex-runtime",
             "-e",
             "OPENAI_API_KEY=controlled-key",
             "-e",
@@ -389,27 +390,54 @@ else:
             "-c",
             script,
         ]
-        result = subprocess.run(command, capture_output=True, text=True)
+        environment = None
+        if host_runtime:
+            script = script.replace("/tmp/codex-runtime", str(tmp_path / "runtime")).replace("/tmp/codex-readiness-caller", str(tmp_path / "caller"))
+            command = [sys.executable, "-c", script]
+            environment = os.environ.copy()
+            environment.update(
+                HOME=str(tmp_path / "runtime" / "home"),
+                CODEX_HOME=str(tmp_path / "runtime" / "home" / ".codex"),
+                AUTO_CODER_RUNTIME_ROOT=str(tmp_path / "runtime"),
+                OPENAI_API_KEY="controlled-key",
+                OPENAI_BASE_URL=f"http://127.0.0.1:{provider.port}/v1",
+                CODEX_API_KEY="controlled-key",
+                CODEX_BASE_URL=f"http://127.0.0.1:{provider.port}/v1",
+            )
+        result = subprocess.run(command, env=environment, capture_output=True, text=True)
         output = result.stdout + result.stderr
         assert result.returncode == 0, output
         assert provider.captured_requests, output
         assert "EXPECTED_DOWNSTREAM_FAILURE:" in output
-        assert "Codex repository readiness established under uid=65532, gid=65532" in output
+        expected_uid, expected_gid = (os.geteuid(), os.getegid()) if host_runtime else (65532, 65532)
+        assert f"Codex repository readiness established under uid={expected_uid}, gid={expected_gid}" in output
         assert marker_checksum in output
         assert "Not inside a trusted directory" not in output
 
         before = len(provider.captured_requests)
         denied_script = script.replace(
             "os.chdir(repo)",
-            "import auto_coder.utils as command_utils\ncommand_utils._chown_tree = lambda root, uid, gid: None\nos.chdir(repo)",
+            "import auto_coder.utils as command_utils\n"
+            "original_prepare = command_utils._prepare_invocation_runtime\n"
+            "def unreadable_private_input(context, environment):\n"
+            "    runtime = original_prepare(context, environment)\n"
+            "    (context.boundary.binding.workspace / 'tracked.txt').chmod(0)\n"
+            "    return runtime\n"
+            "command_utils._prepare_invocation_runtime = unreadable_private_input\n"
+            "os.chdir(repo)",
         )
-        denied = subprocess.run([*command[:-1], denied_script], capture_output=True, text=True)
+        if host_runtime:
+            # Each attempt has a fresh real caller repository, as in Docker.
+            denied_script = denied_script.replace(str(tmp_path / "caller"), str(tmp_path / "denied-caller"))
+        denied = subprocess.run([*command[:-1], denied_script], env=environment, capture_output=True, text=True)
         denied_output = denied.stdout + denied.stderr
         assert denied.returncode == 0, denied_output
         assert len(provider.captured_requests) == before
         assert "EXPECTED_DOWNSTREAM_FAILURE:" in denied_output
         assert "Codex repository readiness established" not in denied_output
         assert marker_checksum not in denied_output
+        assert "worker repository probe failed" in denied_output
+        assert "Permission denied" in denied_output
     finally:
         provider.stop()
 

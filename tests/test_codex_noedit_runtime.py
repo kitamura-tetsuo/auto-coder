@@ -99,8 +99,8 @@ class ReviewProvider:
 
 @pytest.fixture
 def runtime_root():
-    # The worker must traverse the runtime parent; pytest's 0700 ancestors
-    # are intentionally unsuitable for the production credential transition.
+    # Keep this independent of pytest ancestors for the Docker and same-UID
+    # host profiles. The Codex controller itself is non-root.
     with tempfile.TemporaryDirectory(prefix="codex-noedit-runtime-") as directory:
         root = Path(directory)
         root.chmod(0o755)
@@ -139,7 +139,7 @@ def test_real_codex_reads_and_preserves_durable_review_authority(runtime_root: P
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     environment = os.environ.copy()
-    environment.update(HOME=str(home), CODEX_HOME=str(home / ".codex"), OPENAI_API_KEY="controlled-key", AUTO_CODER_RUNTIME_ROOT=str(runtime), AUTO_CODER_LOCAL_WORKER_UID="65532", AUTO_CODER_LOCAL_WORKER_GID="65532")
+    environment.update(HOME=str(home), CODEX_HOME=str(home / ".codex"), OPENAI_API_KEY="controlled-key", AUTO_CODER_RUNTIME_ROOT=str(runtime))
     try:
         if os.environ.get("AUTO_CODER_CODEX_HOST_RUNTIME") == "1":
             command = [sys.executable, "tests/utils/codex_review_runtime.py", str(tmp_path)]
@@ -151,14 +151,12 @@ def test_real_codex_reads_and_preserves_durable_review_authority(runtime_root: P
             settings = (config_dir / "llm_config.toml").read_text()
             setup = "from pathlib import Path\n" f"root = Path({container_root!r})\n" "(root / 'home' / '.auto-coder').mkdir(parents=True)\n" "(root / 'runtime').mkdir()\n" f"(root / 'home' / '.auto-coder' / 'llm_config.toml').write_text({settings!r})\n"
             driver = Path("tests/utils/codex_review_runtime.py").read_text()
-            command = ["docker", "run", "--rm", "--privileged", "--cgroupns=host", "--volume", "/sys/fs/cgroup:/sys/fs/cgroup:rw", *_container_network_args()]
+            command = ["docker", "run", "--rm", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", *_container_network_args()]
             for key, value in {
                 "HOME": f"{container_root}/home",
                 "CODEX_HOME": f"{container_root}/home/.codex",
                 "AUTO_CODER_RUNTIME_ROOT": f"{container_root}/runtime",
                 "OPENAI_API_KEY": "controlled-key",
-                "AUTO_CODER_LOCAL_WORKER_UID": "65532",
-                "AUTO_CODER_LOCAL_WORKER_GID": "65532",
             }.items():
                 command.extend(["-e", f"{key}={value}"])
             command.extend(["--entrypoint", "python3", image, "-c", setup + driver, container_root])
@@ -167,7 +165,8 @@ def test_real_codex_reads_and_preserves_durable_review_authority(runtime_root: P
         assert completed.returncode == 0, output
         result = json.loads(completed.stdout.split("RUNTIME_RESULT:", 1)[1].splitlines()[0])
         assert len(provider.requests) == 2, output
-        assert "65532" in provider.tool_evidence, provider.tool_evidence
+        expected_uid = str(os.geteuid()) if os.environ.get("AUTO_CODER_CODEX_HOST_RUNTIME") == "1" else "65532"
+        assert expected_uid in provider.tool_evidence, provider.tool_evidence
         assert result["head"] in provider.tool_evidence, provider.tool_evidence
         assert "Distinctive review guidance 2387." in provider.tool_evidence
         assert "Distinctive source head 2387." in provider.tool_evidence

@@ -1,5 +1,13 @@
 # Invocation-local filesystem confinement
 
+Local Codex now uses the permanent direct-process completion policy documented
+in [Local Codex direct-process completion](codex-direct-process-completion.md).
+For Codex, references below to mandatory cgroup/root-controller setup and
+all-descendant settlement are superseded by non-root launch and direct-process
+completion with descendant termination explicitly unproven. Filesystem/no-edit,
+invocation identity, and independent continuation authorization remain required.
+OpenCode and other backends retain their existing completion policy.
+
 The invocation process supervisor always installs `LandlockFilesystemPolicy` before
 it releases a provider executable; an explicit policy set that does not establish
 filesystem enforcement is rejected. The controller supplies an immutable invocation

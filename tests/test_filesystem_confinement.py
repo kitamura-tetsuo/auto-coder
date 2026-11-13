@@ -416,7 +416,8 @@ def test_codex_noedit_denied_write_preserves_success_after_exit_zero(tmp_path: P
     assert result.stdout == "caught-denial\n"
     assert "filesystem policy denied" in result.detail
     assert result.outcome is InvocationOutcome.SUCCEEDED
-    assert result.writer_complete
+    assert not result.writer_complete
+    assert result.direct_process_complete
     assert protected.read_text() == "preserved"
     assert boundary.evidence().backend_outcome is BackendOutcome.SUCCEEDED
     assert boundary.evidence().policy_violation
