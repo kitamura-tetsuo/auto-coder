@@ -316,9 +316,8 @@ def _snapshot(enrollment: RecoveryEnrollment) -> dict[str, dict[str, object]]:
         # without sharing its image, command, network or bind sources.
         # Such a container is not independently unrelated to that generation.
         for field in ("PidMode", "IpcMode"):
+            # A missing or null namespace readback is not an independent worker fact.
             namespace_mode = host.get(field)
-            if namespace_mode is None:
-                continue
             if not isinstance(namespace_mode, str) or len(namespace_mode) > 256:
                 raise RecoveryScopeUnavailable("unselected Docker namespace identity is inconclusive")
             if namespace_mode.startswith("container:"):

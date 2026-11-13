@@ -617,7 +617,7 @@ def _unrelated_worker(scope: ScopeFixture) -> dict:
         "Config": {"Cmd": ["python", "worker.py"], "Entrypoint": None},
         "Path": "python",
         "Args": ["worker.py"],
-        "HostConfig": {"NetworkMode": "bridge", "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
+        "HostConfig": {"NetworkMode": "bridge", "PidMode": "", "IpcMode": "private", "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
         "State": {"Running": True, "Pid": 12345, "Status": "running", "StartedAt": "2026-11-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"},
         "RestartCount": 0,
         "Mounts": [{"Type": "bind", "Source": str(root), "Destination": "/work", "RW": True}],
@@ -964,6 +964,19 @@ def test_unselected_independent_pid_and_ipc_modes_remain_workers(scope: ScopeFix
     observed = recovery.observe_recovery_custody("fixture")
     assert observed.status == "observed-component-only"
     assert observed.unrelated_inspections == ((worker["Id"], recovery._digest(recovery.unrelated_inspection(worker))),)
+
+
+@pytest.mark.parametrize("field", ["PidMode", "IpcMode"])
+@pytest.mark.parametrize("mutation", ["missing", "null"])
+def test_unselected_worker_requires_explicit_namespace_readback(scope: ScopeFixture, field: str, mutation: str):
+    # Missing and null namespace fields cannot prove separation from selected managers.
+    worker = _unrelated_worker(scope)
+    if mutation == "missing":
+        del worker["HostConfig"][field]
+    else:
+        worker["HostConfig"][field] = None
+    with pytest.raises(recovery.RecoveryScopeUnavailable, match="namespace identity"):
+        recovery.observe_recovery_custody("fixture")
 
 
 @pytest.mark.parametrize("field", ["NetworkMode", "PidMode", "IpcMode"])

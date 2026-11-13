@@ -120,7 +120,15 @@ not prove the absence of indirect wrapper execution, source aliases or hidden
 controllers; full source and process closure remains an unmet requirement.
 Bind roots must resolve canonically and must not lexically overlap or alias a
 selected root's device/inode. Unsupported mount sources and ambiguous namespace
-aliases refuse rather than being classified as unrelated. Unselected Docker PID and IPC namespace links to any selected original or target manager/proxy refuse even when the worker has a different image, command, network mode and bind source. Ambiguous container namespace identifiers also refuse; absent or independent PID/IPC modes do not themselves identify a management candidate. These readbacks are still only a bounded scope-discovery component, not REQ-604 process/namespace custody proof. An operator's label or classification supplies no proof.
+aliases refuse rather than being classified as unrelated. Unselected Docker PID
+and IPC namespace links to any selected original or target manager/proxy refuse
+even when the worker has a different image, command, network mode and bind
+source. Ambiguous container namespace identifiers also refuse; omitted or null
+`HostConfig.PidMode` and `HostConfig.IpcMode` facts cannot establish namespace
+separation and refuse. Explicit empty/default or independent PID/IPC modes do
+not themselves identify a management candidate. These readbacks are still only
+a bounded scope-discovery component, not REQ-604 process/namespace custody
+proof. An operator's label or classification supplies no proof.
 
 Engine identity and the complete inventory are reread, and the entire inspection
 and classification pass is repeated while custody descriptors remain open. All
