@@ -12,3 +12,14 @@
       - "An authoritative pre-admission read must still show the Issue open and urgent. Removing `urgent` before admission prevents the stale event from authorizing emergency capacity."
       - "When capacity alone defers an urgent transition, its durable obligation returns to the dirty set and retries without another webhook; operational failures receive the same retry treatment. Non-capacity rejection completes the evaluated obligation."
       - "Coalescing and delivery deduplication key obligations by repository and stable Issue number, while durable implementation ownership prevents duplicate or concurrent deliveries from producing another logical owner or execution."
+
+## Regression coverage
+
+The urgent-label worker regression supplies the authoritative open Issue
+snapshot for the worker's final strict refresh and waits for the queue's
+completion boundary before cancelling the idle worker, with bounded completion
+and cancellation waits. Seeing the processing callback run is insufficient:
+final stage routing and the durable release still have to finish. The test then
+reclaims the same Issue generation with its urgent-admission flag intact, so a
+row stranded in `processing` or deferred after a routing error cannot pass
+merely because the pending-row count is one.

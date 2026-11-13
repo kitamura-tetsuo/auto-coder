@@ -2129,7 +2129,12 @@ def test_reopened_invalidation_does_not_consult_cached_closed_state(tmp_path: Pa
 def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_path: Path, monkeypatch):
     """The webhook origin must survive the durable queue and a capacity defer."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
-    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    current = {"number": 1767, "state": "open", "labels": ["implementation-ready", "urgent"]}
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, _number: dict(current)
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_direct_sub_issues_strict.return_value = []
+    engine = AutomationEngine(github, AutomationConfig())
     fetched = []
     processed = []
 
@@ -2138,7 +2143,7 @@ def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_pa
         fetched.append((number, bypass_cache))
         return Candidate(
             type="issue",
-            data={"number": number, "state": "open", "labels": ["implementation-ready", "urgent"]},
+            data=dict(current),
             priority=0,
         )
 
@@ -2168,18 +2173,26 @@ def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_pa
             "urgent-delivery",
         )
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
-        for _ in range(100):
-            if processed:
-                break
-            await asyncio.sleep(0.01)
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+        try:
+            # The processing callback runs before final routing and the durable
+            # release. Wait for that complete boundary before stopping the worker.
+            await asyncio.wait_for(engine.queue.join(), timeout=5)
+        finally:
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(worker, timeout=5)
 
     asyncio.run(scenario())
 
     assert fetched == [(1767, True)]
     assert processed == [True]
+    github.get_issue_dispatch_snapshot_strict.assert_called_with("owner/repo", 1767)
     assert engine.invalidations.pending_count("owner/repo") == 1
+    assert engine.invalidations.claim("owner/repo") == ClaimedInvalidation(
+        EntityIdentity("owner/repo", "issue", 1767),
+        generation=1,
+        urgent_admission=True,
+    )
 
 
 @pytest.mark.parametrize("source", ["sentry", "github"])
