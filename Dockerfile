@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS python-environment
+FROM python:3.15-slim AS python-environment
 ARG AUTO_CODER_BUILD_IDENTITY_B64
 COPY --from=ghcr.io/astral-sh/uv:0.7.22 /uv /usr/local/bin/uv
 WORKDIR /opt/auto-coder
@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     rm -rf /tmp/opencode /tmp/codex && \
     rm -rf /var/lib/apt/lists/*
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 ARG AUTO_CODER_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$AUTO_CODER_SOURCE_REVISION
 # Runtime revision staging uses this immutable bootstrap tool; it never updates
