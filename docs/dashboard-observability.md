@@ -3686,3 +3686,15 @@ tests/test_codex_direct_completion_boundary.py tests/test_local_execution_bounda
 for actual non-root launcher denial/timeout/cancellation, truthful evidence,
 result authorization and continuation checks. These launcher tests do not
 substitute for the ordinary/strong review verdict gates or a live beta audit.
+
+## Staged direct Codex operator entry
+
+The one-shot `auto_coder.direct_codex` entry currently returns its invocation ID,
+source head/checkpoint, direct-child boundary evidence and retained workspace in
+its operator result. It does not enter the automation queue, select a dashboard
+slot, perform publication or mark an Issue/PR complete. Existing private workspace
+and supervisor diagnostics remain available. Unit tests in
+`tests/test_direct_codex_entry.py` exercise its scope, not dashboard/live deployment
+progress. Before production activation, its standalone start/failure/completion
+results need a durable operation record; this staged entry is not evidence that
+a target repository is making progress.
